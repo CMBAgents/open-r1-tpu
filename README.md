@@ -13,10 +13,11 @@ checkpoints, and exports a merged Hugging Face-style safetensors directory.
 
 ## TPU VM setup
 
-Use Python 3.11 or 3.12 on a TPU VM with eight visible devices:
+Use standard CPython 3.13 (the repository default is 3.13.14) on a TPU VM with
+eight visible devices. Do not use the free-threaded `3.13t` build:
 
 ```bash
-python3 -m venv .venv
+python3.13 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e '.[test]'

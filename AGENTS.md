@@ -75,7 +75,8 @@ compiled smoke run.
 
 ## Environment and Hugging Face
 
-- Use Python 3.11 or 3.12 on the TPU VM.
+- Use standard CPython 3.13 on the TPU VM; `.python-version` pins the tested
+  patch release, and the free-threaded `3.13t` build is unsupported.
 - Install with `python -m pip install -e '.[test]'` on the TPU VM. The Tunix
   dependency installs `jax[tpu]`, so avoid treating an unrelated local virtual
   environment as authoritative.
@@ -161,7 +162,7 @@ subsequent steps.
 
 ## Code and change discipline
 
-- Target Python 3.11+ and prefer typed, small functions with explicit failure
+- Target Python 3.13 and prefer typed, small functions with explicit failure
   messages for conditions that would waste TPU time.
 - Preserve existing user changes and avoid unrelated refactors.
 - Do not commit generated datasets, downloaded model weights, checkpoints,
