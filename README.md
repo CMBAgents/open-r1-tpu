@@ -98,6 +98,34 @@ Start with a short run before allocating a full training job:
 The first step includes JAX/XLA compilation and will be much slower than later
 steps.
 
+## Weights & Biases
+
+Training logs Tunix metrics to the `open-r1-tpu` W&B project by default,
+including train/eval loss, perplexity, learning rate, and the full resolved
+recipe. Authenticate once on the TPU VM; enter the API key only at the prompt
+so it is not stored in shell history or committed to the repository:
+
+```bash
+wandb login
+export WANDB_ENTITY=your-user-or-team
+```
+
+The default run is named `qwen3-1.7b-reasoning-sft` and grouped under
+`qwen3-1.7b-reasoning-distillation`. These values can be overridden normally:
+
+```bash
+./scripts/run_sft_tpu.sh \
+  training.project_name=my-project \
+  training.run_name=my-run \
+  training.wandb.entity=my-team
+```
+
+Set `training.wandb.mode=offline` to keep W&B data local for later syncing, or
+`training.wandb.enabled=false` to disable it. To continue the same W&B run when
+restoring an Orbax checkpoint, preserve the W&B log directory and set
+`WANDB_RUN_ID` to the original run ID; the recipe's `resume: allow` will then
+append to that run.
+
 ## Full reasoning SFT
 
 ```bash
