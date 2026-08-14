@@ -3,7 +3,11 @@ from pathlib import Path
 import pytest
 
 from open_r1_tpu.config import load_config, parse_override
-from open_r1_tpu.sft import _wandb_backend_kwargs
+from open_r1_tpu.sft import (
+    _SteppedTrainingMetricsBackend,
+    _metrics_logger_options,
+    _wandb_backend_kwargs,
+)
 
 
 RECIPE = (
@@ -60,6 +64,68 @@ def test_wandb_backend_receives_run_metadata_and_resolved_config():
     assert kwargs["tags"] == ["tpu", "sft", "lora", "qwen3"]
     assert kwargs["dir"] == config["training"]["metrics_log_dir"]
     assert kwargs["config"] is config
+
+
+def test_wandb_adapter_filters_unstepped_and_non_training_metrics():
+    class RecordingBackend:
+        def __init__(self):
+            self.calls = []
+            self.closed = False
+
+        def log_scalar(self, event, value, **kwargs):
+            self.calls.append((event, value, kwargs))
+
+        def close(self):
+            self.closed = True
+
+    recording_backend = RecordingBackend()
+    backend = _SteppedTrainingMetricsBackend(recording_backend)
+
+    backend.log_scalar("/train/loss", 1.25, step=3)
+    backend.log_scalar("/eval/loss", 1.5, step=3)
+    backend.log_scalar("/jax/orbax/write/gbytes_per_sec", 10.0)
+    backend.log_scalar("/jax/core/compile/backend_compile_duration", 12.0)
+    backend.log_scalar("/train/perplexity", 3.5)
+    backend.close()
+
+    assert recording_backend.calls == [
+        ("/train/loss", 1.25, {"step": 3}),
+        ("/eval/loss", 1.5, {"step": 3}),
+    ]
+    assert recording_backend.closed is True
+
+
+def test_metrics_options_use_custom_backends():
+    class Options:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class Backend:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeMetricsLogger:
+        MetricsLoggerOptions = Options
+        TensorboardBackend = Backend
+        WandbBackend = Backend
+
+    config = load_config(RECIPE)
+    options = _metrics_logger_options(config, FakeMetricsLogger)
+    factories = options.kwargs["backend_kwargs"]["custom_backend"]
+
+    assert len(factories) == 2
+    assert factories[0]().kwargs == {
+        "log_dir": config["training"]["metrics_log_dir"],
+        "flush_every_n_steps": config["training"]["flush_every_n_steps"],
+    }
+    assert isinstance(factories[1](), _SteppedTrainingMetricsBackend)
+
+    disabled_config = load_config(RECIPE, ["training.wandb.enabled=false"])
+    disabled_options = _metrics_logger_options(disabled_config, FakeMetricsLogger)
+    disabled_factories = disabled_options.kwargs["backend_kwargs"][
+        "custom_backend"
+    ]
+    assert len(disabled_factories) == 1
 
 
 @pytest.mark.parametrize(

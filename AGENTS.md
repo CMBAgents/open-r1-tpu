@@ -52,6 +52,9 @@ The default path is:
   Never silently fall back to full-model fine-tuning.
 - Preserve denominator-aware `LossOutput`/`WeightedMetric` normalization so
   gradient accumulation weights tokens correctly across microbatches.
+- Keep W&B restricted to stepped `train/*` and `eval/*` metrics. Raw global
+  JAX/Orbax events may omit `step`; Metrax maps those events to step zero and
+  causes W&B to discard them after training advances.
 - Treat checkpoint, model-cache, dataset, and export paths as potentially
   large. Keep `artifacts/`, `data/`, and `models/` untracked.
 - Maintain the export-path safety checks. Merged export must never replace the

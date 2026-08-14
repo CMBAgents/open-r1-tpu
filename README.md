@@ -101,10 +101,12 @@ steps.
 
 ## Weights & Biases
 
-Training logs Tunix metrics to the `open-r1-tpu` W&B project by default,
-including train/eval loss, perplexity, learning rate, and the full resolved
-recipe. Authenticate once on the TPU VM; enter the API key only at the prompt
-so it is not stored in shell history or committed to the repository:
+Training logs Tunix metrics to the `ainstein-post-training` W&B project by
+default, including stepped train/eval loss, perplexity, gradient norm, and the
+full resolved recipe. Auxiliary JAX compilation and Orbax checkpoint metrics
+remain in TensorBoard because they do not consistently carry a logical training
+step. Authenticate once on the TPU VM; enter the API key only at the prompt so
+it is not stored in shell history or committed to the repository:
 
 ```bash
 wandb login
