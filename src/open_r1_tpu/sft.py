@@ -322,7 +322,9 @@ def run(config: dict[str, Any]) -> None:
         mesh_shape,
         max_steps,
     )
-    with jax.set_mesh(mesh):
+    # Tunix 0.1.8 still reads JAX's legacy thread-local physical mesh inside
+    # PeftTrainer, so jax.set_mesh(mesh) is not sufficient here yet.
+    with mesh:
         trainer.train(train_ds, eval_ds)
 
     if model_config["model_source"] == "huggingface":
