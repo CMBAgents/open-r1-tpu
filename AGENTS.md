@@ -16,7 +16,7 @@ The default path is:
 1. Load conversational reasoning traces from
    `open-r1/Mixture-of-Thoughts`.
 2. Apply the Qwen chat template and supervise only the assistant trace.
-3. Fine-tune `Qwen/Qwen3-1.7B-Base` with LoRA on a v5e-8 TPU.
+3. Fine-tune `Qwen/Qwen3-1.7B-Base` with LoRA on one 32 GiB TPU v6e device.
 4. Save resumable Tunix/Orbax checkpoints.
 5. Merge the LoRA weights into a Hugging Face-style safetensors model for a
    later Tunix GRPO run.
@@ -113,7 +113,6 @@ Short TPU smoke run:
 ```bash
 ./scripts/run_sft_tpu.sh \
   dataset.max_examples=128 \
-  dataset.max_length=2048 \
   training.max_steps=4 \
   training.gradient_accumulation_steps=1 \
   training.checkpointing_options.save_interval_steps=2
@@ -151,7 +150,8 @@ subsequent steps.
   devices, and `axis_names` must have the same rank as `shape`.
 - Keep batch and sharding choices compatible with the target topology.
 - Increase `dataset.max_length` only after observing HBM use on the target TPU.
-  The default 8192 is intentionally below Open-R1's CUDA recipe length.
+  The default 1024 is the validated single-device baseline; also measure how
+  many complete examples remain after overlength filtering.
 - Keep a finite `training.max_steps` for predictable resume and checkpoint
   behavior. Ensure `num_train_epochs` supplies enough examples after filtering.
 - When changing model families, disable merged export unless the corresponding

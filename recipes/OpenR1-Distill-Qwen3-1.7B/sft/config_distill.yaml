@@ -1,5 +1,6 @@
-# TPU v5e-8 reasoning-distillation recipe. Override max_steps/max_examples for
-# smoke runs; increase max_length toward 32768 only after validating HBM usage.
+# Single-device TPU v6e-1 (32 GiB HBM) reasoning-distillation recipe. The
+# batch/sequence defaults match the topology already validated by a smoke run;
+# increase max_length only after measuring HBM use and retained-example count.
 model:
   model_name: qwen3-1.7b-base
   model_id: Qwen/Qwen3-1.7B-Base
@@ -19,7 +20,7 @@ model:
     rank: 64
     alpha: 64.0
   mesh:
-    shape: [2, 4]
+    shape: [1, 1]
     axis_names: [fsdp, tp]
 
 tokenizer:
@@ -34,8 +35,10 @@ dataset:
   config: all
   train_split: train
   messages_column: messages
-  batch_size: 8
-  max_length: 8192
+  # One 1024-token sequence per microbatch is the validated 32 GiB baseline.
+  # Gradient accumulation below gives an effective batch size of eight.
+  batch_size: 1
+  max_length: 1024
   # Match Open-R1's SFT recipe and provide enough data after length filtering.
   num_train_epochs: 5
   max_examples: null

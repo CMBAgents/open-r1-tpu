@@ -7,14 +7,15 @@ applies the model's chat template, and trains a causal language model to emit
 the complete assistant reasoning trace before a later GRPO stage.
 
 The default recipe trains `Qwen/Qwen3-1.7B-Base` with LoRA on
-`open-r1/Mixture-of-Thoughts` using a v5e-8 TPU. It supervises assistant tokens
-only, filters incomplete or overlength reasoning traces, writes resumable Orbax
-checkpoints, and exports a merged Hugging Face-style safetensors directory.
+`open-r1/Mixture-of-Thoughts` using one 32 GiB TPU v6e device. It supervises
+assistant tokens only, filters incomplete or overlength reasoning traces,
+writes resumable Orbax checkpoints, and exports a merged Hugging Face-style
+safetensors directory.
 
 ## TPU VM setup
 
 Use standard CPython 3.13 (the repository default is 3.13.14) on a TPU VM with
-eight visible devices. Do not use the free-threaded `3.13t` build:
+one visible device. Do not use the free-threaded `3.13t` build:
 
 ```bash
 python3.13 -m venv .venv
@@ -25,7 +26,7 @@ python -m pip install -e '.[test]'
 python - <<'PY'
 import jax
 print(jax.devices())
-assert len(jax.devices()) == 8
+assert len(jax.devices()) == 1
 PY
 ```
 
@@ -63,11 +64,12 @@ gcloud storage rsync \
 python -m open_r1_tpu.check_env \
   model.model_source=local \
   model.model_path=models/Qwen3-1.7B-Base \
-  tokenizer.tokenizer_path=models/Qwen3-1.7B-Base \
-  model.mesh.shape='[1, 1]'
+  tokenizer.tokenizer_path=models/Qwen3-1.7B-Base
 ```
 
-For a one-chip run, add these data/model overrides to the launcher:
+For the already-staged model and data, add these local-input overrides to the
+launcher; the checked-in mesh, batch, and sequence defaults already target the
+one-device VM:
 
 ```bash
 model.model_source=local
@@ -76,7 +78,6 @@ tokenizer.tokenizer_path=models/Qwen3-1.7B-Base
 dataset.name=parquet
 dataset.config=null
 dataset.data_files='data/Mixture-of-Thoughts/all/*.parquet'
-model.mesh.shape='[1, 1]'
 ```
 
 Orbax checkpoints may use a `gs://` directory directly. Merged export is a
@@ -90,7 +91,6 @@ Start with a short run before allocating a full training job:
 ```bash
 ./scripts/run_sft_tpu.sh \
   dataset.max_examples=128 \
-  dataset.max_length=2048 \
   training.max_steps=4 \
   training.gradient_accumulation_steps=1 \
   training.checkpointing_options.save_interval_steps=2
@@ -140,8 +140,6 @@ Any value can be overridden using Tunix-style dotted arguments, for example:
 ```bash
 ./scripts/run_sft_tpu.sh \
   dataset.config=math \
-  dataset.max_length=4096 \
-  model.mesh.shape='[1, 8]' \
   training.max_steps=1000
 ```
 
@@ -157,9 +155,10 @@ Important behavior:
   reasoning-scale sequence lengths.
 - Overlength traces are filtered, not truncated, so training never sees a
   severed chain of thought or missing final answer.
-- `dataset.max_length=8192` is a conservative starting point. The Open-R1 CUDA
-  recipe uses 32768, but that should be increased only after measuring HBM use
-  on the chosen TPU topology.
+- `dataset.batch_size=1` and `dataset.max_length=1024` are the validated
+  32 GiB single-device baseline. With eight accumulation steps, the effective
+  batch size is eight; increase sequence length only after measuring HBM use
+  and how many complete reasoning traces survive length filtering.
 
 ## Checkpoints and GRPO handoff
 

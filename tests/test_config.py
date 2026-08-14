@@ -30,6 +30,15 @@ def test_load_config_applies_nested_overrides():
     assert config["model"]["mesh"]["shape"] == [1, 8]
 
 
+def test_default_recipe_targets_one_32gb_tpu():
+    config = load_config(RECIPE)
+
+    assert config["model"]["mesh"]["shape"] == [1, 1]
+    assert config["dataset"]["batch_size"] == 1
+    assert config["dataset"]["max_length"] == 1024
+    assert config["training"]["gradient_accumulation_steps"] == 8
+
+
 def test_invalid_mesh_is_rejected():
     with pytest.raises(ValueError, match="axis_names"):
         load_config(RECIPE, ["model.mesh.axis_names=[fsdp]"])
