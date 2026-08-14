@@ -1,7 +1,10 @@
 from collections import UserDict
+import sys
+from types import SimpleNamespace
 
 import numpy as np
 
+from open_r1_tpu import data as data_module
 from open_r1_tpu.data import encode_reasoning_example, normalize_messages
 
 
@@ -86,3 +89,43 @@ def test_mapping_tokenizer_output_is_supported():
     )
     assert encoded is not None
     assert encoded.input_mask.sum() > 0
+
+
+def test_local_parquet_data_files_are_forwarded(monkeypatch):
+    captured = {}
+
+    class FakeDataset:
+        def __len__(self):
+            return 1
+
+    def fake_load_dataset(name, config, **kwargs):
+        captured.update(name=name, config=config, **kwargs)
+        return FakeDataset()
+
+    monkeypatch.setitem(
+        sys.modules, "datasets", SimpleNamespace(load_dataset=fake_load_dataset)
+    )
+    monkeypatch.setattr(
+        data_module,
+        "build_grain_dataset",
+        lambda data_source, *args, **kwargs: data_source,
+    )
+    result, eval_result = data_module.load_reasoning_datasets(
+        {
+            "name": "parquet",
+            "config": None,
+            "data_files": "data/Mixture-of-Thoughts/all/*.parquet",
+            "train_split": "train",
+            "batch_size": 1,
+            "max_length": 128,
+        },
+        FakeTokenizer(),
+    )
+    assert isinstance(result, FakeDataset)
+    assert eval_result is None
+    assert captured == {
+        "name": "parquet",
+        "config": None,
+        "split": "train",
+        "data_files": "data/Mixture-of-Thoughts/all/*.parquet",
+    }

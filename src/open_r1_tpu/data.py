@@ -211,11 +211,10 @@ def load_reasoning_datasets(config: dict[str, Any], tokenizer: Any) -> tuple[Any
     """Load a Hugging Face reasoning dataset and return Tunix-ready iterables."""
     from datasets import load_dataset
 
-    raw = load_dataset(
-        config["name"],
-        config.get("config"),
-        split=config.get("train_split", "train"),
-    )
+    load_kwargs = {"split": config.get("train_split", "train")}
+    if config.get("data_files") is not None:
+        load_kwargs["data_files"] = config["data_files"]
+    raw = load_dataset(config["name"], config.get("config"), **load_kwargs)
     max_examples = config.get("max_examples")
     if max_examples is not None:
         raw = raw.select(range(min(int(max_examples), len(raw))))

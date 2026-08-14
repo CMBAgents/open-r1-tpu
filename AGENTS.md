@@ -81,6 +81,10 @@ compiled smoke run.
   environment as authoritative.
 - Set `HF_TOKEN` in the environment. Never print, commit, log, or embed token
   values in commands or configuration.
+- When model and dataset artifacts are already staged in GCS, copy them to
+  ignored local `models/` and `data/` directories. Use `model_source=local` and
+  the Parquet builder with `dataset.data_files`; do not redownload them from the
+  Hub.
 - Use the current `hf` CLI, not the deprecated `huggingface-cli`. A safe
   authentication check is `hf auth whoami`.
 - Do not upload models, datasets, checkpoints, or traces to the Hub unless the
@@ -152,6 +156,8 @@ subsequent steps.
 - When changing model families, disable merged export unless the corresponding
   Tunix params module implements
   `save_lora_merged_model_as_safetensors`.
+- Orbax checkpoints can target GCS, but merged safetensors export must target a
+  local directory and be synced to GCS only after export completes.
 
 ## Code and change discipline
 

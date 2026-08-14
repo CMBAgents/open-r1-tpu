@@ -40,10 +40,47 @@ or starting a training job:
 python -m open_r1_tpu.check_env
 ```
 
-This initializes JAX and requires the recipe's eight devices to be TPUs. It also
-checks the installed Tunix/Optax APIs, loads the real Qwen tokenizer, verifies
-the assistant-only chat-template boundary, and confirms that Tunix supplies the
-Qwen3 merged-LoRA exporter.
+This initializes JAX and requires the configured mesh device count to consist
+entirely of TPUs. It also checks the installed Tunix/Optax APIs, loads the real
+Qwen tokenizer, verifies the assistant-only chat-template boundary, and
+confirms that Tunix supplies the Qwen3 merged-LoRA exporter.
+
+### Using GCS-staged inputs
+
+Tunix's Hugging Face loader still contacts the Hub even when its download
+directory already contains weights. To use model and Parquet files staged in
+GCS, copy them to the VM's local disk and select the explicit local loaders:
+
+```bash
+gcloud storage rsync \
+  gs://ainstein-rowan/models/Qwen3-1.7B-Base \
+  models/Qwen3-1.7B-Base --recursive
+gcloud storage rsync \
+  gs://ainstein-rowan/datasets/Mixture-of-Thoughts \
+  data/Mixture-of-Thoughts --recursive
+
+python -m open_r1_tpu.check_env \
+  model.model_source=local \
+  model.model_path=models/Qwen3-1.7B-Base \
+  tokenizer.tokenizer_path=models/Qwen3-1.7B-Base \
+  model.mesh.shape='[1, 1]'
+```
+
+For a one-chip run, add these data/model overrides to the launcher:
+
+```bash
+model.model_source=local
+model.model_path=models/Qwen3-1.7B-Base
+tokenizer.tokenizer_path=models/Qwen3-1.7B-Base
+dataset.name=parquet
+dataset.config=null
+dataset.data_files='data/Mixture-of-Thoughts/all/*.parquet'
+model.mesh.shape='[1, 1]'
+```
+
+Orbax checkpoints may use a `gs://` directory directly. Merged export is a
+local-filesystem operation; export locally first, then copy the completed
+directory to GCS with `gcloud storage rsync --recursive`.
 
 ## Smoke test
 

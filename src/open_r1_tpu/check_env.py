@@ -24,8 +24,9 @@ def _version(distribution: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default=DEFAULT_CONFIG)
+    parser.add_argument("overrides", nargs="*")
     args = parser.parse_args()
-    config = load_config(args.config)
+    config = load_config(args.config, args.overrides)
 
     import jax
     import optax
@@ -44,7 +45,10 @@ def main() -> None:
     non_tpu = [str(device) for device in devices if device.platform != "tpu"]
     if non_tpu:
         errors.append(f"non-TPU JAX devices detected: {non_tpu}")
-    if not os.environ.get("HF_TOKEN"):
+    if (
+        config["model"]["model_source"] == "huggingface"
+        and not os.environ.get("HF_TOKEN")
+    ):
         errors.append("HF_TOKEN is unset; Tunix's downloader requires it")
 
     required_api = {
