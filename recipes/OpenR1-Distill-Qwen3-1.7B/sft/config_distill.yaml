@@ -79,7 +79,7 @@ training:
   wandb:
     enabled: true
     # Leave null to use WANDB_ENTITY or the account's default entity.
-    entity: null
+    entity: ainstein-post-training
     mode: online
     group: qwen3-1.7b-reasoning-distillation
     job_type: sft
