@@ -21,6 +21,17 @@ from open_r1_tpu.data import load_reasoning_datasets
 
 LOGGER = logging.getLogger(__name__)
 
+_WANDB_INIT_KEYS = {
+    "entity",
+    "group",
+    "job_type",
+    "mode",
+    "notes",
+    "resume",
+    "save_code",
+    "tags",
+}
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -122,6 +133,26 @@ def _compute_max_steps(config: dict[str, Any], raw_train_size: int | None = None
     accumulation = int(config["training"].get("gradient_accumulation_steps", 1))
     micro_batches = (raw_train_size // batch_size) * epochs
     return max(1, micro_batches // accumulation)
+
+
+def _wandb_backend_kwargs(config: dict[str, Any]) -> dict[str, Any]:
+    """Build W&B initialization arguments without putting credentials in config."""
+    training = config["training"]
+    wandb_config = training.get("wandb", {})
+    if not wandb_config.get("enabled", False):
+        return {"mode": "disabled"}
+
+    kwargs = {
+        key: value
+        for key, value in wandb_config.items()
+        if key in _WANDB_INIT_KEYS and value is not None
+    }
+    kwargs.setdefault("mode", "online")
+    kwargs.setdefault("save_code", True)
+    kwargs["dir"] = training["metrics_log_dir"]
+    # The recipe contains no secrets, so recording it makes runs reproducible.
+    kwargs["config"] = config
+    return kwargs
 
 
 def _create_optimizer(config: dict[str, Any], max_steps: int):
@@ -254,6 +285,7 @@ def run(config: dict[str, Any]) -> None:
         project_name=training.get("project_name", "open-r1-tpu"),
         run_name=training.get("run_name", "reasoning-sft"),
         flush_every_n_steps=int(training.get("flush_every_n_steps", 20)),
+        backend_kwargs={"wandb": _wandb_backend_kwargs(config)},
     )
     trainer = peft_trainer.PeftTrainer(
         model,

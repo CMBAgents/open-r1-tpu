@@ -85,3 +85,16 @@ def validate_config(config: dict[str, Any]) -> None:
             "training.gradient_accumulation_steps must be a positive integer"
         )
 
+    wandb = config["training"].get("wandb", {})
+    if not isinstance(wandb, dict):
+        raise ValueError("training.wandb must be a configuration mapping")
+    if not isinstance(wandb.get("enabled", False), bool):
+        raise ValueError("training.wandb.enabled must be a boolean")
+    mode = wandb.get("mode", "online")
+    if mode not in {"online", "offline", "disabled"}:
+        raise ValueError(
+            "training.wandb.mode must be online, offline, or disabled"
+        )
+    tags = wandb.get("tags", [])
+    if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
+        raise ValueError("training.wandb.tags must be a list of strings")

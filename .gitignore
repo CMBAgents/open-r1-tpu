@@ -221,3 +221,4 @@ __marimo__/
 artifacts/
 data/
 models/
+wandb/

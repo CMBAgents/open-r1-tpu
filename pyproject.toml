@@ -15,6 +15,7 @@ dependencies = [
   "google-tunix @ git+https://github.com/google/tunix.git@984bf89b1117c94406dc43e3dfb8d2a198a6353d",
   "numpy>=1.26",
   "pyyaml>=6.0",
+  "wandb>=0.22.3",
 ]
 
 [project.optional-dependencies]
