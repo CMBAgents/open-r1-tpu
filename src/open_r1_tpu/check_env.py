@@ -97,7 +97,7 @@ def main() -> None:
 
     if config.get("export", {}).get("enabled", False):
         params_module = automodel.get_model_module(
-            config["model"]["model_id"], automodel.ModelModule.PARAMS
+            config["model"]["model_name"], automodel.ModelModule.PARAMS
         )
         if not callable(
             getattr(params_module, "save_lora_merged_model_as_safetensors", None)

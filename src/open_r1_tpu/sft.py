@@ -162,7 +162,7 @@ def _export_merged_lora(
     from tunix.models import automodel
 
     params_module = automodel.get_model_module(
-        config["model"]["model_id"], automodel.ModelModule.PARAMS
+        config["model"]["model_name"], automodel.ModelModule.PARAMS
     )
     save_fn = getattr(params_module, "save_lora_merged_model_as_safetensors", None)
     if save_fn is None:
