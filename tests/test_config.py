@@ -41,6 +41,8 @@ def test_default_recipe_targets_one_32gb_tpu():
     assert config["dataset"]["batch_size"] == 1
     assert config["dataset"]["max_length"] == 1024
     assert config["training"]["gradient_accumulation_steps"] == 8
+    assert config["training"]["project_name"] == "open-r1-tpu"
+    assert config["training"]["wandb"]["entity"] is None
 
 
 def test_invalid_mesh_is_rejected():

@@ -55,10 +55,10 @@ GCS, copy them to the VM's local disk and select the explicit local loaders:
 
 ```bash
 gcloud storage rsync \
-  gs://ainstein-rowan/models/Qwen3-1.7B-Base \
+  gs://your-bucket/models/Qwen3-1.7B-Base \
   models/Qwen3-1.7B-Base --recursive
 gcloud storage rsync \
-  gs://ainstein-rowan/datasets/Mixture-of-Thoughts \
+  gs://your-bucket/datasets/Mixture-of-Thoughts \
   data/Mixture-of-Thoughts --recursive
 
 python -m open_r1_tpu.check_env \
@@ -101,12 +101,12 @@ steps.
 
 ## Weights & Biases
 
-Training logs Tunix metrics to the `ainstein-post-training` W&B project by
-default, including stepped train/eval loss, perplexity, gradient norm, and the
-full resolved recipe. Auxiliary JAX compilation and Orbax checkpoint metrics
-remain in TensorBoard because they do not consistently carry a logical training
-step. Authenticate once on the TPU VM; enter the API key only at the prompt so
-it is not stored in shell history or committed to the repository:
+Training logs Tunix metrics to the `open-r1-tpu` W&B project by default,
+including stepped train/eval loss, perplexity, gradient norm, and the full
+resolved recipe. Auxiliary JAX compilation and Orbax checkpoint metrics remain
+in TensorBoard because they do not consistently carry a logical training step.
+Authenticate once on the TPU VM; enter the API key only at the prompt so it is
+not stored in shell history or committed to the repository:
 
 ```bash
 wandb login
