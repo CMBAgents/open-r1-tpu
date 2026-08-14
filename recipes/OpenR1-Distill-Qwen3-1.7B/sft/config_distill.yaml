@@ -1,0 +1,85 @@
+# TPU v5e-8 reasoning-distillation recipe. Override max_steps/max_examples for
+# smoke runs; increase max_length toward 32768 only after validating HBM usage.
+model:
+  model_name: qwen3-1.7b-base
+  model_id: Qwen/Qwen3-1.7B-Base
+  model_source: huggingface
+  model_path: ""
+  model_download_path: /tmp/open-r1-tpu/models/qwen3-1.7b-base
+  intermediate_ckpt_dir: /tmp/open-r1-tpu/intermediate_ckpt
+  rng_seed: 42
+  model_display: false
+  dtype: bfloat16
+  load_dtype: bfloat16
+  remat_config: DECODER
+  use_flash_attention: true
+  flash_attention_block_size: 1024
+  lora_config:
+    module_path: ".*q_proj|.*k_proj|.*v_proj|.*o_proj|.*gate_proj|.*up_proj|.*down_proj"
+    rank: 64
+    alpha: 64.0
+  mesh:
+    shape: [2, 4]
+    axis_names: [fsdp, tp]
+
+tokenizer:
+  tokenizer_path: Qwen/Qwen3-1.7B-Base
+  tokenizer_type: huggingface
+  add_bos: false
+  add_eos: false
+  chat_template: null
+
+dataset:
+  name: open-r1/Mixture-of-Thoughts
+  config: all
+  train_split: train
+  messages_column: messages
+  batch_size: 8
+  max_length: 8192
+  # Match Open-R1's SFT recipe and provide enough data after length filtering.
+  num_train_epochs: 5
+  max_examples: null
+  eval_fraction: 0.0
+  seed: 42
+  assistant_only_loss: true
+  require_reasoning_tags: true
+  reasoning_start: <think>
+  reasoning_end: </think>
+  system_prompt: >-
+    You are an assistant that solves problems by reasoning carefully before
+    giving the final answer. Put your detailed reasoning between <think> and
+    </think>, then give the concise final solution after </think>.
+
+optimizer:
+  learning_rate: 4.0e-5
+  warmup_ratio: 0.03
+  min_lr_ratio: 0.1
+  b1: 0.9
+  b2: 0.99
+  eps: 1.0e-8
+  weight_decay: 0.1
+  max_grad_norm: 0.2
+
+training:
+  # Full Open-R1 runs should tune this for the selected dataset and topology.
+  # A finite value also makes checkpoint resume behavior unambiguous.
+  max_steps: 5000
+  gradient_accumulation_steps: 8
+  eval_every_n_steps: 500
+  checkpoint_dir: artifacts/OpenR1-Distill-Qwen3-1.7B/checkpoints
+  checkpointing_options:
+    save_interval_steps: 250
+    max_to_keep: 2
+    enable_async_checkpointing: true
+    timeout_secs: 1200
+  metrics_log_dir: artifacts/OpenR1-Distill-Qwen3-1.7B/logs
+  project_name: open-r1-tpu
+  run_name: qwen3-1.7b-reasoning-sft
+  flush_every_n_steps: 10
+  data_sharding_axis: [fsdp]
+  max_inflight_computations: 1
+
+export:
+  enabled: true
+  overwrite: true
+  output_dir: artifacts/OpenR1-Distill-Qwen3-1.7B/merged
