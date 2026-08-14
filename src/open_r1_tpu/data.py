@@ -189,6 +189,8 @@ def build_grain_dataset(
     dataset = grain.MapDataset.source(data_source)
     if shuffle:
         dataset = dataset.shuffle(seed=seed)
+    if num_epochs > 1:
+        dataset = dataset.repeat(num_epochs)
     dataset = dataset.map(
         lambda record: encode_reasoning_example(
             record, tokenizer, **encode_kwargs
@@ -201,9 +203,10 @@ def build_grain_dataset(
             input_mask=example.input_mask,
         )
     )
+    # Filtered MapDatasets no longer have a one-to-one index mapping, so Grain
+    # requires conversion to an IterDataset before batching.
+    dataset = dataset.to_iter_dataset()
     dataset = dataset.batch(batch_size=batch_size, drop_remainder=True)
-    if num_epochs > 1:
-        dataset = dataset.repeat(num_epochs)
     return dataset
 
 

@@ -41,6 +41,7 @@ def _model_config(config: dict[str, Any]) -> dict[str, Any]:
 
 def _create_model(config: dict[str, Any], mesh: Any) -> tuple[Any, str]:
     """Create a Tunix model from the Hub or an already-staged local directory."""
+    import jax
     import jax.numpy as jnp
     from tunix.cli.utils import model as model_utils
     from tunix.models import automodel
@@ -91,7 +92,7 @@ def _create_model(config: dict[str, Any], mesh: Any) -> tuple[Any, str]:
             load_dtype = getattr(jnp, load_dtype)
         except AttributeError as exc:
             raise ValueError(f"Invalid load_dtype: {load_dtype}") from exc
-    with mesh:
+    with jax.set_mesh(mesh):
         model = automodel.create_model_from_safe_tensors(
             model_name,
             str(local_path),
@@ -321,7 +322,7 @@ def run(config: dict[str, Any]) -> None:
         mesh_shape,
         max_steps,
     )
-    with mesh:
+    with jax.set_mesh(mesh):
         trainer.train(train_ds, eval_ds)
 
     if model_config["model_source"] == "huggingface":
