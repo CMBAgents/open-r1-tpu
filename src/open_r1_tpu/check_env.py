@@ -69,6 +69,11 @@ def main() -> None:
         for name, available in required_api.items()
         if not available
     )
+    if str(config["training"]["checkpoint_dir"]).startswith("gs://"):
+        try:
+            import gcsfs  # noqa: F401
+        except ImportError:
+            errors.append("GCS checkpointing requires the gcsfs package")
 
     tokenizer = model_utils.create_tokenizer(
         config["tokenizer"], config["tokenizer"]["tokenizer_path"]

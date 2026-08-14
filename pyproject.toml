@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 license = {text = "Apache-2.0"}
 dependencies = [
   "datasets>=3.0",
+  "gcsfs>=2024.6",
   "google-tunix @ git+https://github.com/google/tunix.git@984bf89b1117c94406dc43e3dfb8d2a198a6353d",
   "numpy>=1.26",
   "pyyaml>=6.0",
@@ -25,4 +26,3 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
-
