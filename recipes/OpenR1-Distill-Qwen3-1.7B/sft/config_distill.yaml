@@ -73,7 +73,7 @@ training:
     enable_async_checkpointing: true
     timeout_secs: 1200
   metrics_log_dir: artifacts/OpenR1-Distill-Qwen3-1.7B/logs
-  project_name: open-r1-tpu
+  project_name: ainstein-post-training
   run_name: qwen3-1.7b-reasoning-sft
   flush_every_n_steps: 10
   wandb:
