@@ -108,8 +108,13 @@ training:
     output_path: artifacts/OpenR1-Distill-Qwen3-1.7B/transcripts.jsonl
     # Leave null to use the built-in prompt set.
     prompts: null
-    # Defaults to dataset.max_length + max_new_tokens.
+    # Defaults to max_prompt_length + max_new_tokens.
     cache_size: null
+    # Prompts are padded to this length before prefill. Leave null to derive it
+    # from model.flash_attention_block_size: the splash attention kernel
+    # requires its block size to divide the prompt length, and short prompts
+    # would otherwise pad to a smaller power of two and fail.
+    max_prompt_length: null
   data_sharding_axis: [fsdp]
   max_inflight_computations: 1
 

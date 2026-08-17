@@ -179,3 +179,87 @@ def test_sample_transcripts_summarizes_every_prompt():
     assert [record["step"] for record in records] == [500, 500]
     assert [record["reasoning_balanced"] for record in records] == [True, False]
     assert [record["generated_tokens"] for record in records] == [3, 2]
+
+
+@pytest.mark.parametrize(
+    ("model_config", "expected"),
+    [
+        ({"use_flash_attention": True, "flash_attention_block_size": 1024}, 1024),
+        ({"use_flash_attention": True, "flash_attention_block_size": 256}, 256),
+        # Rounded up to a power of two so the block still divides the prefill.
+        ({"use_flash_attention": True, "flash_attention_block_size": 768}, 1024),
+        ({"use_flash_attention": True}, 1024),
+        # Without the kernel there is no divisibility rule to satisfy.
+        ({"use_flash_attention": False}, None),
+        ({}, None),
+    ],
+)
+def test_prompt_length_satisfies_the_splash_kernel(model_config, expected):
+    assert transcripts.flash_attention_prompt_length(model_config) == expected
+
+
+def test_default_settings_pad_prompts_to_the_attention_block():
+    config = load_config(RECIPE)
+    settings = transcripts.resolve_settings(config)
+
+    # Short prompts would otherwise pad to 128 and raise
+    # "q_block_size=1024 should divide q_seq_len=128".
+    assert settings["max_prompt_length"] == (
+        config["model"]["flash_attention_block_size"]
+    )
+    # The cache has to cover the padded prompt plus the completion.
+    assert settings["cache_size"] == (
+        settings["max_prompt_length"] + settings["max_new_tokens"]
+    )
+
+
+def test_disabling_flash_attention_leaves_prompt_padding_to_the_sampler():
+    config = load_config(RECIPE, ["model.use_flash_attention=false"])
+    settings = transcripts.resolve_settings(config)
+
+    assert settings["max_prompt_length"] is None
+    assert settings["cache_size"] == (
+        config["dataset"]["max_length"] + settings["max_new_tokens"]
+    )
+
+
+def test_sampler_receives_the_padded_prompt_length():
+    settings = {
+        "prompts": ["first"],
+        "system_prompt": None,
+        "max_new_tokens": 64,
+        "temperature": 0.0,
+        "seed": 42,
+        "max_prompt_length": 1024,
+        "reasoning_start": "<think>",
+        "reasoning_end": "</think>",
+    }
+    captured = {}
+
+    def fake_sampler(**kwargs):
+        captured.update(kwargs)
+        return FakeSamplerOutput(text=["<think>a</think>A"], tokens=[[1, 2]])
+
+    transcripts.sample_transcripts(fake_sampler, FakeTokenizer(), settings, step=2)
+    assert captured["max_prompt_length"] == 1024
+
+
+def test_sampler_omits_prompt_length_when_unset():
+    settings = {
+        "prompts": ["first"],
+        "system_prompt": None,
+        "max_new_tokens": 64,
+        "temperature": 0.0,
+        "seed": 42,
+        "max_prompt_length": None,
+        "reasoning_start": "<think>",
+        "reasoning_end": "</think>",
+    }
+    captured = {}
+
+    def fake_sampler(**kwargs):
+        captured.update(kwargs)
+        return FakeSamplerOutput(text=["ok"], tokens=[[1]])
+
+    transcripts.sample_transcripts(fake_sampler, FakeTokenizer(), settings, step=2)
+    assert "max_prompt_length" not in captured

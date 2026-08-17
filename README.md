@@ -253,9 +253,15 @@ Tunable values:
 ```
 
 Greedy decoding (`temperature: 0.0`) is the default so successive samples stay
-comparable across steps. `cache_size` defaults to
-`dataset.max_length + max_new_tokens`; lower it to save HBM if the prompts are
-short.
+comparable across steps.
+
+Prompts are padded to `max_prompt_length` before prefill, which defaults to
+`model.flash_attention_block_size`. This is not optional padding: the splash
+attention kernel requires its block size to divide the prompt length, and left
+to itself the sampler pads short prompts to the next power of two, which fails
+with `q_block_size=1024 should divide q_seq_len=128`. `cache_size` then defaults
+to `max_prompt_length + max_new_tokens`, since the sampler budgets both. If you
+disable flash attention, prompt padding reverts to the sampler's own choice.
 
 ## Weights & Biases
 

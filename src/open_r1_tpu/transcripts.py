@@ -29,6 +29,25 @@ DEFAULT_PROMPTS = (
 )
 
 
+def flash_attention_prompt_length(model_config: dict[str, Any]) -> int | None:
+    """Return a prefill length the splash attention kernel accepts.
+
+    The kernel requires the flash-attention block size to divide the prompt
+    length. Left to itself the sampler pads prompts to the next power of two,
+    which for short inspection prompts is smaller than one block and fails with
+    "q_block_size=1024 should divide q_seq_len=128". Padding to a power of two
+    at least as large as the block fixes it for every prompt: a longer prompt is
+    padded to a larger power of two, which a power-of-two block still divides.
+    """
+    if not model_config.get("use_flash_attention", False):
+        return None
+    block_size = int(model_config.get("flash_attention_block_size", 1024))
+    prompt_length = 1
+    while prompt_length < block_size:
+        prompt_length *= 2
+    return prompt_length
+
+
 def resolve_settings(config: dict[str, Any]) -> dict[str, Any]:
     """Normalize ``training.transcripts`` and apply defaults."""
     training = config["training"]
@@ -37,6 +56,12 @@ def resolve_settings(config: dict[str, Any]) -> dict[str, Any]:
 
     max_new_tokens = int(raw.get("max_new_tokens", 256))
     prompts = [str(prompt) for prompt in (raw.get("prompts") or DEFAULT_PROMPTS)]
+    max_prompt_length = raw.get("max_prompt_length") or flash_attention_prompt_length(
+        config["model"]
+    )
+    # The cache must hold the padded prompt as well as the completion, because
+    # the sampler budgets max_prompt_length + max_generation_steps.
+    prompt_budget = int(max_prompt_length or dataset["max_length"])
     output_path = raw.get("output_path") or str(
         Path(training["metrics_log_dir"]).parent / "transcripts.jsonl"
     )
@@ -47,11 +72,12 @@ def resolve_settings(config: dict[str, Any]) -> dict[str, Any]:
         "temperature": float(raw.get("temperature", 0.0)),
         "seed": int(raw.get("seed", dataset.get("seed", 42))),
         # The cache holds the rendered prompt as well as the completion.
+        "max_prompt_length": (
+            int(max_prompt_length) if max_prompt_length else None
+        ),
         # An explicit null in the recipe means "derive it", so treat a missing
         # key and a null value the same way.
-        "cache_size": int(
-            raw.get("cache_size") or int(dataset["max_length"]) + max_new_tokens
-        ),
+        "cache_size": int(raw.get("cache_size") or prompt_budget + max_new_tokens),
         "log_to_wandb": bool(raw.get("log_to_wandb", True)),
         "prompts": prompts,
         "output_path": output_path,
@@ -163,12 +189,17 @@ def sample_transcripts(
         render_prompt(tokenizer, prompt, settings["system_prompt"])
         for prompt in settings["prompts"]
     ]
-    output = sampler(
-        input_strings=rendered,
-        max_generation_steps=int(settings["max_new_tokens"]),
-        temperature=float(settings["temperature"]),
-        seed=int(settings["seed"]),
-    )
+    sampler_kwargs: dict[str, Any] = {
+        "input_strings": rendered,
+        "max_generation_steps": int(settings["max_new_tokens"]),
+        "temperature": float(settings["temperature"]),
+        "seed": int(settings["seed"]),
+    }
+    if settings.get("max_prompt_length"):
+        # Also pins the prefill shape, so prompts of differing lengths do not
+        # each trigger their own compilation.
+        sampler_kwargs["max_prompt_length"] = int(settings["max_prompt_length"])
+    output = sampler(**sampler_kwargs)
     completions = list(output.text)
     token_counts: list[int | None] = [None] * len(completions)
     tokens = getattr(output, "tokens", None)
