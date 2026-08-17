@@ -15,7 +15,14 @@ safetensors directory.
 ## TPU VM setup
 
 Use standard CPython 3.13 (the repository default is 3.13.14) on a TPU VM with
-one visible device. Do not use the free-threaded `3.13t` build:
+one visible device. Do not use the free-threaded `3.13t` build.
+
+`scripts/setup_tpu_vm.sh` performs the whole setup on a fresh VM: it installs
+`uv`, the interpreter pinned in `.python-version`, the virtual environment, and
+the project, then checks that JAX sees exactly one TPU and runs the unit
+suite. It is re-runnable; pass `--recreate` to rebuild `.venv` from scratch.
+
+To do the same by hand:
 
 ```bash
 python3.13 -m venv .venv

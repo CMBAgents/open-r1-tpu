@@ -168,6 +168,9 @@ subsequent steps.
 - Target Python 3.13 and prefer typed, small functions with explicit failure
   messages for conditions that would waste TPU time.
 - Preserve existing user changes and avoid unrelated refactors.
+- Keep committed defaults neutral and deployment-independent. W&B entity and
+  project names, bucket names, hostnames, and paths belong in the environment
+  or in dotted command-line overrides, not in tracked files.
 - Do not commit generated datasets, downloaded model weights, checkpoints,
   logs, profiler output, secrets, or merged artifacts.
 - Update `README.md`, the recipe, tests, and preflight together when a behavior
