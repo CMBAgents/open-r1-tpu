@@ -1,6 +1,8 @@
 import importlib.util
+import sys
 from collections import UserDict
 from pathlib import Path
+from types import SimpleNamespace
 
 
 SCRIPT_PATH = Path(__file__).parents[1] / "scripts" / "chat_qwen_tpu.py"
@@ -8,6 +10,17 @@ SPEC = importlib.util.spec_from_file_location("chat_qwen_tpu", SCRIPT_PATH)
 assert SPEC is not None and SPEC.loader is not None
 chat = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(chat)
+sys.modules["chat_qwen_tpu"] = chat
+
+COMPLETION_SCRIPT_PATH = (
+    Path(__file__).parents[1] / "scripts" / "complete_qwen_tpu.py"
+)
+COMPLETION_SPEC = importlib.util.spec_from_file_location(
+    "complete_qwen_tpu", COMPLETION_SCRIPT_PATH
+)
+assert COMPLETION_SPEC is not None and COMPLETION_SPEC.loader is not None
+completion = importlib.util.module_from_spec(COMPLETION_SPEC)
+COMPLETION_SPEC.loader.exec_module(completion)
 
 
 class FakeTokenizer:
@@ -85,3 +98,28 @@ def test_prompt_token_count_accepts_a_batch_encoding_mapping():
     assert chat.prompt_token_count(
         MappingFakeTokenizer(), [{"role": "user", "content": "Hi"}], ""
     ) == len("user:Hi")
+
+
+class FakeCompletionSampler:
+    def __init__(self):
+        self.kwargs = None
+
+    def tokenize(self, prompt):
+        return list(range(len(prompt)))
+
+    def __call__(self, **kwargs):
+        self.kwargs = kwargs
+        return SimpleNamespace(text=[" Paris."])
+
+
+def test_raw_completion_passes_the_prompt_unchanged():
+    sampler = FakeCompletionSampler()
+    args = SimpleNamespace(max_new_tokens=100, max_prompt_length=2048, seed=42)
+
+    generated = completion.generate_completion(
+        sampler, "The capital of France is", args
+    )
+
+    assert generated == " Paris."
+    assert sampler.kwargs["input_strings"] == ["The capital of France is"]
+    assert sampler.kwargs["max_generation_steps"] == 100

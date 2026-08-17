@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import warnings
 from collections.abc import Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,19 @@ from typing import Any
 DEFAULT_MODEL_PATH = "models/Qwen3-1.7B-Base"
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 FLASH_ATTENTION_BLOCK_SIZE = 1024
+
+
+@contextmanager
+def tunix_mesh_context(mesh: Any):
+    """Activate the legacy physical mesh still read by the pinned Tunix."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"`with mesh:` context manager has been deprecated.*",
+            category=DeprecationWarning,
+        )
+        with mesh:
+            yield
 
 
 def parse_args() -> argparse.Namespace:
@@ -313,14 +327,8 @@ def main() -> None:
         # The pinned Tunix sampler still reads JAX's legacy thread-local
         # physical mesh, just like PeftTrainer. jax.set_mesh(mesh) alone leaves
         # that legacy mesh empty and fails when the sampler resolves P("tp").
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore",
-                message=r"`with mesh:` context manager has been deprecated.*",
-                category=DeprecationWarning,
-            )
-            with mesh:
-                chat_loop(args, tokenizer, sampler)
+        with tunix_mesh_context(mesh):
+            chat_loop(args, tokenizer, sampler)
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         raise SystemExit(f"error: {exc}") from exc
 
