@@ -109,7 +109,9 @@ def validate_options(args: argparse.Namespace) -> None:
     args.model_path = str(model_path)
 
 
-def model_config(model_path: str, seed: int) -> dict[str, Any]:
+def model_config(
+    model_path: str, seed: int, *, use_flash_attention: bool = True
+) -> dict[str, Any]:
     """Return the inference-safe subset of the project's Qwen TPU settings."""
     return {
         "model_name": "qwen3-1.7b-base",
@@ -119,7 +121,7 @@ def model_config(model_path: str, seed: int) -> dict[str, Any]:
         "dtype": "bfloat16",
         "load_dtype": "bfloat16",
         "remat_config": "DECODER",
-        "use_flash_attention": True,
+        "use_flash_attention": use_flash_attention,
         "flash_attention_block_size": FLASH_ATTENTION_BLOCK_SIZE,
         "mesh": {"shape": [1, 1], "axis_names": ["fsdp", "tp"]},
     }
@@ -214,7 +216,9 @@ def fit_history(
     return retained, count, removed_turns
 
 
-def load_runtime(args: argparse.Namespace) -> tuple[Any, Any, Any, Any]:
+def load_runtime(
+    args: argparse.Namespace, *, use_flash_attention: bool = True
+) -> tuple[Any, Any, Any, Any]:
     """Create one TPU mesh, the local model, its tokenizer, and a sampler."""
     import jax
     from tunix.cli.utils import model as model_utils
@@ -230,12 +234,16 @@ def load_runtime(args: argparse.Namespace) -> tuple[Any, Any, Any, Any]:
         )
 
     mesh = mesh_utils.create_mesh((1, 1), ("fsdp", "tp"))
-    # Reuse the application's local safetensors loader so chat and SFT use
-    # the same Qwen architecture, dtype, and flash-attention settings.
+    # Reuse the application's local safetensors loader so the inference clients
+    # and SFT use the same Qwen architecture and dtype.
     from open_r1_tpu.sft import _create_model
 
     config = {
-        "model": model_config(args.model_path, args.seed),
+        "model": model_config(
+            args.model_path,
+            args.seed,
+            use_flash_attention=use_flash_attention,
+        ),
         "tokenizer": tokenizer_config(args.model_path),
     }
     model, tokenizer_path = _create_model(config, mesh)

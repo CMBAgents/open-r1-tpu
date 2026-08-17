@@ -213,9 +213,11 @@ python scripts/complete_qwen_tpu.py \
 ```
 
 Generation is greedy and stops at the model's `<|endoftext|>` token or the
-configured token limit. `--max-prompt-length` defaults to 2048 and must be a
-multiple of 1024 because the splash-attention block size must divide the fixed
-prefill length.
+configured token limit. `--max-prompt-length` defaults to 2048. The completion
+client deliberately uses ordinary masked attention: the pinned Tunix sampler
+left-pads fixed-length prompts but does not pass the segment IDs that Qwen's
+splash-attention path needs to exclude padding. This is slower than splash
+attention, but prevents pad/EOS embeddings from changing the continuation.
 
 `chat_qwen_tpu.py` remains available for inspecting role-formatted prompts, but
 it applies the tokenizer's system/user/assistant chat template. Base weights

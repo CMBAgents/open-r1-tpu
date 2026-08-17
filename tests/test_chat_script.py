@@ -123,3 +123,34 @@ def test_raw_completion_passes_the_prompt_unchanged():
     assert generated == " Paris."
     assert sampler.kwargs["input_strings"] == ["The capital of France is"]
     assert sampler.kwargs["max_generation_steps"] == 100
+
+
+def test_completion_runtime_disables_flash_attention(monkeypatch):
+    sentinel = object()
+    captured = {}
+
+    def fake_load_runtime(args, *, use_flash_attention):
+        captured["args"] = args
+        captured["use_flash_attention"] = use_flash_attention
+        return sentinel
+
+    monkeypatch.setattr(completion, "load_runtime", fake_load_runtime)
+    args = SimpleNamespace()
+
+    assert completion.load_completion_runtime(args) is sentinel
+    assert captured == {"args": args, "use_flash_attention": False}
+
+
+def test_completion_prompt_length_need_not_match_splash_block(tmp_path):
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    (model_path / "model.safetensors").touch()
+    args = SimpleNamespace(
+        model_path=str(model_path),
+        max_new_tokens=100,
+        max_prompt_length=17,
+    )
+
+    completion.validate_options(args)
+
+    assert args.model_path == str(model_path.resolve())

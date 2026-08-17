@@ -19,7 +19,6 @@ from typing import Any
 
 from chat_qwen_tpu import (
     DEFAULT_MODEL_PATH,
-    FLASH_ATTENTION_BLOCK_SIZE,
     load_runtime,
     tunix_mesh_context,
 )
@@ -78,12 +77,6 @@ def validate_options(args: argparse.Namespace) -> None:
         raise ValueError("--max-new-tokens must be positive")
     if args.max_prompt_length <= 0:
         raise ValueError("--max-prompt-length must be positive")
-    if args.max_prompt_length % FLASH_ATTENTION_BLOCK_SIZE != 0:
-        raise ValueError(
-            "--max-prompt-length must be divisible by "
-            f"{FLASH_ATTENTION_BLOCK_SIZE} when flash attention is enabled"
-        )
-
     model_path = Path(args.model_path).expanduser().resolve()
     if not model_path.is_dir():
         raise FileNotFoundError(f"Model directory does not exist: {model_path}")
@@ -92,6 +85,16 @@ def validate_options(args: argparse.Namespace) -> None:
             f"No model.safetensors found in local model directory: {model_path}"
         )
     args.model_path = str(model_path)
+
+
+def load_completion_runtime(args: argparse.Namespace) -> tuple[Any, Any, Any, Any]:
+    """Load Qwen with the padding-aware, non-splash attention path.
+
+    The pinned Tunix sampler left-pads fixed-length prompts but does not pass
+    segment IDs into Qwen splash attention, so splash would expose real prompt
+    tokens to pad/EOS embeddings. Ordinary attention consumes the padding mask.
+    """
+    return load_runtime(args, use_flash_attention=False)
 
 
 def generate_completion(
@@ -150,7 +153,7 @@ def main() -> None:
     try:
         validate_options(args)
         print(f"Loading local model from {args.model_path} ...")
-        mesh, _tokenizer, sampler, _model = load_runtime(args)
+        mesh, _tokenizer, sampler, _model = load_completion_runtime(args)
         print("Model loaded. The first completion will compile the TPU decode path.")
         with tunix_mesh_context(mesh):
             if args.prompt is None:
