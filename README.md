@@ -187,6 +187,33 @@ Orbax checkpoints may use a `gs://` directory directly. Merged export is a
 local-filesystem operation; export locally first, then copy the completed
 directory to GCS with `gcloud storage rsync --recursive`.
 
+### Chat with the local base model
+
+After the model has been copied to `models/Qwen3-1.7B-Base`, chat with it
+directly on the TPU VM. This uses the same Tunix/JAX local-safetensors loader
+as SFT and does not download weights or contact the Hub:
+
+```bash
+source .venv/bin/activate
+python scripts/chat_qwen_tpu.py --model-path models/Qwen3-1.7B-Base
+```
+
+The first reply compiles the TPU decode path and is slower than later replies.
+The client retains as many whole turns as fit in its 1024-token prompt budget;
+use `/reset` to clear history, `/exit` to quit, or raise the fixed prefill size
+when enough HBM is available:
+
+```bash
+python scripts/chat_qwen_tpu.py \
+  --model-path models/Qwen3-1.7B-Base \
+  --max-prompt-length 2048 \
+  --max-new-tokens 512
+```
+
+`--max-prompt-length` must be a multiple of 1024 because the splash-attention
+kernel requires its block size to divide the prefill length. Pass
+`--temperature 0` for greedy, repeatable decoding.
+
 ## Smoke test
 
 Start with a short run before allocating a full training job:
