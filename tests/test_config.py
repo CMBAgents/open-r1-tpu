@@ -166,3 +166,28 @@ def test_default_recipe_checkpoint_dir_resolves_to_an_absolute_path():
     assert Path(
         _absolute_checkpoint_dir(config["training"]["checkpoint_dir"])
     ).is_absolute()
+
+
+def test_default_recipe_has_a_bounded_eval_split():
+    config = load_config(RECIPE)
+    # Without a held-out split, train loss is the only signal there is.
+    assert config["dataset"]["eval_fraction"] > 0.0
+    assert config["dataset"]["eval_max_examples"] == 64
+
+
+@pytest.mark.parametrize(
+    ("override", "error"),
+    [
+        ("dataset.eval_fraction=1.0", "eval_fraction"),
+        ("dataset.eval_fraction=-0.1", "eval_fraction"),
+        ("dataset.eval_max_examples=0", "eval_max_examples"),
+        ("training.transcripts.enabled=maybe", "enabled"),
+        ("training.transcripts.every_n_steps=0", "every_n_steps"),
+        ("training.transcripts.max_new_tokens=-1", "max_new_tokens"),
+        ("training.transcripts.prompts=[]", "prompts"),
+        ("training.transcripts.prompts=[1, 2]", "prompts"),
+    ],
+)
+def test_invalid_inspection_config_is_rejected(override, error):
+    with pytest.raises(ValueError, match=error):
+        load_config(RECIPE, [override])

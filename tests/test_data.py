@@ -129,3 +129,107 @@ def test_local_parquet_data_files_are_forwarded(monkeypatch):
         "split": "train",
         "data_files": "data/Mixture-of-Thoughts/all/*.parquet",
     }
+
+
+def test_eval_split_is_capped_to_a_bounded_number_of_steps(monkeypatch):
+    class FakeSplit:
+        def __init__(self, size):
+            self.size = size
+            self.selected = None
+
+        def __len__(self):
+            return self.size
+
+        def select(self, indices):
+            self.selected = list(indices)
+            return self
+
+    class FakeRaw:
+        def __init__(self):
+            self.train = FakeSplit(900)
+            self.eval = FakeSplit(100)
+            self.split_kwargs = None
+
+        def __len__(self):
+            return 1000
+
+        def train_test_split(self, **kwargs):
+            self.split_kwargs = kwargs
+            return {"train": self.train, "test": self.eval}
+
+    raw = FakeRaw()
+    monkeypatch.setitem(
+        sys.modules, "datasets", SimpleNamespace(load_dataset=lambda *a, **k: raw)
+    )
+    monkeypatch.setattr(
+        data_module,
+        "build_grain_dataset",
+        lambda data_source, *args, **kwargs: data_source,
+    )
+
+    train_ds, eval_ds = data_module.load_reasoning_datasets(
+        {
+            "name": "parquet",
+            "config": None,
+            "batch_size": 1,
+            "max_length": 128,
+            "eval_fraction": 0.1,
+            "eval_max_examples": 16,
+            "seed": 7,
+        },
+        FakeTokenizer(),
+    )
+
+    assert train_ds is raw.train
+    assert eval_ds is raw.eval
+    assert raw.split_kwargs == {"test_size": 0.1, "seed": 7}
+    # A tenth of a large corpus would otherwise run for thousands of steps.
+    assert raw.eval.selected == list(range(16))
+
+
+def test_eval_split_cap_never_exceeds_the_split(monkeypatch):
+    class FakeSplit:
+        def __init__(self, size):
+            self.size = size
+            self.selected = None
+
+        def __len__(self):
+            return self.size
+
+        def select(self, indices):
+            self.selected = list(indices)
+            return self
+
+    class FakeRaw:
+        def __init__(self):
+            self.train = FakeSplit(9)
+            self.eval = FakeSplit(4)
+
+        def __len__(self):
+            return 13
+
+        def train_test_split(self, **kwargs):
+            return {"train": self.train, "test": self.eval}
+
+    raw = FakeRaw()
+    monkeypatch.setitem(
+        sys.modules, "datasets", SimpleNamespace(load_dataset=lambda *a, **k: raw)
+    )
+    monkeypatch.setattr(
+        data_module,
+        "build_grain_dataset",
+        lambda data_source, *args, **kwargs: data_source,
+    )
+
+    data_module.load_reasoning_datasets(
+        {
+            "name": "parquet",
+            "config": None,
+            "batch_size": 1,
+            "max_length": 128,
+            "eval_fraction": 0.3,
+            "eval_max_examples": 64,
+        },
+        FakeTokenizer(),
+    )
+    assert raw.eval.selected == list(range(4))

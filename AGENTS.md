@@ -29,6 +29,7 @@ The default path is:
 - `src/open_r1_tpu/sft.py`: model creation, LoRA SFT, optimizer, checkpointing,
   and merged export.
 - `src/open_r1_tpu/check_env.py`: target-TPU environment preflight.
+- `src/open_r1_tpu/transcripts.py`: periodic free-running sample transcripts.
 - `recipes/`: versioned model and training configurations.
 - `scripts/setup_tpu_vm.sh`: uv-based TPU VM environment provisioning.
 - `scripts/copy_gcs_bucket_data.sh`: copy GCS bucket data to local disk.
@@ -54,9 +55,16 @@ The default path is:
   Never silently fall back to full-model fine-tuning.
 - Preserve denominator-aware `LossOutput`/`WeightedMetric` normalization so
   gradient accumulation weights tokens correctly across microbatches.
-- Keep W&B restricted to stepped `train/*` and `eval/*` metrics. Raw global
-  JAX/Orbax events may omit `step`; Metrax maps those events to step zero and
-  causes W&B to discard them after training advances.
+- Keep *scalar* W&B logging restricted to stepped `train/*` and `eval/*`
+  metrics. Raw global JAX/Orbax events may omit `step`; Metrax maps those
+  events to step zero and causes W&B to discard them after training advances.
+  Transcript tables are text and cannot travel through that scalar path at all,
+  so they are logged straight to the W&B run with the real training step, which
+  preserves the ordering the scalar filter exists to protect.
+- Keep qualitative sampling optional and non-fatal. Free-running generation adds
+  a decode compilation and a KV cache to a validated single-device memory
+  profile, so it stays disabled by default, and any sampling failure must
+  disable transcripts and let training continue rather than end the run.
 - Treat checkpoint, model-cache, dataset, and export paths as potentially
   large. Keep `artifacts/`, `data/`, and `models/` untracked.
 - Maintain the export-path safety checks. Merged export must never replace the

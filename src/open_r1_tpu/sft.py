@@ -15,6 +15,7 @@ import math
 from pathlib import Path
 from typing import Any
 
+from open_r1_tpu import transcripts
 from open_r1_tpu.config import load_config
 from open_r1_tpu.data import load_reasoning_datasets
 
@@ -413,6 +414,21 @@ def run(config: dict[str, Any]) -> None:
     trainer = trainer.with_gen_model_input_fn(gen_model_input).with_loss_fn(
         sparse_causal_lm_loss
     )
+
+    transcript_settings = transcripts.resolve_settings(config)
+    if transcript_settings["enabled"]:
+        LOGGER.info(
+            "Transcripts enabled: %d prompt(s) every %d steps to %s",
+            len(transcript_settings["prompts"]),
+            transcript_settings["every_n_steps"],
+            transcript_settings["output_path"],
+        )
+        # Unlike with_loss_fn, with_training_hooks returns None rather than the
+        # trainer, so it must not be chained.
+        trainer.with_training_hooks(
+            transcripts.create_training_hooks(model, tokenizer, transcript_settings)
+        )
+
     LOGGER.info(
         "Starting reasoning SFT: model=%s mesh=%s max_steps=%d",
         config["model"]["model_id"],

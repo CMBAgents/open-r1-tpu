@@ -98,3 +98,33 @@ def validate_config(config: dict[str, Any]) -> None:
     tags = wandb.get("tags", [])
     if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
         raise ValueError("training.wandb.tags must be a list of strings")
+
+    eval_fraction = config["dataset"].get("eval_fraction", 0.0)
+    if not isinstance(eval_fraction, (int, float)) or not 0.0 <= eval_fraction < 1.0:
+        raise ValueError("dataset.eval_fraction must be in [0.0, 1.0)")
+    eval_max_examples = config["dataset"].get("eval_max_examples")
+    if eval_max_examples is not None and (
+        not isinstance(eval_max_examples, int) or eval_max_examples <= 0
+    ):
+        raise ValueError(
+            "dataset.eval_max_examples must be a positive integer or null"
+        )
+
+    transcripts = config["training"].get("transcripts", {})
+    if not isinstance(transcripts, dict):
+        raise ValueError("training.transcripts must be a configuration mapping")
+    if not isinstance(transcripts.get("enabled", False), bool):
+        raise ValueError("training.transcripts.enabled must be a boolean")
+    for key in ("every_n_steps", "max_new_tokens"):
+        value = transcripts.get(key, 1)
+        if not isinstance(value, int) or value <= 0:
+            raise ValueError(f"training.transcripts.{key} must be a positive integer")
+    prompts = transcripts.get("prompts")
+    if prompts is not None and (
+        not isinstance(prompts, list)
+        or not prompts
+        or not all(isinstance(prompt, str) for prompt in prompts)
+    ):
+        raise ValueError(
+            "training.transcripts.prompts must be a non-empty list of strings or null"
+        )

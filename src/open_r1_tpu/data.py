@@ -228,6 +228,14 @@ def load_reasoning_datasets(config: dict[str, Any], tokenizer: Any) -> tuple[Any
             test_size=eval_fraction, seed=int(config.get("seed", 42))
         )
         train_source, eval_source = split["train"], split["test"]
+        # A fraction of a large corpus is a large evaluation set, and the
+        # trainer walks all of it at every eval. Cap it so evaluation costs a
+        # bounded number of steps rather than scaling with the corpus.
+        eval_max_examples = config.get("eval_max_examples")
+        if eval_max_examples is not None:
+            eval_source = eval_source.select(
+                range(min(int(eval_max_examples), len(eval_source)))
+            )
     else:
         train_source, eval_source = raw, None
 

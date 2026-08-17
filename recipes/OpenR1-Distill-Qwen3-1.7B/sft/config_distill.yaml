@@ -42,7 +42,11 @@ dataset:
   # Match Open-R1's SFT recipe and provide enough data after length filtering.
   num_train_epochs: 5
   max_examples: null
-  eval_fraction: 0.0
+  # A held-out split is the only quantitative check on overfitting. The cap
+  # keeps evaluation to a bounded number of steps: a fraction of a corpus this
+  # size would otherwise take thousands of steps at batch size one.
+  eval_fraction: 0.01
+  eval_max_examples: 64
   seed: 42
   assistant_only_loss: true
   require_reasoning_tags: true
@@ -89,6 +93,23 @@ training:
     tags: [tpu, sft, lora, qwen3]
     resume: allow
     save_code: true
+  # Free-running samples for qualitative inspection. Disabled by default: they
+  # add an autoregressive decode, a second XLA compilation, and a KV cache to a
+  # single-device memory profile validated without them. Enable with
+  # training.transcripts.enabled=true once you have HBM headroom to spare.
+  transcripts:
+    enabled: false
+    every_n_steps: 500
+    max_new_tokens: 256
+    # Greedy decoding keeps successive samples comparable across steps.
+    temperature: 0.0
+    seed: 42
+    log_to_wandb: true
+    output_path: artifacts/OpenR1-Distill-Qwen3-1.7B/transcripts.jsonl
+    # Leave null to use the built-in prompt set.
+    prompts: null
+    # Defaults to dataset.max_length + max_new_tokens.
+    cache_size: null
   data_sharding_axis: [fsdp]
   max_inflight_computations: 1
 

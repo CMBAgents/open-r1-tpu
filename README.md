@@ -202,6 +202,61 @@ Start with a short run before allocating a full training job:
 The first step includes JAX/XLA compilation and will be much slower than later
 steps.
 
+## Watching how training is going
+
+Two signals, one quantitative and one qualitative.
+
+**Held-out loss.** `dataset.eval_fraction: 0.01` holds out a slice of the
+corpus, and `dataset.eval_max_examples: 64` caps it. The cap matters: a
+hundredth of a corpus this size is thousands of examples, and the trainer walks
+the whole eval set at every evaluation, so an uncapped split would spend longer
+evaluating than training. Evaluation runs every `training.eval_every_n_steps`
+and reports `eval/loss` alongside `train/loss`.
+
+**Free-running transcripts.** Teacher-forced loss says nothing about what the
+model does when it generates unaided. It cannot tell you whether the model
+closes its `<think>` trace, stops at EOS, or loops — every token it scored was
+conditioned on ground truth. Sampling a fixed prompt set at a fixed interval
+shows exactly that:
+
+```bash
+./scripts/run_sft_tpu.sh training.transcripts.enabled=true
+```
+
+Transcripts are **disabled by default** because they are not free. Unlike GRPO,
+where rollouts are the training signal and already exist, SFT never generates,
+so this adds an autoregressive decode, a second XLA compilation, and a KV cache
+to a memory profile validated without them. Enable it once you know you have HBM
+headroom, and watch the first sampling step for an OOM.
+
+Each interval writes one JSON object per prompt to
+`artifacts/OpenR1-Distill-Qwen3-1.7B/transcripts.jsonl`, recording the step, the
+prompt, the completion, and flags for whether the reasoning trace was closed and
+whether the token budget was exhausted. That last flag matters when reading the
+output: a completion that used its whole budget was probably cut off, so a
+missing `</think>` there is inconclusive rather than a real failure. The same
+records go to W&B as a table under `samples/transcripts` unless
+`training.transcripts.log_to_wandb=false`.
+
+Sampling never ends a run. If it OOMs or fails to compile, it logs a warning,
+disables itself for the remainder of the run, and training continues.
+
+Tunable values:
+
+```bash
+./scripts/run_sft_tpu.sh \
+  training.transcripts.enabled=true \
+  training.transcripts.every_n_steps=250 \
+  training.transcripts.max_new_tokens=512 \
+  training.transcripts.temperature=0.7 \
+  training.transcripts.prompts='[Prove that sqrt(2) is irrational.]'
+```
+
+Greedy decoding (`temperature: 0.0`) is the default so successive samples stay
+comparable across steps. `cache_size` defaults to
+`dataset.max_length + max_new_tokens`; lower it to save HBM if the prompts are
+short.
+
 ## Weights & Biases
 
 Training logs Tunix metrics to the `open-r1-tpu` W&B project by default,
