@@ -14,6 +14,7 @@ interactive commands.
 from __future__ import annotations
 
 import argparse
+import warnings
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -309,11 +310,17 @@ def main() -> None:
         print(f"Loading local model from {args.model_path} ...")
         mesh, tokenizer, sampler, _model = load_runtime(args)
         print("Model loaded. The first reply will compile the TPU decode path.")
-        # Tunix's sampler reads the active JAX mesh when it executes.
-        import jax
-
-        with jax.set_mesh(mesh):
-            chat_loop(args, tokenizer, sampler)
+        # The pinned Tunix sampler still reads JAX's legacy thread-local
+        # physical mesh, just like PeftTrainer. jax.set_mesh(mesh) alone leaves
+        # that legacy mesh empty and fails when the sampler resolves P("tp").
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"`with mesh:` context manager has been deprecated.*",
+                category=DeprecationWarning,
+            )
+            with mesh:
+                chat_loop(args, tokenizer, sampler)
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         raise SystemExit(f"error: {exc}") from exc
 
