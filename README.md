@@ -12,17 +12,99 @@ assistant tokens only, filters incomplete or overlength reasoning traces,
 writes resumable Orbax checkpoints, and exports a merged Hugging Face-style
 safetensors directory.
 
+## Quick start on a TPU VM
+
+Run every step on the TPU VM itself, over SSH. Both scripts are re-runnable, so
+a failed step can simply be repeated.
+
+**1. Clone the repository.**
+
+```bash
+git clone https://github.com/CMBAgents/open-r1-tpu.git
+cd open-r1-tpu
+```
+
+**2. Build the environment.**
+
+```bash
+./scripts/setup_tpu_vm.sh
+```
+
+This installs `uv`, the CPython build pinned in `.python-version`, a `.venv`,
+and the project with its test extra. It then confirms JAX sees exactly one TPU
+and runs the unit suite. Add `--skip-verify` if another job is already holding
+the TPU, or `--recreate` to rebuild `.venv` from scratch.
+
+**3. Fill in the private environment file.**
+
+Step 2 writes `~/.open-r1-tpu.env` with every value commented out. Uncomment
+and set the ones you need, then load it:
+
+```bash
+export GCS_BUCKET=gs://your-bucket        # source bucket for step 4
+export WANDB_ENTITY=your-user-or-team     # W&B account or team
+export WANDB_PROJECT=your-project         # W&B project
+export HF_TOKEN=hf_...                    # only for Hub-sourced runs
+```
+
+```bash
+source ~/.open-r1-tpu.env
+source .venv/bin/activate
+```
+
+Keep deployment-specific values here rather than in the recipe. The file lives
+outside the repository and is created `chmod 600`, so nothing lands in git or
+in shell history.
+
+**4. Copy GCS bucket data.**
+
+```bash
+./scripts/copy_gcs_bucket_data.sh
+```
+
+This copies the base model and the dataset from `$GCS_BUCKET` into the ignored
+`models/` and `data/` directories, then reports what arrived. It is only needed
+if you train from bucket data; skip it to pull from the Hub instead. See
+[Copying GCS bucket data](#copying-gcs-bucket-data) for the bucket layout it
+expects.
+
+**5. Run preflight.**
+
+```bash
+python -m open_r1_tpu.check_env \
+  model.model_source=local \
+  model.model_path=models/Qwen3-1.7B-Base \
+  tokenizer.tokenizer_path=models/Qwen3-1.7B-Base
+```
+
+Drop the three overrides to validate a Hub-sourced run instead.
+
+**6. Smoke test, then train.**
+
+```bash
+./scripts/run_sft_tpu.sh \
+  model.model_source=local \
+  model.model_path=models/Qwen3-1.7B-Base \
+  tokenizer.tokenizer_path=models/Qwen3-1.7B-Base \
+  dataset.name=parquet \
+  dataset.config=null \
+  dataset.data_files='data/Mixture-of-Thoughts/all/*.parquet' \
+  training.project_name="${WANDB_PROJECT}" \
+  dataset.max_examples=128 \
+  training.max_steps=4 \
+  training.gradient_accumulation_steps=1 \
+  training.checkpointing_options.save_interval_steps=2
+```
+
+Drop the last four overrides for the full run. The first step includes JAX/XLA
+compilation and is much slower than the rest.
+
 ## TPU VM setup
 
 Use standard CPython 3.13 (the repository default is 3.13.14) on a TPU VM with
 one visible device. Do not use the free-threaded `3.13t` build.
 
-`scripts/setup_tpu_vm.sh` performs the whole setup on a fresh VM: it installs
-`uv`, the interpreter pinned in `.python-version`, the virtual environment, and
-the project, then checks that JAX sees exactly one TPU and runs the unit
-suite. It is re-runnable; pass `--recreate` to rebuild `.venv` from scratch.
-
-To do the same by hand:
+`scripts/setup_tpu_vm.sh` covers step 2 above. To do the same by hand:
 
 ```bash
 python3.13 -m venv .venv
@@ -54,11 +136,31 @@ entirely of TPUs. It also checks the installed Tunix/Optax APIs, loads the real
 Qwen tokenizer, verifies the assistant-only chat-template boundary, and
 confirms that Tunix supplies the Qwen3 merged-LoRA exporter.
 
-### Using GCS-staged inputs
+### Copying GCS bucket data
 
 Tunix's Hugging Face loader still contacts the Hub even when its download
-directory already contains weights. To use model and Parquet files staged in
-GCS, copy them to the VM's local disk and select the explicit local loaders:
+directory already contains weights, so bucket data has to reach the VM's local
+disk and the recipe has to select the explicit local loaders.
+
+`scripts/copy_gcs_bucket_data.sh` does the copy. Run it on the VM: the VM's
+service account authenticates to the bucket, and the data moves straight from
+GCS to local disk without passing through a workstation. The bucket comes from
+`$GCS_BUCKET` or `--bucket`, and is never committed:
+
+```bash
+./scripts/copy_gcs_bucket_data.sh
+./scripts/copy_gcs_bucket_data.sh --bucket gs://another-bucket
+```
+
+It expects `models/Qwen3-1.7B-Base` and `datasets/Mixture-of-Thoughts` inside
+the bucket, copying them to `models/Qwen3-1.7B-Base` and
+`data/Mixture-of-Thoughts` locally. Set `$GCS_MODEL_PREFIX` or
+`$GCS_DATA_PREFIX` for a different layout. Afterwards it reports the Parquet
+shard count and on-disk sizes, warning rather than failing silently if either
+copy looks empty. `gcloud storage rsync` is incremental, so re-running after an
+interrupted copy resumes cheaply.
+
+The equivalent by hand:
 
 ```bash
 gcloud storage rsync \
@@ -67,16 +169,10 @@ gcloud storage rsync \
 gcloud storage rsync \
   gs://your-bucket/datasets/Mixture-of-Thoughts \
   data/Mixture-of-Thoughts --recursive
-
-python -m open_r1_tpu.check_env \
-  model.model_source=local \
-  model.model_path=models/Qwen3-1.7B-Base \
-  tokenizer.tokenizer_path=models/Qwen3-1.7B-Base
 ```
 
-For the already-staged model and data, add these local-input overrides to the
-launcher; the checked-in mesh, batch, and sequence defaults already target the
-one-device VM:
+For copied model and data, add these local-input overrides to the launcher; the
+checked-in mesh, batch, and sequence defaults already target the one-device VM:
 
 ```bash
 model.model_source=local

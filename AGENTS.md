@@ -30,6 +30,8 @@ The default path is:
   and merged export.
 - `src/open_r1_tpu/check_env.py`: target-TPU environment preflight.
 - `recipes/`: versioned model and training configurations.
+- `scripts/setup_tpu_vm.sh`: uv-based TPU VM environment provisioning.
+- `scripts/copy_gcs_bucket_data.sh`: copy GCS bucket data to local disk.
 - `scripts/run_sft_tpu.sh`: standard SFT launcher.
 - `tests/`: host-independent unit tests.
 
@@ -101,7 +103,7 @@ Host-independent checks:
 ```bash
 python -m pytest
 python -m compileall -q src tests
-bash -n scripts/run_sft_tpu.sh
+for script in scripts/*.sh; do bash -n "$script"; done
 git diff --check
 ```
 
