@@ -202,6 +202,17 @@ Start with a short run before allocating a full training job:
 The first step includes JAX/XLA compilation and will be much slower than later
 steps.
 
+Send smoke output somewhere disposable. Training restores the newest checkpoint
+in `training.checkpoint_dir` automatically, so smoke checkpoints left in
+`artifacts/` will be picked up by the next full run and resume it from four
+steps of a throwaway configuration:
+
+```bash
+  training.checkpoint_dir=/tmp/sft-smoke/checkpoints \
+  training.transcripts.output_path=/tmp/sft-smoke/transcripts.jsonl \
+  training.wandb.enabled=false
+```
+
 ## Watching how training is going
 
 Two signals, one quantitative and one qualitative.
@@ -295,9 +306,109 @@ append to that run.
 
 ## Full reasoning SFT
 
+### The complete run, from bucket data with transcripts
+
+The default recipe runs 5000 optimizer steps. At `gradient_accumulation_steps: 8`
+and `batch_size: 1` that consumes 40,000 examples — well under one epoch of
+`Mixture-of-Thoughts`, whose `all` subset holds roughly 349k rows before length
+filtering. Along the way it writes 20 checkpoints (keeping the newest 2),
+evaluates 11 times (a baseline plus every 500 steps), and samples transcripts 10
+times.
+
+Training runs for hours, so start it under `tmux` and it will survive an SSH
+drop:
+
 ```bash
-./scripts/run_sft_tpu.sh
+tmux new -s sft
 ```
+
+Inside the session:
+
+```bash
+cd ~/open-r1-tpu
+source ~/.open-r1-tpu.env
+source .venv/bin/activate
+
+LOCAL_INPUTS=(
+  model.model_source=local
+  model.model_path=models/Qwen3-1.7B-Base
+  tokenizer.tokenizer_path=models/Qwen3-1.7B-Base
+  dataset.name=parquet
+  dataset.config=null
+  dataset.data_files='data/Mixture-of-Thoughts/all/*.parquet'
+)
+
+mkdir -p artifacts
+./scripts/run_sft_tpu.sh "${LOCAL_INPUTS[@]}" \
+  training.project_name="${WANDB_PROJECT}" \
+  training.transcripts.enabled=true \
+  2>&1 | tee -a artifacts/train.log
+```
+
+Detach with `Ctrl-b d` and reattach with `tmux attach -t sft`. Drop the
+`LOCAL_INPUTS` expansion to pull the model and dataset from the Hub instead,
+which needs `HF_TOKEN` set.
+
+An evaluation runs *before* the first training step. That is a baseline reading,
+not a misconfigured interval: the trainer evaluates unconditionally at startup
+whenever a held-out split exists, independently of
+`training.eval_every_n_steps`.
+
+### Resuming, intended and unintended
+
+Training restores the newest checkpoint found in `training.checkpoint_dir`
+without being asked. To continue an interrupted run, leave the checkpoints in
+place, relaunch the identical command, and set `WANDB_RUN_ID` to the original
+run so the charts stay continuous.
+
+The same behaviour bites when the checkpoints came from a *different*
+configuration — a smoke run, say. The startup log tells you which it is:
+
+```text
+Found 2 checkpoint steps in .../checkpoints
+Restored params from step: 4
+```
+
+If that step is not where you meant to resume, stop, move the directory aside,
+and relaunch:
+
+```bash
+mv artifacts/OpenR1-Distill-Qwen3-1.7B/checkpoints \
+   artifacts/stale-checkpoints-$(date +%s)
+```
+
+### Watching a run in progress
+
+```bash
+tail -f artifacts/train.log
+```
+
+Transcripts accumulate as JSON lines, one object per prompt per interval. This
+summarizes whether the model is learning to close its reasoning traces:
+
+```bash
+python - <<'PY'
+import collections, json
+
+by_step = collections.defaultdict(list)
+with open("artifacts/OpenR1-Distill-Qwen3-1.7B/transcripts.jsonl") as handle:
+    for line in handle:
+        record = json.loads(line)
+        by_step[record["step"]].append(record)
+
+for step in sorted(by_step):
+    rows = by_step[step]
+    closed = sum(row["reasoning_balanced"] for row in rows)
+    capped = sum(row["hit_token_cap"] for row in rows)
+    print(f"step {step:>6}  closed {closed}/{len(rows)}  hit cap {capped}")
+PY
+```
+
+`closed` should climb toward the prompt count over the first few thousand steps.
+If it stays at zero while `train/loss` falls, that is the failure teacher-forced
+loss cannot show, and it is worth stopping for.
+
+### Overriding the recipe
 
 The recipe is at
 [`recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml`](recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml).
