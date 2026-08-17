@@ -14,6 +14,7 @@ interactive commands.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -150,7 +151,9 @@ def as_token_ids(value: Any) -> list[int]:
         if len(value) != 1:
             raise ValueError("chat template unexpectedly returned a token batch")
         value = value[0]
-    if not isinstance(value, list) or not all(isinstance(token, int) for token in value):
+    if not isinstance(value, list) or not all(
+        isinstance(token, int) for token in value
+    ):
         raise ValueError("chat template did not return a list of token IDs")
     return value
 
@@ -164,7 +167,9 @@ def prompt_token_count(
         tokenize=True,
         add_generation_prompt=True,
     )
-    if isinstance(token_ids, dict):
+    # Recent Transformers versions return a BatchEncoding mapping by default;
+    # it is mapping-like but is not necessarily a literal dict.
+    if isinstance(token_ids, Mapping):
         token_ids = token_ids["input_ids"]
     return len(as_token_ids(token_ids))
 
@@ -305,7 +310,9 @@ def main() -> None:
         mesh, tokenizer, sampler, _model = load_runtime(args)
         print("Model loaded. The first reply will compile the TPU decode path.")
         # Tunix's sampler reads the active JAX mesh when it executes.
-        with mesh:
+        import jax
+
+        with jax.set_mesh(mesh):
             chat_loop(args, tokenizer, sampler)
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         raise SystemExit(f"error: {exc}") from exc

@@ -1,4 +1,5 @@
 import importlib.util
+from collections import UserDict
 from pathlib import Path
 
 
@@ -24,6 +25,12 @@ class BatchedFakeTokenizer(FakeTokenizer):
     def apply_chat_template(self, messages, tokenize, add_generation_prompt):
         result = super().apply_chat_template(messages, tokenize, add_generation_prompt)
         return [result] if tokenize else result
+
+
+class MappingFakeTokenizer(FakeTokenizer):
+    def apply_chat_template(self, messages, tokenize, add_generation_prompt):
+        result = super().apply_chat_template(messages, tokenize, add_generation_prompt)
+        return UserDict({"input_ids": result}) if tokenize else result
 
 
 def test_render_prompt_includes_system_history_and_generation_prefix():
@@ -71,4 +78,10 @@ def test_fit_history_rejects_a_single_message_that_exceeds_the_budget():
 def test_prompt_token_count_accepts_a_batch_of_one():
     assert chat.prompt_token_count(
         BatchedFakeTokenizer(), [{"role": "user", "content": "Hi"}], ""
+    ) == len("user:Hi")
+
+
+def test_prompt_token_count_accepts_a_batch_encoding_mapping():
+    assert chat.prompt_token_count(
+        MappingFakeTokenizer(), [{"role": "user", "content": "Hi"}], ""
     ) == len("user:Hi")
