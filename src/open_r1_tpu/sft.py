@@ -155,6 +155,18 @@ def _compute_max_steps(config: dict[str, Any], raw_train_size: int | None = None
     return max(1, micro_batches // accumulation)
 
 
+def _absolute_checkpoint_dir(checkpoint_dir: str) -> str:
+    """Resolve a local checkpoint directory; Orbax rejects relative paths.
+
+    Remote URIs such as ``gs://bucket/run`` are already absolute and must be
+    passed through untouched, since resolving them against the working
+    directory would corrupt the scheme.
+    """
+    if "://" in checkpoint_dir:
+        return checkpoint_dir
+    return str(Path(checkpoint_dir).expanduser().resolve())
+
+
 def _wandb_backend_kwargs(config: dict[str, Any]) -> dict[str, Any]:
     """Build W&B initialization arguments without putting credentials in config."""
     training = config["training"]
@@ -347,7 +359,9 @@ def run(config: dict[str, Any]) -> None:
             gradient_accumulation_steps=int(
                 training.get("gradient_accumulation_steps", 1)
             ),
-            checkpoint_root_directory=training["checkpoint_dir"],
+            checkpoint_root_directory=_absolute_checkpoint_dir(
+                training["checkpoint_dir"]
+            ),
             checkpointing_options=checkpointing,
             metrics_logging_options=metrics,
             profiler_options=None,

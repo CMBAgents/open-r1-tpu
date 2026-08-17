@@ -5,6 +5,7 @@ import pytest
 from open_r1_tpu.config import load_config, parse_override
 from open_r1_tpu.sft import (
     _SteppedTrainingMetricsBackend,
+    _absolute_checkpoint_dir,
     _metrics_logger_options,
     _wandb_backend_kwargs,
 )
@@ -140,3 +141,28 @@ def test_metrics_options_use_custom_backends():
 def test_invalid_wandb_config_is_rejected(override, error):
     with pytest.raises(ValueError, match=error):
         load_config(RECIPE, [override])
+
+
+def test_relative_checkpoint_dir_is_made_absolute():
+    # Orbax raises "Checkpoint path should be absolute" for a relative
+    # directory, which the recipe uses by default.
+    resolved = _absolute_checkpoint_dir("artifacts/run/checkpoints")
+    assert Path(resolved).is_absolute()
+    assert resolved.endswith("artifacts/run/checkpoints")
+
+
+def test_absolute_and_remote_checkpoint_dirs_are_preserved():
+    assert _absolute_checkpoint_dir("/data/run/checkpoints") == (
+        "/data/run/checkpoints"
+    )
+    # Resolving a URI against the working directory would corrupt the scheme.
+    assert _absolute_checkpoint_dir("gs://bucket/run/checkpoints") == (
+        "gs://bucket/run/checkpoints"
+    )
+
+
+def test_default_recipe_checkpoint_dir_resolves_to_an_absolute_path():
+    config = load_config(RECIPE)
+    assert Path(
+        _absolute_checkpoint_dir(config["training"]["checkpoint_dir"])
+    ).is_absolute()
