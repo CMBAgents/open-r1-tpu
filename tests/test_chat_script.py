@@ -4,6 +4,8 @@ from collections import UserDict
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 SCRIPT_PATH = Path(__file__).parents[1] / "scripts" / "chat_qwen_tpu.py"
 SPEC = importlib.util.spec_from_file_location("chat_qwen_tpu", SCRIPT_PATH)
@@ -154,3 +156,76 @@ def test_completion_prompt_length_need_not_match_splash_block(tmp_path):
     completion.validate_options(args)
 
     assert args.model_path == str(model_path.resolve())
+
+
+
+def test_model_config_carries_lora_only_when_asked():
+    assert "lora_config" not in chat.model_config("/models/base", 0)
+    lora = {"rank": 8, "alpha": 8.0, "module_path": ".*q_proj"}
+    assert chat.model_config("/models/base", 0, lora_config=lora)[
+        "lora_config"
+    ] == lora
+
+
+def test_recipe_lora_settings_match_the_instruct_recipe():
+    recipe = (
+        Path(__file__).parents[1]
+        / "recipes/Qwen3-1.7B-Instruct/sft/config_instruct.yaml"
+    )
+    lora_config, checkpoint_dir = chat.recipe_lora_settings(str(recipe))
+
+    # Restoring under a different geometry than training wrote would produce
+    # confident nonsense rather than an error, so these must come from there.
+    assert lora_config["rank"] == 64
+    assert lora_config["alpha"] == 64.0
+    assert checkpoint_dir.endswith("Qwen3-1.7B-Instruct/checkpoints")
+
+
+def test_checkpoint_dir_without_a_recipe_is_rejected(tmp_path):
+    (tmp_path / "model.safetensors").write_bytes(b"")
+    args = SimpleNamespace(
+        max_new_tokens=8,
+        max_prompt_length=chat.FLASH_ATTENTION_BLOCK_SIZE,
+        temperature=0.0,
+        model_path=str(tmp_path),
+        recipe=None,
+        checkpoint_dir="artifacts/run/checkpoints",
+    )
+
+    with pytest.raises(ValueError, match="--checkpoint-dir needs --recipe"):
+        chat.validate_options(args)
+
+
+def _checkpoint_root(tmp_path, steps):
+    for step in steps:
+        (tmp_path / str(step)).mkdir()
+    (tmp_path / "not-a-step").mkdir()
+    return str(tmp_path)
+
+
+def test_available_steps_ignores_non_step_directories(tmp_path):
+    root = _checkpoint_root(tmp_path, [1500, 1000])
+
+    assert chat.available_steps(root) == [1000, 1500]
+
+
+def test_available_steps_tolerates_a_missing_root(tmp_path):
+    assert chat.available_steps(str(tmp_path / "absent")) == []
+
+
+def test_resolve_step_defaults_to_the_latest_written():
+    assert chat.resolve_step("/absent", None) is None
+
+
+def test_resolve_step_rejects_a_step_that_was_never_saved(tmp_path):
+    # A run killed at 1744 saved 1500, and 1744 is the step its log reported.
+    root = _checkpoint_root(tmp_path, [1000, 1500])
+
+    with pytest.raises(FileNotFoundError, match="1000, 1500"):
+        chat.resolve_step(root, 1744)
+
+
+def test_resolve_step_accepts_a_step_that_was_saved(tmp_path):
+    root = _checkpoint_root(tmp_path, [1000, 1500])
+
+    assert chat.resolve_step(root, 1000) == 1000

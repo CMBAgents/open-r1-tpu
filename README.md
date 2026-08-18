@@ -227,6 +227,37 @@ it applies the tokenizer's system/user/assistant chat template. Base weights
 are not expected to follow that template reliably; use a post-trained Qwen
 checkpoint for conversational behavior.
 
+### Chat with a training run's own weights
+
+Training writes LoRA adapters alone, so a checkpoint is not a model you can
+load on its own. Pass the recipe and the adapters from its latest checkpoint
+are restored on top of the base weights:
+
+```bash
+python scripts/chat_qwen_tpu.py \
+  --recipe recipes/Qwen3-1.7B-Instruct/sft/config_instruct.yaml
+```
+
+The rank, alpha and target modules come from that recipe rather than from
+flags, because adapters restored under a different LoRA geometry than they
+were trained with produce confident nonsense rather than an error. Add `--step`
+to pick an earlier checkpoint, or `--checkpoint-dir` if the artifacts moved.
+
+The restored step is printed on load, and it is rarely the step the run
+stopped on: checkpoints are written every
+`training.checkpointing_options.save_interval_steps` and only `max_to_keep` of
+them survive, so a run killed at step 1744 leaves 1500 as its latest. Asking
+for a step that was never written names the ones that were.
+
+Once a run finishes it exports merged weights, which need no recipe:
+
+```bash
+python scripts/chat_qwen_tpu.py --model-path artifacts/Qwen3-1.7B-Instruct/merged
+```
+
+**One TPU, one process.** The v6e-1 chip is held by whichever process claims it
+first, so this cannot run beside a training job. Stop the run, or wait for it.
+
 ## Smoke test
 
 Start with a short run before allocating a full training job:

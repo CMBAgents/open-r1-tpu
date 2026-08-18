@@ -1,10 +1,22 @@
 #!/usr/bin/env python3
-"""Chat interactively with locally staged Qwen3-1.7B-Base weights on one TPU.
+"""Chat interactively with locally staged Qwen3 weights on one TPU.
 
 Run from the repository root on the TPU VM after activating the project
 environment::
 
     python scripts/chat_qwen_tpu.py --model-path models/Qwen3-1.7B-Base
+
+To talk to a training run's own weights, pass the recipe it was trained with.
+The LoRA adapters from its latest checkpoint are then restored on top of the
+base model, which is how a run can be inspected before it has finished and
+exported merged weights::
+
+    python scripts/chat_qwen_tpu.py \
+      --recipe recipes/Qwen3-1.7B-Instruct/sft/config_instruct.yaml
+
+The rank, alpha and target modules come from that recipe rather than from
+flags of their own: adapters restored under a different LoRA geometry than
+they were trained with produce confident nonsense rather than an error.
 
 The model is loaded with Tunix/JAX directly from ``model.safetensors``. It
 never contacts the Hugging Face Hub. Type ``/help`` at the prompt for the
@@ -49,6 +61,28 @@ def parse_args() -> argparse.Namespace:
             "Local Qwen3-1.7B-Base directory containing model.safetensors "
             f"(default: {DEFAULT_MODEL_PATH})"
         ),
+    )
+    parser.add_argument(
+        "--recipe",
+        default=None,
+        help=(
+            "Training recipe whose latest LoRA checkpoint to restore on top "
+            "of --model-path. Omit to talk to the base weights."
+        ),
+    )
+    parser.add_argument(
+        "--checkpoint-dir",
+        default=None,
+        help=(
+            "Checkpoint root to restore from, overriding the recipe's "
+            "training.checkpoint_dir."
+        ),
+    )
+    parser.add_argument(
+        "--step",
+        type=int,
+        default=None,
+        help="Checkpoint step to restore (default: the latest written).",
     )
     parser.add_argument(
         "--system-prompt",
@@ -108,12 +142,27 @@ def validate_options(args: argparse.Namespace) -> None:
         )
     args.model_path = str(model_path)
 
+    if args.checkpoint_dir and not args.recipe:
+        raise ValueError(
+            "--checkpoint-dir needs --recipe, which supplies the LoRA rank, "
+            "alpha and target modules the checkpoint was written under"
+        )
+    if args.recipe:
+        recipe_path = Path(args.recipe).expanduser().resolve()
+        if not recipe_path.is_file():
+            raise FileNotFoundError(f"Recipe does not exist: {recipe_path}")
+        args.recipe = str(recipe_path)
+
 
 def model_config(
-    model_path: str, seed: int, *, use_flash_attention: bool = True
+    model_path: str,
+    seed: int,
+    *,
+    use_flash_attention: bool = True,
+    lora_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return the inference-safe subset of the project's Qwen TPU settings."""
-    return {
+    config: dict[str, Any] = {
         "model_name": "qwen3-1.7b-base",
         "model_source": "local",
         "model_path": model_path,
@@ -125,6 +174,89 @@ def model_config(
         "flash_attention_block_size": FLASH_ATTENTION_BLOCK_SIZE,
         "mesh": {"shape": [1, 1], "axis_names": ["fsdp", "tp"]},
     }
+    if lora_config:
+        # Adapters must be restored into the same geometry they were trained
+        # under, so this is read from the recipe rather than given its own
+        # defaults here.
+        config["lora_config"] = lora_config
+    return config
+
+
+def recipe_lora_settings(recipe_path: str) -> tuple[dict[str, Any], str]:
+    """Read the LoRA geometry and checkpoint root a recipe trains with."""
+    from open_r1_tpu.config import load_config
+
+    config = load_config(recipe_path)
+    lora_config = config["model"].get("lora_config")
+    if not lora_config:
+        raise ValueError(
+            f"Recipe trains no LoRA adapters, so it has none to restore: "
+            f"{recipe_path}"
+        )
+    return lora_config, config["training"]["checkpoint_dir"]
+
+
+def available_steps(checkpoint_root: str) -> list[int]:
+    """List the steps written under a checkpoint root, newest last."""
+    root_path = Path(checkpoint_root)
+    if not root_path.is_dir():
+        return []
+    return sorted(
+        int(entry.name)
+        for entry in root_path.iterdir()
+        if entry.is_dir() and entry.name.isdigit()
+    )
+
+
+def resolve_step(checkpoint_root: str, step: int | None) -> int | None:
+    """Reject a step that was never written, naming the ones that were.
+
+    A run stopped between saves has no checkpoint at the step its log last
+    reported, which is the step someone naturally asks for.
+    """
+    if step is None:
+        return None
+    steps = available_steps(checkpoint_root)
+    if steps and step not in steps:
+        written = ", ".join(str(value) for value in steps)
+        raise FileNotFoundError(
+            f"No checkpoint at step {step} under {checkpoint_root}. Steps "
+            f"written and still kept: {written}. Training saves every "
+            "training.checkpointing_options.save_interval_steps steps and "
+            "keeps max_to_keep of them, so a run stopped between saves has "
+            "no checkpoint at the step it stopped on."
+        )
+    return step
+
+
+def restore_lora_checkpoint(
+    model: Any, checkpoint_dir: str, step: int | None = None
+) -> int:
+    """Restore LoRA parameters into `model`, returning the step restored."""
+    from open_r1_tpu.sft import _absolute_checkpoint_dir
+    from tunix.sft import checkpoint_manager as checkpoint_manager_lib
+
+    root = _absolute_checkpoint_dir(checkpoint_dir)
+    step = resolve_step(root, step)
+    # Deliberately built with Tunix's default options rather than the recipe's:
+    # this client only reads, and the recipe's max_to_keep carries a
+    # preservation policy that has no business running from a chat session.
+    # The step naming is not configurable through a recipe, so the default
+    # reads what training wrote.
+    manager = checkpoint_manager_lib.CheckpointManager(root_directory=root)
+    if manager.latest_step() is None:
+        raise FileNotFoundError(
+            f"No checkpoint has been written under {root}. Training writes "
+            "one every training.checkpointing_options.save_interval_steps "
+            "optimizer steps."
+        )
+    # Training saves adapters alone, since model.lora_config is set and Tunix
+    # passes save_only_lora_params through to Orbax.
+    restored_step, _metadata = manager.maybe_restore(
+        model, optimizer=None, step=step, restore_only_lora_params=True
+    )
+    manager.close()
+    return int(restored_step)
 
 
 def tokenizer_config(model_path: str) -> dict[str, Any]:
@@ -238,15 +370,27 @@ def load_runtime(
     # and SFT use the same Qwen architecture and dtype.
     from open_r1_tpu.sft import _create_model
 
+    lora_config = None
+    checkpoint_dir = args.checkpoint_dir
+    if args.recipe:
+        recipe_lora, recipe_checkpoint_dir = recipe_lora_settings(args.recipe)
+        lora_config = recipe_lora
+        checkpoint_dir = checkpoint_dir or recipe_checkpoint_dir
+
     config = {
         "model": model_config(
             args.model_path,
             args.seed,
             use_flash_attention=use_flash_attention,
+            lora_config=lora_config,
         ),
         "tokenizer": tokenizer_config(args.model_path),
     }
     model, tokenizer_path = _create_model(config, mesh)
+    if lora_config:
+        restored = restore_lora_checkpoint(model, checkpoint_dir, args.step)
+        # Named explicitly because it is rarely the step the run stopped on.
+        print(f"Restored LoRA adapters from step {restored}.")
     tokenizer = model_utils.create_tokenizer(config["tokenizer"], tokenizer_path)
     model_runtime_config = getattr(model, "config", None)
     cache_config = sampler_lib.CacheConfig(
