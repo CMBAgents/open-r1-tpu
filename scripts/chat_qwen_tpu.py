@@ -26,6 +26,7 @@ interactive commands.
 from __future__ import annotations
 
 import argparse
+import re
 import warnings
 from collections.abc import Mapping
 from contextlib import contextmanager
@@ -34,8 +35,22 @@ from typing import Any
 
 
 DEFAULT_MODEL_PATH = "models/Qwen3-1.7B-Base"
-DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
+# Empty by default because SFT trains on conversations as they come, and the
+# recipes leave dataset.system_prompt null. Injecting a system prompt here
+# would put the model in front of a message type it rarely saw in training.
+DEFAULT_SYSTEM_PROMPT = ""
 FLASH_ATTENTION_BLOCK_SIZE = 1024
+
+# Qwen3's chat template ends every turn with <|im_end|>, but the base model's
+# tokenizer_config.json names <|endoftext|> as its EOS. The sampler stops on
+# the tokenizer's EOS unless told otherwise, so a chat model left to itself
+# runs past the end of its reply and writes the user's next turn as well.
+TURN_END_TOKENS = ("<|im_end|>", "<|endoftext|>")
+
+# That same template opens every assistant turn with an empty reasoning block
+# when the message carries no <think> trace, so a model trained on a corpus
+# without traces learns to emit one. It is scaffolding, not content.
+EMPTY_REASONING = re.compile(r"\A<think>\s*</think>\s*")
 
 
 @contextmanager
@@ -292,6 +307,50 @@ def render_prompt(
     )
 
 
+def token_id(tokenizer: Any, token: str) -> int | None:
+    """Look up one special token, through the adapter or its HF tokenizer."""
+    convert = getattr(tokenizer, "convert_tokens_to_ids", None)
+    if convert is None:
+        inner = getattr(tokenizer, "tokenizer", None)
+        convert = getattr(inner, "convert_tokens_to_ids", None)
+    if convert is None:
+        return None
+    try:
+        resolved = convert(token)
+    except (KeyError, TypeError, ValueError):
+        return None
+    return resolved if isinstance(resolved, int) else None
+
+
+def stop_token_ids(tokenizer: Any) -> list[int]:
+    """Resolve the tokens that end an assistant turn."""
+    stop_ids: list[int] = []
+    for token in TURN_END_TOKENS:
+        resolved = token_id(tokenizer, token)
+        if resolved is not None and resolved not in stop_ids:
+            stop_ids.append(resolved)
+    if not stop_ids:
+        raise ValueError(
+            "tokenizer defines none of " + ", ".join(TURN_END_TOKENS)
+        )
+    return stop_ids
+
+
+def clean_reply(completion: str) -> str:
+    """Drop any turn-ending marker the sampler echoed back."""
+    text = completion
+    for token in TURN_END_TOKENS:
+        if text.endswith(token):
+            text = text[: -len(token)]
+            break
+    return text.strip()
+
+
+def visible_reply(completion: str) -> str:
+    """Hide the template's empty reasoning scaffold from the transcript."""
+    return EMPTY_REASONING.sub("", clean_reply(completion), count=1).strip()
+
+
 def as_token_ids(value: Any) -> list[int]:
     """Normalize the tokenizer's list, array, or batch-of-one output."""
     if hasattr(value, "tolist"):
@@ -411,6 +470,7 @@ def chat_loop(args: argparse.Namespace, tokenizer: Any, sampler: Any) -> None:
     """Read user turns, sample completions, and retain a bounded history."""
     history: list[dict[str, str]] = []
     reply_number = 0
+    stop_ids = stop_token_ids(tokenizer)
     print("Ready. Type /help for commands, /reset to clear history, or /exit to quit.")
 
     while True:
@@ -462,11 +522,14 @@ def chat_loop(args: argparse.Namespace, tokenizer: Any, sampler: Any) -> None:
             temperature=args.temperature,
             seed=args.seed + reply_number,
             max_prompt_length=args.max_prompt_length,
+            eos_tokens=stop_ids,
         )
-        completion = str(output.text[0])
+        completion = clean_reply(str(output.text[0]))
+        # The template drops a prior turn's reasoning block when it renders
+        # the next prompt, so the history keeps the reply as generated.
         history.append({"role": "assistant", "content": completion})
         reply_number += 1
-        print(f"\nassistant> {completion.strip()}")
+        print(f"\nassistant> {visible_reply(completion)}")
 
 
 def main() -> None:

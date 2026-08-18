@@ -158,6 +158,57 @@ def test_completion_prompt_length_need_not_match_splash_block(tmp_path):
     assert args.model_path == str(model_path.resolve())
 
 
+class StopTokenTokenizer:
+    IDS = {"<|im_end|>": 151645, "<|endoftext|>": 151643}
+
+    def convert_tokens_to_ids(self, token):
+        return self.IDS.get(token)
+
+
+class AdapterTokenizer:
+    """Stands in for Tunix's adapter, which wraps the real tokenizer."""
+
+    def __init__(self):
+        self.tokenizer = StopTokenTokenizer()
+
+
+def test_stop_tokens_lead_with_the_end_of_turn_marker():
+    # Qwen3 ends turns with <|im_end|>, but the base tokenizer_config names
+    # <|endoftext|> as EOS, which a chat model never emits.
+    assert chat.stop_token_ids(StopTokenTokenizer()) == [151645, 151643]
+
+
+def test_stop_tokens_are_found_through_the_tunix_adapter():
+    assert chat.stop_token_ids(AdapterTokenizer()) == [151645, 151643]
+
+
+def test_a_tokenizer_without_the_turn_markers_is_rejected():
+    class Bare:
+        def convert_tokens_to_ids(self, token):
+            return None
+
+    with pytest.raises(ValueError, match="tokenizer defines none"):
+        chat.stop_token_ids(Bare())
+
+
+def test_clean_reply_drops_only_the_trailing_turn_marker():
+    assert chat.clean_reply("Paris.<|im_end|>") == "Paris."
+    assert chat.clean_reply("  Paris.  ") == "Paris."
+
+
+def test_visible_reply_hides_the_empty_reasoning_scaffold():
+    # The template opens every assistant turn with this when the message
+    # carries no trace, so a model trained on SmolTalk learns to emit it.
+    assert (
+        chat.visible_reply("<think>\n\n</think>\n\nParis.<|im_end|>") == "Paris."
+    )
+
+
+def test_visible_reply_keeps_a_reasoning_trace_that_has_content():
+    reply = "<think>\nFrance's capital\n</think>\n\nParis."
+
+    assert chat.visible_reply(reply) == reply
+
 
 def test_model_config_carries_lora_only_when_asked():
     assert "lora_config" not in chat.model_config("/models/base", 0)

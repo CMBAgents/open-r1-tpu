@@ -258,6 +258,22 @@ python scripts/chat_qwen_tpu.py --model-path artifacts/Qwen3-1.7B-Instruct/merge
 **One TPU, one process.** The v6e-1 chip is held by whichever process claims it
 first, so this cannot run beside a training job. Stop the run, or wait for it.
 
+Two details of the chat script exist to match what the corpus actually teaches,
+and both would otherwise be silent:
+
+- **The reply stops at `<|im_end|>`.** Qwen3's template ends every turn with
+  that token, but `Qwen3-1.7B-Base` names `<|endoftext|>` as its EOS, and the
+  sampler stops at the tokenizer's EOS unless told otherwise. Left alone the
+  model runs past the end of its reply and writes your next turn for you.
+- **An empty `<think></think>` block is hidden.** The template opens an
+  assistant turn with `<think>\n\n</think>\n\n` whenever the message carries
+  no reasoning trace, so a corpus without traces teaches the model to emit that
+  scaffold before every answer. It is stripped for display; a trace with actual
+  content is left alone.
+
+The system prompt defaults to empty, matching `dataset.system_prompt: null` in
+the recipes. Pass `--system-prompt` to try one.
+
 ## Smoke test
 
 Start with a short run before allocating a full training job:
