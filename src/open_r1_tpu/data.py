@@ -91,6 +91,91 @@ def _render_ids(
     )
 
 
+# Keyed by id(tokenizer); the tokenizer itself is stored alongside the ids so
+# the key cannot be recycled while the cache entry is alive.
+_closing_ids_cache: dict[int, tuple[Any, list[int]]] = {}
+
+
+def _assistant_closing_ids(tokenizer: Any) -> list[int]:
+    """Derive the token sequence that terminates every rendered assistant turn.
+
+    Two single-turn probe conversations whose assistant replies differ only in
+    their final character are rendered; the longest common token suffix is the
+    template's closing sequence (``<|im_end|>\\n`` for Qwen-style templates).
+    """
+    cached = _closing_ids_cache.get(id(tokenizer))
+    if cached is not None and cached[0] is tokenizer:
+        return cached[1]
+    probes = []
+    for filler in ("0", "1"):
+        probes.append(
+            _render_ids(
+                tokenizer,
+                [
+                    {"role": "user", "content": "probe"},
+                    {"role": "assistant", "content": filler},
+                ],
+                add_generation_prompt=False,
+            )
+        )
+    first, second = probes
+    length = 0
+    limit = min(len(first), len(second))
+    while length < limit and first[-1 - length] == second[-1 - length]:
+        length += 1
+    if length == 0:
+        raise ValueError("chat template has no fixed assistant closing sequence")
+    closing = first[len(first) - length :]
+    _closing_ids_cache[id(tokenizer)] = (tokenizer, closing)
+    return closing
+
+
+def _find_subsequence(haystack: list[int], needle: list[int], start: int) -> int | None:
+    for position in range(start, len(haystack) - len(needle) + 1):
+        if haystack[position : position + len(needle)] == needle:
+            return position
+    return None
+
+
+def _assistant_turn_spans(
+    tokenizer: Any, messages: list[dict[str, str]], full_ids: list[int]
+) -> list[tuple[int, int]] | None:
+    """Locate every assistant turn of the rendered conversation in ``full_ids``.
+
+    Each turn's start comes from rendering the preceding messages with the
+    generation prompt, which is prefix-stable. Its end cannot come from a
+    sub-render: Qwen3's template re-renders whichever assistant message is last
+    with a think block, so ``render(messages[:i + 1])`` is not a prefix of the
+    full render. The end is instead the next occurrence of the closing token
+    sequence that terminates every assistant message. Any mismatch returns None
+    so the example is dropped rather than trained with a wrong mask.
+    """
+    closing = _assistant_closing_ids(tokenizer)
+    spans: list[tuple[int, int]] = []
+    previous_end = 0
+    for index, message in enumerate(messages):
+        if message["role"] != "assistant":
+            continue
+        if index == 0:
+            return None
+        prefix = _render_ids(tokenizer, messages[:index], add_generation_prompt=True)
+        start = len(prefix)
+        if start < previous_end or start >= len(full_ids):
+            return None
+        if full_ids[:start] != prefix:
+            return None
+        if index == len(messages) - 1:
+            end = len(full_ids)
+        else:
+            found = _find_subsequence(full_ids, closing, start)
+            if found is None:
+                return None
+            end = found + len(closing)
+        spans.append((start, end))
+        previous_end = end
+    return spans or None
+
+
 def _pad_id(tokenizer: Any) -> int:
     pad_id_method = getattr(tokenizer, "pad_id", None)
     if callable(pad_id_method):
@@ -118,6 +203,10 @@ def encode_reasoning_example(
 ) -> EncodedExample | None:
     """Tokenize one trace, preserving only complete examples.
 
+    With ``assistant_only_loss`` every assistant turn in the conversation is
+    supervised, not just the final one; user and system tokens never carry
+    loss. ``prompt_length`` still reports the context length of the final turn.
+
     Overlength examples are deliberately filtered instead of truncated. Cutting a
     reasoning trace teaches the model incomplete chains and often removes the final
     answer, so it is a poor default for reasoning distillation.
@@ -141,28 +230,39 @@ def encode_reasoning_example(
         full_ids = _render_ids(
             tokenizer, messages, add_generation_prompt=False
         )
-        prompt_ids = _render_ids(
-            tokenizer, messages[:-1], add_generation_prompt=True
-        )
     except (TypeError, ValueError):
         return None
 
     if len(full_ids) > max_length or len(full_ids) < 2:
         return None
-    if len(prompt_ids) >= len(full_ids) or full_ids[: len(prompt_ids)] != prompt_ids:
-        # Assistant-only loss requires an exact prompt prefix. Silently using a
-        # guessed boundary would train on the wrong tokens for some templates.
-        return None
-
-    prompt_length = len(prompt_ids)
-    tokens = np.full((max_length,), _pad_id(tokenizer), dtype=np.int32)
-    tokens[: len(full_ids)] = np.asarray(full_ids, dtype=np.int32)
 
     mask = np.zeros((max_length,), dtype=np.bool_)
-    if assistant_only_loss:
-        mask[prompt_length : len(full_ids)] = True
-    else:
-        mask[: len(full_ids)] = True
+    try:
+        if assistant_only_loss:
+            spans = _assistant_turn_spans(tokenizer, messages, full_ids)
+            if spans is None:
+                return None
+            for start, end in spans:
+                mask[start:end] = True
+            prompt_length = spans[-1][0]
+        else:
+            prompt_ids = _render_ids(
+                tokenizer, messages[:-1], add_generation_prompt=True
+            )
+            if (
+                len(prompt_ids) >= len(full_ids)
+                or full_ids[: len(prompt_ids)] != prompt_ids
+            ):
+                # An exact prompt prefix is still required so prompt_length is
+                # meaningful; a guessed boundary would misreport it.
+                return None
+            prompt_length = len(prompt_ids)
+            mask[: len(full_ids)] = True
+    except (TypeError, ValueError):
+        return None
+
+    tokens = np.full((max_length,), _pad_id(tokenizer), dtype=np.int32)
+    tokens[: len(full_ids)] = np.asarray(full_ids, dtype=np.int32)
 
     return EncodedExample(
         input_tokens=tokens,

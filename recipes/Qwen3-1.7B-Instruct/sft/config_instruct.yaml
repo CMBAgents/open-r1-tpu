@@ -83,9 +83,12 @@ dataset:
   eval_fraction: 0.01
   eval_max_examples: 64
   seed: 42
-  # Only the final assistant turn is supervised, because the encoder derives one
-  # contiguous span from the prompt prefix. Multi-turn conversations therefore
-  # spend attention on earlier assistant turns without learning from them.
+  # Every assistant turn is supervised; user and system tokens carry no loss.
+  # Note the Qwen3 template gives only the final turn the empty <think></think>
+  # scaffold, so intermediate targets start directly with content — matching
+  # what the sampler sees at inference. Examples whose rendering is not
+  # prefix-stable (e.g. assistant content starting with a newline) are dropped
+  # rather than trained with a guessed mask.
   assistant_only_loss: true
   # This corpus has no <think>/</think> traces. Leaving this true would filter
   # every example and yield an empty dataset rather than an error.

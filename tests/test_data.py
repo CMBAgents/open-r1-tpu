@@ -49,6 +49,74 @@ def test_reasoning_trace_uses_assistant_only_loss_mask():
     assert encoded.input_tokens.dtype == np.int32
 
 
+def test_multi_turn_supervises_every_assistant_turn():
+    tokenizer = FakeTokenizer()
+    record = {
+        "messages": [
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "<think>greet</think>Hello"},
+            {"role": "user", "content": "2+2?"},
+            {"role": "assistant", "content": "<think>easy</think>4"},
+        ]
+    }
+    encoded = encode_reasoning_example(record, tokenizer, max_length=256)
+    assert encoded is not None
+
+    rendered = "".join(
+        f"<{m['role']}>{m['content']}</{m['role']}>" for m in record["messages"]
+    )
+    first_start = len("<user>Hi</user><assistant>")
+    first_end = len("<user>Hi</user><assistant><think>greet</think>Hello</assistant>")
+    # The first assistant turn is supervised through its closing tag.
+    assert encoded.input_mask[first_start:first_end].all()
+    # The second user turn and the second assistant header are not.
+    assert not encoded.input_mask[first_end : encoded.prompt_length].any()
+    # The final turn is supervised to the end of the sequence, as before.
+    final_target = "<think>easy</think>4</assistant>"
+    assert encoded.prompt_length == len(rendered) - len(final_target)
+    assert encoded.input_mask[encoded.prompt_length : encoded.unpadded_length].all()
+    assert not encoded.input_mask[: first_start].any()
+    assert not encoded.input_mask[encoded.unpadded_length :].any()
+
+
+def test_assistant_first_conversation_is_filtered():
+    record = {
+        "messages": [
+            {"role": "assistant", "content": "<think>t</think>hello"},
+        ]
+    }
+    assert encode_reasoning_example(record, FakeTokenizer(), max_length=256) is None
+
+
+class ScaffoldPromptTokenizer(FakeTokenizer):
+    """Appends a scaffold to the generation prompt that the full render omits,
+    like Qwen3 with enable_thinking=False, so prefixes are not stable."""
+
+    def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
+        rendered = "".join(
+            f"<{message['role']}>{message['content']}</{message['role']}>"
+            for message in messages
+        )
+        if add_generation_prompt:
+            rendered += "<assistant><pad>"
+        return [ord(character) for character in rendered]
+
+
+def test_prefix_unstable_template_drops_example():
+    record = {
+        "messages": [
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "<think>a</think>hello"},
+            {"role": "user", "content": "More"},
+            {"role": "assistant", "content": "<think>b</think>done"},
+        ]
+    }
+    assert (
+        encode_reasoning_example(record, ScaffoldPromptTokenizer(), max_length=256)
+        is None
+    )
+
+
 def test_missing_reasoning_tags_is_filtered():
     assert (
         encode_reasoning_example(
