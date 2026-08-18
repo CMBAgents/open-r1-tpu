@@ -18,6 +18,7 @@ from typing import Any
 from open_r1_tpu import transcripts
 from open_r1_tpu.config import load_config
 from open_r1_tpu.data import load_reasoning_datasets
+from open_r1_tpu.logging import LOG_LEVELS, configure_logging
 
 
 LOGGER = logging.getLogger(__name__)
@@ -57,6 +58,13 @@ class _SteppedTrainingMetricsBackend:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, help="YAML recipe path")
+    parser.add_argument(
+        "--log-level",
+        default="info",
+        choices=sorted(LOG_LEVELS),
+        type=str.lower,
+        help="Stderr log level. debug restores the demoted library logs.",
+    )
     parser.add_argument(
         "overrides",
         nargs="*",
@@ -455,10 +463,7 @@ def run(config: dict[str, Any]) -> None:
 
 def main() -> None:
     args = _parse_args()
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    configure_logging(LOG_LEVELS[args.log_level])
     config = load_config(args.config, args.overrides)
     run(config)
 

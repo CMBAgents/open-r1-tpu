@@ -498,6 +498,26 @@ mv artifacts/OpenR1-Distill-Qwen3-1.7B/checkpoints \
 tail -f artifacts/train.log
 ```
 
+Orbax's per-step bookkeeping is demoted to `DEBUG`, not discarded. Tunix calls
+`CheckpointManager.save` on every optimizer step and lets Orbax's save policy
+decide whether to write, and Orbax rebuilds its handler registry before
+reaching that decision, so six lines about `BasePyTreeCheckpointHandler`,
+`DefaultCheckpointHandlerRegistry` and `barrier_sync_fn` surround each step's
+single loss line whether or not anything is saved. Every library here logs
+through absl's one logger at `INFO`, so neither the level nor the logger name
+separates them until they are relabelled. Warnings and errors keep their
+level.
+
+```bash
+./scripts/run_sft_tpu.sh --log-level debug    # the demoted records, as DEBUG
+./scripts/run_sft_tpu.sh --log-level warning  # problems only
+```
+
+This lives in [`src/open_r1_tpu/logging.py`](src/open_r1_tpu/logging.py).
+Quietening another package that hides behind absl is one entry in
+`NOISY_PACKAGES`; a library with a logger of its own needs no help, since its
+level can simply be set.
+
 Transcripts accumulate as JSON lines, one object per prompt per interval. This
 summarizes whether the model is learning to close its reasoning traces:
 
