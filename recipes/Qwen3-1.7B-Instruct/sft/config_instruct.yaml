@@ -1,0 +1,165 @@
+# Stage-one general instruction tuning on a single TPU v6e-1 (32 GiB HBM).
+#
+# This recipe turns Qwen3-1.7B-Base into a model that follows instructions and
+# stops on <|im_end|>. It is the input to the reasoning-distillation recipe in
+# recipes/OpenR1-Distill-Qwen3-1.7B, which consumes the merged export below via
+# model.model_source=local. Nothing here trains chain-of-thought: the corpus has
+# no reasoning traces and require_reasoning_tags is off accordingly.
+model:
+  model_name: qwen3-1.7b-base
+  model_id: Qwen/Qwen3-1.7B-Base
+  model_source: huggingface
+  model_path: ""
+  model_download_path: /tmp/open-r1-tpu/models/qwen3-1.7b-base
+  intermediate_ckpt_dir: /tmp/open-r1-tpu/intermediate_ckpt
+  rng_seed: 42
+  model_display: false
+  dtype: bfloat16
+  load_dtype: bfloat16
+  remat_config: DECODER
+  use_flash_attention: true
+  # The splash kernel needs its block size to divide the sequence length.
+  # 1024 divides the 2048 below; change both together.
+  flash_attention_block_size: 1024
+  lora_config:
+    module_path: ".*q_proj|.*k_proj|.*v_proj|.*o_proj|.*gate_proj|.*up_proj|.*down_proj"
+    rank: 64
+    alpha: 64.0
+  mesh:
+    shape: [1, 1]
+    axis_names: [fsdp, tp]
+
+tokenizer:
+  tokenizer_path: Qwen/Qwen3-1.7B-Base
+  tokenizer_type: huggingface
+  add_bos: false
+  add_eos: false
+  # Use the tokenizer's own Qwen3 chat template so this stage and the reasoning
+  # stage teach the same turn structure and the same end-of-turn token.
+  chat_template: null
+
+dataset:
+  # The SFT mix that built SmolLM2-1.7B-Instruct: 1,043,917 train rows over nine
+  # shards, columns `messages` (list of role/content) and an unused `source`.
+  # Size-matched to a 1.7B, unlike the sub-1B smol-smoltalk variant that built
+  # SmolLM2-360M-Instruct.
+  #
+  # Read from Parquet already staged on the VM's local disk, not from the Hub:
+  #   ./scripts/copy_gcs_bucket_data.sh --dataset smoltalk
+  # The bucket is deployment-specific and stays in $GCS_BUCKET. To fall back to
+  # the Hub, override dataset.name=HuggingFaceTB/smoltalk dataset.config=all
+  # dataset.data_files=null.
+  name: parquet
+  config: null
+  train_split: train
+  # `all` is the full mix; its siblings under data/ are the component subsets.
+  # Only the nine train shards are globbed: data_files carries no split mapping
+  # here, so every match lands in the train split and test-00000 would be
+  # trained on.
+  data_files: data/smoltalk/data/all/train-*.parquet
+  messages_column: messages
+  # Four times the tokens per microbatch of the validated 1x1024 distill
+  # baseline, which measured ~5 GiB peak. Most of the increase lands in the
+  # logits tensor (B*T*151936); the loss avoids a one-hot target but still
+  # materializes full logits, so measure peak HBM before raising either value.
+  # For identical training math at lower memory, use batch_size=1 with
+  # gradient_accumulation_steps=32.
+  batch_size: 2
+  # Overlength examples are dropped rather than truncated. Measured under this
+  # encoder on a stratified 8,000-row sample: median templated length 590 tokens,
+  # p90 1,677, p99 3,022. 2048 retains 95.9% of the corpus, with 13.5% of each
+  # padded sequence carrying gradient. Wider windows buy almost no extra data
+  # (4096: 99.6%, 8192: 99.8%) while costing far more than the token count
+  # suggests, because attention is quadratic: one 8192 sequence is roughly 5.5x
+  # one at 2048. The card's 8192 describes what its authors could afford on a
+  # multi-GPU node, not a length this corpus needs. Padding waste is fixable by
+  # packing, blocked on the same segment_ids gap as the splash-attention sampler.
+  max_length: 2048
+  # Inert while max_steps binds. It only keeps the input iterator from exhausting
+  # if max_steps ever exceeds one epoch, which is roughly 32,600 optimizer steps
+  # at this batch size before length filtering.
+  num_train_epochs: 2
+  max_examples: null
+  eval_fraction: 0.01
+  eval_max_examples: 64
+  seed: 42
+  # Only the final assistant turn is supervised, because the encoder derives one
+  # contiguous span from the prompt prefix. Multi-turn conversations therefore
+  # spend attention on earlier assistant turns without learning from them.
+  assistant_only_loss: true
+  # This corpus has no <think>/</think> traces. Leaving this true would filter
+  # every example and yield an empty dataset rather than an error.
+  require_reasoning_tags: false
+  # Must stay null. prepare_messages injects a system prompt into any example
+  # that lacks one, so a reasoning instruction here would appear in front of
+  # every response that does not follow it, training the model to ignore its
+  # system prompt.
+  system_prompt: null
+
+optimizer:
+  # LoRA adapters need roughly an order of magnitude more than the 4.0e-5 the
+  # distill recipe inherited from a full fine-tune of a 7B model.
+  learning_rate: 1.0e-4
+  warmup_ratio: 0.03
+  min_lr_ratio: 0.1
+  b1: 0.9
+  b2: 0.99
+  eps: 1.0e-8
+  weight_decay: 0.1
+  # 1.0 is the standard default. The distill recipe's 0.2 clips almost every
+  # step at this learning rate, which makes the effective step size a function
+  # of the clip threshold rather than the schedule.
+  max_grad_norm: 1.0
+
+training:
+  # max_steps is the training-length control: _compute_max_steps returns it
+  # directly whenever it is set, so dataset.num_train_epochs above is inert and
+  # serves only to keep the input iterator from exhausting. 4000 steps at
+  # 2 x 16 consumes 128,000 examples, 0.12 of one epoch.
+  max_steps: 4000
+  gradient_accumulation_steps: 16
+  eval_every_n_steps: 250
+  checkpoint_dir: artifacts/Qwen3-1.7B-Instruct/checkpoints
+  checkpointing_options:
+    save_interval_steps: 500
+    max_to_keep: 2
+    enable_async_checkpointing: true
+    timeout_secs: 1200
+  metrics_log_dir: artifacts/Qwen3-1.7B-Instruct/logs
+  project_name: open-r1-tpu
+  run_name: qwen3-1.7b-instruct-sft
+  flush_every_n_steps: 10
+  wandb:
+    enabled: true
+    # Leave null to use WANDB_ENTITY or the account's default entity.
+    entity: null
+    mode: online
+    group: qwen3-1.7b-instruct-tuning
+    job_type: sft
+    tags: [tpu, sft, lora, qwen3, instruct]
+    resume: allow
+    save_code: true
+  # Held-out loss says little about whether a model has become conversational,
+  # so free-running samples are worth more in this stage than in the reasoning
+  # stage. Still disabled by default: they add an autoregressive decode, a
+  # second XLA compilation, and a KV cache. Enable once peak HBM is known.
+  transcripts:
+    enabled: false
+    every_n_steps: 500
+    max_new_tokens: 256
+    temperature: 0.0
+    seed: 42
+    log_to_wandb: true
+    output_path: artifacts/Qwen3-1.7B-Instruct/transcripts.jsonl
+    prompts: null
+    cache_size: null
+    max_prompt_length: null
+  data_sharding_axis: [fsdp]
+  max_inflight_computations: 1
+
+export:
+  enabled: true
+  overwrite: true
+  # The reasoning stage reads this directory with model.model_source=local, which
+  # requires an unsharded model.safetensors here.
+  output_dir: artifacts/Qwen3-1.7B-Instruct/merged

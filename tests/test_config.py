@@ -15,6 +15,10 @@ RECIPE = (
     Path(__file__).parents[1]
     / "recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml"
 )
+INSTRUCT_RECIPE = (
+    Path(__file__).parents[1]
+    / "recipes/Qwen3-1.7B-Instruct/sft/config_instruct.yaml"
+)
 
 
 def test_parse_override_uses_yaml_types():
@@ -44,6 +48,57 @@ def test_default_recipe_targets_one_32gb_tpu():
     assert config["training"]["gradient_accumulation_steps"] == 8
     assert config["training"]["project_name"] == "open-r1-tpu"
     assert config["training"]["wandb"]["entity"] is None
+
+
+@pytest.mark.parametrize(
+    "recipe", [RECIPE, INSTRUCT_RECIPE], ids=["distill", "instruct"]
+)
+def test_every_recipe_targets_one_device_and_names_no_entity(recipe):
+    config = load_config(recipe)
+
+    assert config["model"]["mesh"]["shape"] == [1, 1]
+    # Deployment-specific values belong in the environment, not in the recipe.
+    assert config["training"]["wandb"]["entity"] is None
+    # The splash attention kernel requires its block size to divide the
+    # sequence length, and fails at trace time rather than at load time.
+    block_size = config["model"]["flash_attention_block_size"]
+    assert config["dataset"]["max_length"] % block_size == 0
+
+
+def test_instruct_recipe_does_not_filter_on_reasoning_tags():
+    config = load_config(INSTRUCT_RECIPE)
+
+    # SmolTalk carries no <think>/</think> traces. Requiring them would filter
+    # every example and train on an empty dataset instead of raising.
+    assert config["dataset"]["require_reasoning_tags"] is False
+    # prepare_messages injects a system prompt wherever an example lacks one, so
+    # a reasoning instruction here would precede every response that ignores it.
+    assert config["dataset"]["system_prompt"] is None
+    assert config["dataset"]["assistant_only_loss"] is True
+
+
+def test_instruct_recipe_reads_staged_parquet_rather_than_the_hub():
+    config = load_config(INSTRUCT_RECIPE)
+
+    assert config["dataset"]["name"] == "parquet"
+    data_files = config["dataset"]["data_files"]
+    # data_files carries no split mapping, so every match lands in the train
+    # split. Globbing the test shard alongside them would train on held-out data.
+    assert "train-" in data_files
+    assert "test" not in data_files
+
+
+def test_instruct_recipe_exports_where_the_distill_recipe_can_read_it():
+    instruct = load_config(INSTRUCT_RECIPE)
+    distill = load_config(RECIPE)
+
+    # The stages are chained through the merged export, so they must not share a
+    # checkpoint directory or the second run would restore the first one's state.
+    assert instruct["export"]["enabled"] is True
+    assert (
+        instruct["training"]["checkpoint_dir"]
+        != distill["training"]["checkpoint_dir"]
+    )
 
 
 def test_invalid_mesh_is_rejected():

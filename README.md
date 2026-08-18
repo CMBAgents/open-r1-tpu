@@ -150,15 +150,18 @@ GCS to local disk without passing through a workstation. The bucket comes from
 ```bash
 ./scripts/copy_gcs_bucket_data.sh
 ./scripts/copy_gcs_bucket_data.sh --bucket gs://another-bucket
+./scripts/copy_gcs_bucket_data.sh --dataset smoltalk
 ```
 
-It expects `models/Qwen3-1.7B-Base` and `datasets/Mixture-of-Thoughts` inside
-the bucket, copying them to `models/Qwen3-1.7B-Base` and
-`data/Mixture-of-Thoughts` locally. Set `$GCS_MODEL_PREFIX` or
-`$GCS_DATA_PREFIX` for a different layout. Afterwards it reports the Parquet
-shard count and on-disk sizes, warning rather than failing silently if either
-copy looks empty. `gcloud storage rsync` is incremental, so re-running after an
-interrupted copy resumes cheaply.
+It reads `models/Qwen3-1.7B-Base` and `datasets/NAME` from the bucket, writing
+them to `models/Qwen3-1.7B-Base` and `data/NAME` locally. `NAME` comes from
+`--dataset` or `$GCS_DATASET` and defaults to `Mixture-of-Thoughts`; the
+instruction-tuning corpus is `smoltalk`. Set `$GCS_MODEL_PREFIX`,
+`$GCS_DATA_PREFIX`, or `$GCS_DATA_GLOB` for a different layout. Afterwards it
+reports how many Parquet shards the *training glob* matches — not merely how many
+were copied — along with on-disk sizes, warning rather than failing silently if
+either copy looks empty. `gcloud storage rsync` is incremental, so re-running
+after an interrupted copy resumes cheaply.
 
 The equivalent by hand:
 
@@ -167,8 +170,8 @@ gcloud storage rsync \
   gs://your-bucket/models/Qwen3-1.7B-Base \
   models/Qwen3-1.7B-Base --recursive
 gcloud storage rsync \
-  gs://your-bucket/datasets/Mixture-of-Thoughts \
-  data/Mixture-of-Thoughts --recursive
+  gs://your-bucket/datasets/smoltalk \
+  data/smoltalk --recursive
 ```
 
 For copied model and data, add these local-input overrides to the launcher; the
@@ -340,6 +343,74 @@ Set `training.wandb.mode=offline` to keep W&B data local for later syncing, or
 restoring an Orbax checkpoint, preserve the W&B log directory and set
 `WANDB_RUN_ID` to the original run ID; the recipe's `resume: allow` will then
 append to that run.
+
+## Instruction tuning before reasoning SFT
+
+[`recipes/Qwen3-1.7B-Instruct/sft/config_instruct.yaml`](recipes/Qwen3-1.7B-Instruct/sft/config_instruct.yaml)
+trains general instruction following on `smoltalk` (1,043,917 train rows), the
+SFT mix that built SmolLM2-1.7B-Instruct. It produces a base model that answers
+ordinary requests and stops on `<|im_end|>`, which the reasoning recipe can then
+specialise. Both stages use the tokenizer's own Qwen3 chat template, so the turn
+structure and end-of-turn token stay the same across them.
+
+The corpus was built for an 8192 sequence, and its `longalign` subset exists
+specifically to hold long-context ability beyond 2048 tokens. At the recipe's
+`max_length: 2048` that subset is filtered out entirely, along with the tail of
+every other subset, so measure the retained count on the first run. Raising
+`max_length` is the main lever if too much is lost; the sub-1B `smol-smoltalk`
+variant is the other direction, with shorter samples and higher retention.
+
+Unlike the reasoning recipe, this one defaults to Parquet already staged on the
+VM's local disk rather than to the Hub, so stage the corpus first:
+
+```bash
+./scripts/copy_gcs_bucket_data.sh --dataset smoltalk
+```
+
+That writes `data/smoltalk/data/all/train-0000{0..8}-of-00009.parquet`, which is
+what the recipe globs. `all` is the full mix; the sibling directories under
+`data/` are its component subsets. `test-00000-of-00001.parquet` lands beside the
+train shards and is deliberately excluded: `dataset.data_files` carries no split
+mapping, so every match would be loaded into the train split. The held-out set
+comes from `dataset.eval_fraction` instead.
+
+`run_sft_tpu.sh` defaults to the reasoning recipe; select this one with `RECIPE`:
+
+```bash
+RECIPE=recipes/Qwen3-1.7B-Instruct/sft/config_instruct.yaml \
+  ./scripts/run_sft_tpu.sh \
+  model.model_source=local \
+  model.model_path=models/Qwen3-1.7B-Base \
+  tokenizer.tokenizer_path=models/Qwen3-1.7B-Base \
+  training.project_name="${WANDB_PROJECT}" \
+  2>&1 | tee -a artifacts/instruct.log
+```
+
+To pull the corpus from the Hub instead, override `dataset.name`, name the
+config, and clear the glob:
+`dataset.name=HuggingFaceTB/smoltalk dataset.config=all dataset.data_files=null`.
+
+Two settings differ from the reasoning recipe for reasons that are easy to get
+wrong. `dataset.require_reasoning_tags` is `false`, because SmolTalk carries no
+`<think>`/`</think>` traces and requiring them filters every example into an
+empty dataset rather than raising. `dataset.system_prompt` is `null`, because
+`prepare_messages` injects a system prompt into any example that lacks one, and a
+reasoning instruction in front of responses that ignore it teaches the model to
+disregard its system prompt.
+
+The stage writes a merged export to `artifacts/Qwen3-1.7B-Instruct/merged`. Point
+the reasoning run at it to chain the two:
+
+```bash
+./scripts/run_sft_tpu.sh \
+  model.model_source=local \
+  model.model_path=artifacts/Qwen3-1.7B-Instruct/merged
+```
+
+Reasoning SFT on its own data will erode general instruction following, so mix
+some of this stage's corpus back in if both behaviours matter. Going straight
+from base to reasoning SFT is also viable — the DeepSeek-R1 distills did exactly
+that — and sequencing is mainly worth it to isolate what the reasoning stage adds.
 
 ## Full reasoning SFT
 
