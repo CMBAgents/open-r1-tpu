@@ -140,11 +140,6 @@ def validate_options(args: argparse.Namespace) -> None:
         raise ValueError("--max-new-tokens must be positive")
     if args.max_prompt_length <= 0:
         raise ValueError("--max-prompt-length must be positive")
-    if args.max_prompt_length % FLASH_ATTENTION_BLOCK_SIZE != 0:
-        raise ValueError(
-            "--max-prompt-length must be divisible by "
-            f"{FLASH_ATTENTION_BLOCK_SIZE} when flash attention is enabled"
-        )
     if args.temperature < 0:
         raise ValueError("--temperature cannot be negative")
 
@@ -173,7 +168,7 @@ def model_config(
     model_path: str,
     seed: int,
     *,
-    use_flash_attention: bool = True,
+    use_flash_attention: bool,
     lora_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return the inference-safe subset of the project's Qwen TPU settings."""
@@ -408,7 +403,7 @@ def fit_history(
 
 
 def load_runtime(
-    args: argparse.Namespace, *, use_flash_attention: bool = True
+    args: argparse.Namespace, *, use_flash_attention: bool = False
 ) -> tuple[Any, Any, Any, Any]:
     """Create one TPU mesh, the local model, its tokenizer, and a sampler."""
     import jax

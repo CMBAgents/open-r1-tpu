@@ -211,11 +211,13 @@ def test_visible_reply_keeps_a_reasoning_trace_that_has_content():
 
 
 def test_model_config_carries_lora_only_when_asked():
-    assert "lora_config" not in chat.model_config("/models/base", 0)
+    assert "lora_config" not in chat.model_config(
+        "/models/base", 0, use_flash_attention=False
+    )
     lora = {"rank": 8, "alpha": 8.0, "module_path": ".*q_proj"}
-    assert chat.model_config("/models/base", 0, lora_config=lora)[
-        "lora_config"
-    ] == lora
+    assert chat.model_config(
+        "/models/base", 0, use_flash_attention=False, lora_config=lora
+    )["lora_config"] == lora
 
 
 def test_recipe_lora_settings_match_the_instruct_recipe():
@@ -230,6 +232,22 @@ def test_recipe_lora_settings_match_the_instruct_recipe():
     assert lora_config["rank"] == 64
     assert lora_config["alpha"] == 64.0
     assert checkpoint_dir.endswith("Qwen3-1.7B-Instruct/checkpoints")
+
+
+def test_chat_prompt_length_need_not_match_splash_block(tmp_path):
+    (tmp_path / "model.safetensors").write_bytes(b"")
+    args = SimpleNamespace(
+        max_new_tokens=8,
+        max_prompt_length=17,
+        temperature=0.0,
+        model_path=str(tmp_path),
+        recipe=None,
+        checkpoint_dir=None,
+    )
+
+    chat.validate_options(args)
+
+    assert args.model_path == str(tmp_path.resolve())
 
 
 def test_checkpoint_dir_without_a_recipe_is_rejected(tmp_path):
