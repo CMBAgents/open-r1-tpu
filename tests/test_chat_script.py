@@ -220,10 +220,10 @@ def test_model_config_carries_lora_only_when_asked():
     )["lora_config"] == lora
 
 
-def test_recipe_lora_settings_match_the_instruct_recipe():
+def test_recipe_lora_settings_match_the_distill_recipe():
     recipe = (
         Path(__file__).parents[1]
-        / "recipes/Qwen3-1.7B-Instruct/sft/config_instruct.yaml"
+        / "recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml"
     )
     lora_config, checkpoint_dir = chat.recipe_lora_settings(str(recipe))
 
@@ -231,7 +231,19 @@ def test_recipe_lora_settings_match_the_instruct_recipe():
     # confident nonsense rather than an error, so these must come from there.
     assert lora_config["rank"] == 64
     assert lora_config["alpha"] == 64.0
-    assert checkpoint_dir.endswith("Qwen3-1.7B-Instruct/checkpoints")
+    assert checkpoint_dir.endswith("OpenR1-Distill-Qwen3-1.7B/checkpoints")
+
+
+def test_full_finetune_recipe_is_rejected_for_lora_restore():
+    # The instruct recipe now trains all parameters; the chat client restores
+    # LoRA adapters only, so it must refuse the recipe rather than silently
+    # chat with the untrained base model.
+    recipe = (
+        Path(__file__).parents[1]
+        / "recipes/Qwen3-1.7B-Instruct/sft/config_instruct.yaml"
+    )
+    with pytest.raises(ValueError, match="trains no LoRA adapters"):
+        chat.recipe_lora_settings(str(recipe))
 
 
 def test_chat_prompt_length_need_not_match_splash_block(tmp_path):

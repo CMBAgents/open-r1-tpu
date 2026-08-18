@@ -5,6 +5,14 @@
 # recipes/OpenR1-Distill-Qwen3-1.7B, which consumes the merged export below via
 # model.model_source=local. Nothing here trains chain-of-thought: the corpus has
 # no reasoning traces and require_reasoning_tags is off accordingly.
+#
+# Full-parameter fine-tune. The LoRA run to step 4000 chatted coherently but
+# could not emit the special chat tokens (<think>, </think>, <|im_end|>): their
+# rows live in the tied embedding matrix, which LoRA freezes. Training all
+# parameters includes that matrix. Fixed optimizer state is ~20.6 GiB of the
+# 32 GiB HBM (bf16 params and grads, fp32 Adam moments), which is why the
+# microbatch below is 1. Mid-run chat inspection is unavailable: the chat
+# client restores LoRA adapters only, so judge this run by its merged export.
 model:
   model_name: qwen3-1.7b-base
   model_id: Qwen/Qwen3-1.7B-Base
@@ -21,10 +29,6 @@ model:
   # The splash kernel needs its block size to divide the sequence length.
   # 1024 divides the 2048 below; change both together.
   flash_attention_block_size: 1024
-  lora_config:
-    module_path: ".*q_proj|.*k_proj|.*v_proj|.*o_proj|.*gate_proj|.*up_proj|.*down_proj"
-    rank: 64
-    alpha: 64.0
   mesh:
     shape: [1, 1]
     axis_names: [fsdp, tp]
@@ -58,13 +62,11 @@ dataset:
   # trained on.
   data_files: data/smoltalk/data/all/train-*.parquet
   messages_column: messages
-  # Four times the tokens per microbatch of the validated 1x1024 distill
-  # baseline, which measured ~5 GiB peak. Most of the increase lands in the
-  # logits tensor (B*T*151936); the loss avoids a one-hot target but still
-  # materializes full logits, so measure peak HBM before raising either value.
-  # For identical training math at lower memory, use batch_size=1 with
-  # gradient_accumulation_steps=32.
-  batch_size: 2
+  # Full-parameter training holds ~20.6 GiB of fixed state before the first
+  # batch, so the microbatch stays at 1 and the logits tensor (B*T*151936) is
+  # the main transient. Effective batch stays 32 via accumulation. Measure peak
+  # HBM before raising this.
+  batch_size: 1
   # Overlength examples are dropped rather than truncated. Measured under this
   # encoder on a stratified 8,000-row sample: median templated length 590 tokens,
   # p90 1,677, p99 3,022. 2048 retains 95.9% of the corpus, with 13.5% of each
@@ -100,15 +102,18 @@ dataset:
   system_prompt: null
 
 optimizer:
-  # LoRA adapters need roughly an order of magnitude more than the 4.0e-5 the
-  # distill recipe inherited from a full fine-tune of a 7B model.
-  learning_rate: 1.0e-4
+  # Full-fine-tune rate, roughly an order of magnitude below the 1.0e-4 the
+  # LoRA run used. Tulu 3 used 5.0e-6 for an 8B; a 1.7B tolerates a bit more.
+  learning_rate: 1.0e-5
   warmup_ratio: 0.03
   min_lr_ratio: 0.1
   b1: 0.9
   b2: 0.99
   eps: 1.0e-8
-  weight_decay: 0.1
+  # Standard for SFT (Tulu 3 uses 0). The previous 0.1 only pulled LoRA
+  # adapters toward the base model; on full parameters it would decay the
+  # pretrained weights themselves.
+  weight_decay: 0.0
   # 1.0 is the standard default. The distill recipe's 0.2 clips almost every
   # step at this learning rate, which makes the effective step size a function
   # of the clip threshold rather than the schedule.
@@ -118,19 +123,24 @@ training:
   # max_steps is the training-length control: _compute_max_steps returns it
   # directly whenever it is set, so dataset.num_train_epochs above is inert and
   # serves only to keep the input iterator from exhausting. 4000 steps at
-  # 2 x 16 consumes 128,000 examples, 0.12 of one epoch.
+  # 1 x 32 consumes 128,000 examples, 0.12 of one epoch.
   max_steps: 4000
-  gradient_accumulation_steps: 16
+  gradient_accumulation_steps: 32
   eval_every_n_steps: 250
   checkpoint_dir: artifacts/Qwen3-1.7B-Instruct/checkpoints
   checkpointing_options:
+    # Full-state checkpoints carry all params plus fp32 Adam moments — on the
+    # order of 17 GiB each, so max_to_keep: 2 is also a disk budget (~56 GiB
+    # free on the VM).
     save_interval_steps: 500
     max_to_keep: 2
     enable_async_checkpointing: true
     timeout_secs: 1200
   metrics_log_dir: artifacts/Qwen3-1.7B-Instruct/logs
   project_name: open-r1-tpu
-  run_name: qwen3-1.7b-instruct-sft
+  # Distinct from the LoRA run's name so wandb.resume: allow cannot append
+  # this run to the old one.
+  run_name: qwen3-1.7b-instruct-sft-full
   flush_every_n_steps: 10
   wandb:
     enabled: true
@@ -139,7 +149,7 @@ training:
     mode: online
     group: qwen3-1.7b-instruct-tuning
     job_type: sft
-    tags: [tpu, sft, lora, qwen3, instruct]
+    tags: [tpu, sft, full-finetune, qwen3, instruct]
     resume: allow
     save_code: true
   # Held-out loss says little about whether a model has become conversational,
