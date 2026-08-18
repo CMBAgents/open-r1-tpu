@@ -259,7 +259,7 @@ def _create_optimizer(config: dict[str, Any], max_steps: int):
     return optax.chain(optax.clip_by_global_norm(float(max_grad_norm)), adamw)
 
 
-def _export_merged_lora(
+def _export_model(
     *,
     config: dict[str, Any],
     model: Any,
@@ -268,18 +268,6 @@ def _export_merged_lora(
     export = config.get("export", {})
     if not export.get("enabled", False):
         return
-
-    from tunix.models import automodel
-
-    params_module = automodel.get_model_module(
-        config["model"]["model_name"], automodel.ModelModule.PARAMS
-    )
-    save_fn = getattr(params_module, "save_lora_merged_model_as_safetensors", None)
-    if save_fn is None:
-        raise NotImplementedError(
-            "This Tunix model does not expose merged-LoRA safetensors export. "
-            "Disable export.enabled or choose a supported model such as Qwen3."
-        )
 
     output_path = Path(export["output_dir"]).expanduser().resolve()
     protected_paths = {
@@ -301,15 +289,46 @@ def _export_merged_lora(
             "export.overwrite=true to replace it."
         )
     output_dir = str(output_path)
-    lora = config["model"].get("lora_config", {})
-    LOGGER.info("Exporting merged SFT model to %s", output_dir)
-    save_fn(
-        local_model_path=local_model_path,
-        output_dir=output_dir,
-        lora_model=model,
-        rank=int(lora["rank"]),
-        alpha=float(lora["alpha"]),
-    )
+    lora = config["model"].get("lora_config")
+    if lora:
+        from tunix.models import automodel
+
+        params_module = automodel.get_model_module(
+            config["model"]["model_name"], automodel.ModelModule.PARAMS
+        )
+        save_fn = getattr(
+            params_module, "save_lora_merged_model_as_safetensors", None
+        )
+        if save_fn is None:
+            raise NotImplementedError(
+                "This Tunix model does not expose merged-LoRA safetensors "
+                "export. Disable export.enabled or choose a supported model "
+                "such as Qwen3."
+            )
+        LOGGER.info("Exporting merged SFT model to %s", output_dir)
+        save_fn(
+            local_model_path=local_model_path,
+            output_dir=output_dir,
+            lora_model=model,
+            rank=int(lora["rank"]),
+            alpha=float(lora["alpha"]),
+        )
+    else:
+        # Full fine-tune: no adapters to merge, so write the live parameters.
+        # The exporter's key mapping is Qwen3-specific.
+        if not str(config["model"]["model_name"]).startswith("qwen3"):
+            raise NotImplementedError(
+                "Full-model safetensors export is only implemented for Qwen3. "
+                "Disable export.enabled for other models."
+            )
+        from open_r1_tpu.safetensors_export import export_full_model
+
+        LOGGER.info("Exporting full fine-tuned model to %s", output_dir)
+        export_full_model(
+            model=model,
+            local_model_path=local_model_path,
+            output_dir=output_dir,
+        )
 
 
 def run(config: dict[str, Any]) -> None:
@@ -454,7 +473,7 @@ def run(config: dict[str, Any]) -> None:
         local_model_path = model_config.get("model_path")
     if not local_model_path:
         raise ValueError("No local base-model path is available for merged export")
-    _export_merged_lora(
+    _export_model(
         config=config,
         model=model,
         local_model_path=local_model_path,
