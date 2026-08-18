@@ -12,6 +12,10 @@ license = {text = "Apache-2.0"}
 dependencies = [
   "datasets>=3.0",
   "gcsfs>=2024.6",
+  # Exact-commit pin, deliberately not a PyPI release: the code needs main-only
+  # APIs (e.g. WeightedMetric, absent from v0.1.7), and a hash keeps installs
+  # byte-stable where a branch ref would drift. See "Tunix compatibility" in
+  # AGENTS.md before moving it.
   "google-tunix @ git+https://github.com/google/tunix.git@984bf89b1117c94406dc43e3dfb8d2a198a6353d",
   "numpy>=1.26",
   "pyyaml>=6.0",

@@ -72,14 +72,35 @@ The default path is:
 
 ## Tunix compatibility
 
-Tunix is pinned to an exact Git commit in `pyproject.toml`. Code may rely on the
-APIs at that commit, but any pin update requires a fresh review of:
+Tunix is pinned to an exact Git commit in `pyproject.toml`. The pin is a Git
+commit rather than a PyPI release for two reasons:
+
+- The code relies on APIs that exist only on `main`. Concretely,
+  `WeightedMetric` — which the custom loss in `src/open_r1_tpu/sft.py` returns
+  so that loss sums and denominators aggregate correctly across gradient
+  accumulation — is absent from the newest release (`v0.1.7`, checked
+  2026-08-18), so installing any released version breaks training at the first
+  step. Tunix cuts releases roughly quarterly while `main` moves daily.
+- Given a Git dependency, an exact hash rather than a branch ref keeps the
+  installed code byte-stable: `@main` re-resolves on every install, so two VMs
+  set up days apart would silently run different Tunix. Training runs are
+  recorded with verbatim launch commands, and that reproducibility is only
+  meaningful if the environment is fixed.
+
+Do not move the pin casually; nothing currently upstream earns it. The two
+upstream changes that would are a native full-model (non-LoRA) safetensors
+saver, which would replace `src/open_r1_tpu/safetensors_export.py`, and a
+`segment_ids` handoff into Qwen splash attention, which would fix padded
+splash inference and unblock packing. Any pin update requires a fresh review
+of:
 
 - `PeftTrainer`, `TrainingConfig`, and `with_loss_fn`;
 - `TrainingInput`, `LossOutput`, and `WeightedMetric`;
 - model and tokenizer creation helpers;
 - Qwen3 internal LoRA module paths;
-- Qwen3 merged-LoRA safetensors export; and
+- Qwen3 merged-LoRA safetensors export;
+- the Qwen3 loader key/transform mapping in `tunix/models/qwen3/params.py`,
+  which `src/open_r1_tpu/safetensors_export.py` inverts; and
 - checkpoint option construction.
 
 Do not claim that training is TPU-compatible merely because unit tests pass on
