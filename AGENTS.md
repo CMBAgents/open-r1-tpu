@@ -89,10 +89,12 @@ commit rather than a PyPI release for two reasons:
 
 Do not move the pin casually; nothing currently upstream earns it. The two
 upstream changes that would are a native full-model (non-LoRA) safetensors
-saver, which would replace `src/open_r1_tpu/safetensors_export.py`, and a
-`segment_ids` handoff into Qwen splash attention, which would fix padded
-splash inference and unblock packing. Any pin update requires a fresh review
-of:
+saver, which would replace `src/open_r1_tpu/safetensors_export.py`, and the
+sampler passing `segment_ids` into Qwen splash attention, which would fix
+padded splash inference. (The pinned model itself already accepts
+`segment_ids`; training-side packing uses that directly through the custom
+`gen_model_input`/loss in `src/open_r1_tpu/sft.py` — the gap is only that the
+sampler never supplies them.) Any pin update requires a fresh review of:
 
 - `PeftTrainer`, `TrainingConfig`, and `with_loss_fn`;
 - `TrainingInput`, `LossOutput`, and `WeightedMetric`;

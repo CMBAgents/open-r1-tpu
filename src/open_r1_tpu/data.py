@@ -275,6 +275,117 @@ def encode_reasoning_example(
     )
 
 
+# Fields of one packed window and of the batches the trainer receives when
+# packing is enabled. segment_ids are 1..K per packed example and 0 on padding;
+# positions restart at 0 for each segment so RoPE sees per-example offsets.
+PACKED_FIELDS = ("input_tokens", "input_mask", "positions", "segment_ids")
+
+
+class _OpenWindow:
+    """A partially filled fixed-length window accepting further examples."""
+
+    def __init__(self, max_length: int, pad_id: int):
+        self.input_tokens = np.full((max_length,), pad_id, dtype=np.int32)
+        self.input_mask = np.zeros((max_length,), dtype=np.bool_)
+        self.positions = np.zeros((max_length,), dtype=np.int32)
+        self.segment_ids = np.zeros((max_length,), dtype=np.int32)
+        self.used = 0
+        self.segments = 0
+
+    def append(self, example: EncodedExample) -> None:
+        length = int(example.unpadded_length)
+        start, end = self.used, self.used + length
+        self.input_tokens[start:end] = example.input_tokens[:length]
+        self.input_mask[start:end] = example.input_mask[:length]
+        # After the causal shift, a segment's first token would be predicted
+        # from the previous segment's final position, so it never carries loss.
+        # Chat headers make this a no-op under assistant-only supervision.
+        self.input_mask[start] = False
+        self.positions[start:end] = np.arange(length, dtype=np.int32)
+        self.segments += 1
+        self.segment_ids[start:end] = self.segments
+        self.used = end
+
+    def as_dict(self) -> dict[str, np.ndarray]:
+        return {field: getattr(self, field) for field in PACKED_FIELDS}
+
+
+def pack_encoded_examples(
+    examples: Iterable[EncodedExample],
+    *,
+    max_length: int,
+    pad_id: int,
+    open_windows: int = 8,
+) -> Iterable[dict[str, np.ndarray]]:
+    """Pack variable-length examples into fixed windows, first fit.
+
+    Up to ``open_windows`` windows accept examples at once; an example lands in
+    the first window with room. When none has room and the pool is full, the
+    fullest window is emitted, which keeps the emitted fill fraction high
+    without unbounded buffering. All windows flush at the end of the stream.
+    """
+    if open_windows < 1:
+        raise ValueError("open_windows must be at least 1")
+    pool: list[_OpenWindow] = []
+    for example in examples:
+        length = int(example.unpadded_length)
+        if length > max_length:
+            raise ValueError("example is longer than the packing window")
+        window = next((w for w in pool if w.used + length <= max_length), None)
+        if window is None:
+            if len(pool) == open_windows:
+                fullest = max(pool, key=lambda w: w.used)
+                pool.remove(fullest)
+                yield fullest.as_dict()
+            window = _OpenWindow(max_length, pad_id)
+            pool.append(window)
+        window.append(example)
+    for window in pool:
+        yield window.as_dict()
+
+
+class PackedBatchDataset:
+    """Re-iterable packing + batching stage over encoded examples.
+
+    Yields ``{field: [batch, max_length]}`` dict batches carrying the packed
+    geometry (positions, segment_ids) that ``TrainingInput`` cannot represent;
+    the trainer treats batches as pytrees, so dicts pass through unchanged.
+    A short final batch is dropped, matching ``batch(drop_remainder=True)``.
+    """
+
+    def __init__(
+        self,
+        source: Iterable[EncodedExample],
+        *,
+        max_length: int,
+        pad_id: int,
+        batch_size: int,
+        open_windows: int = 8,
+    ):
+        self._source = source
+        self._max_length = max_length
+        self._pad_id = pad_id
+        self._batch_size = batch_size
+        self._open_windows = open_windows
+
+    def __iter__(self) -> Any:
+        buffer: list[dict[str, np.ndarray]] = []
+        windows = pack_encoded_examples(
+            iter(self._source),
+            max_length=self._max_length,
+            pad_id=self._pad_id,
+            open_windows=self._open_windows,
+        )
+        for window in windows:
+            buffer.append(window)
+            if len(buffer) == self._batch_size:
+                yield {
+                    field: np.stack([window[field] for window in buffer])
+                    for field in PACKED_FIELDS
+                }
+                buffer = []
+
+
 def build_grain_dataset(
     data_source: Any,
     tokenizer: Any,
@@ -284,6 +395,7 @@ def build_grain_dataset(
     shuffle: bool,
     seed: int,
     encode_kwargs: dict[str, Any],
+    packing: bool = False,
 ) -> Iterable[Any]:
     """Build a lazy, fixed-shape Grain dataset for Tunix ``PeftTrainer``."""
     from grain import python as grain
@@ -298,6 +410,15 @@ def build_grain_dataset(
         lambda record: encode_reasoning_example(record, tokenizer, **encode_kwargs)
     )
     dataset = dataset.filter(lambda example: example is not None)
+    if packing:
+        # Packing is stateful across examples, so it runs after Grain as a
+        # re-iterable wrapper that also batches.
+        return PackedBatchDataset(
+            dataset.to_iter_dataset(),
+            max_length=int(encode_kwargs["max_length"]),
+            pad_id=_pad_id(tokenizer),
+            batch_size=batch_size,
+        )
     dataset = dataset.map(
         lambda example: TrainingInput(
             input_tokens=example.input_tokens,
@@ -354,6 +475,7 @@ def load_reasoning_datasets(config: dict[str, Any], tokenizer: Any) -> tuple[Any
         "batch_size": int(config["batch_size"]),
         "seed": int(config.get("seed", 42)),
         "encode_kwargs": encode_kwargs,
+        "packing": bool(config.get("packing", False)),
     }
     train_ds = build_grain_dataset(
         train_source,

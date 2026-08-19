@@ -86,6 +86,20 @@ def test_instruct_recipe_reads_staged_parquet_rather_than_the_hub():
     assert "test" not in data_files
 
 
+def test_instruct_recipe_packs_and_trains_without_eval():
+    config = load_config(INSTRUCT_RECIPE)
+
+    # Packing carries segment geometry the trainer needs; without it two-thirds
+    # of every 2048-token window is padding on this corpus.
+    assert config["dataset"]["packing"] is True
+    # Eval is off: the measured 250-step eval spikes reached 99.9% of HBM, and
+    # batch_size 2 spends that headroom on throughput instead.
+    assert config["dataset"]["eval_fraction"] == 0.0
+    assert config["dataset"]["batch_size"] == 2
+    # Effective batch stays 32 windows per optimizer step.
+    assert config["training"]["gradient_accumulation_steps"] == 16
+
+
 def test_instruct_recipe_exports_where_the_distill_recipe_can_read_it():
     instruct = load_config(INSTRUCT_RECIPE)
     distill = load_config(RECIPE)

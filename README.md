@@ -409,10 +409,16 @@ suggests, because attention is quadratic: one 8192 sequence runs to roughly 5.5x
 one at 2048. The 8192 sequence length on the dataset card describes what its
 authors could afford on a multi-GPU node, not a length this corpus needs.
 
-Padding is the dominant cost at any window: 86.5% of each sequence is pad even at
-2048, and pad positions still cost full forward and backward compute because the
-masks gate the loss, not the matmuls. Packing would recover most of that and is
-blocked on the same `segment_ids` gap as the splash-attention sampler.
+Padding would otherwise dominate at any window — 86.5% of each sequence is pad
+even at 2048, and pad positions cost full forward and backward compute because
+the masks gate the loss, not the matmuls — so the recipe packs whole examples
+into 2048-token windows first fit (`dataset.packing: true`). Attention cannot
+cross example boundaries: per-token `segment_ids` gate the splash kernel, the
+non-flash path receives a block-diagonal causal mask, and RoPE positions restart
+per example. A segment's first token is never supervised, since the causal shift
+would predict it from the preceding example. The `segment_ids` gap that still
+stands is the sampler's: interactive inference does not pass them, which is why
+chat runs with masked attention.
 
 Unlike the reasoning recipe, this one defaults to Parquet already staged on the
 VM's local disk rather than to the Hub, so stage the corpus first:

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
+import pytest
 
 from open_r1_tpu import data as data_module
 from open_r1_tpu.data import encode_reasoning_example, normalize_messages
@@ -297,3 +298,155 @@ def test_eval_split_cap_never_exceeds_the_split(monkeypatch):
         FakeTokenizer(),
     )
     assert raw.eval.selected == list(range(4))
+
+
+def _encoded(tokens, supervised_from, *, max_length=16, pad_id=0):
+    """Build an EncodedExample directly, bypassing the tokenizer."""
+    padded = np.full((max_length,), pad_id, dtype=np.int32)
+    padded[: len(tokens)] = tokens
+    mask = np.zeros((max_length,), dtype=np.bool_)
+    mask[supervised_from : len(tokens)] = True
+    return data_module.EncodedExample(
+        input_tokens=padded,
+        input_mask=mask,
+        prompt_length=supervised_from,
+        unpadded_length=len(tokens),
+    )
+
+
+def test_packing_concatenates_examples_with_segment_geometry():
+    examples = [
+        _encoded([11, 12, 13], 1),
+        _encoded([21, 22, 23, 24], 2),
+    ]
+    windows = list(data_module.pack_encoded_examples(examples, max_length=10, pad_id=0))
+    assert len(windows) == 1
+    window = windows[0]
+    assert window["input_tokens"].tolist() == [11, 12, 13, 21, 22, 23, 24, 0, 0, 0]
+    assert window["segment_ids"].tolist() == [1, 1, 1, 2, 2, 2, 2, 0, 0, 0]
+    # RoPE positions restart at every example boundary.
+    assert window["positions"].tolist() == [0, 1, 2, 0, 1, 2, 3, 0, 0, 0]
+    assert window["input_mask"].tolist() == [
+        False,
+        True,
+        True,
+        False,
+        False,
+        True,
+        True,
+        False,
+        False,
+        False,
+    ]
+    assert window["input_tokens"].dtype == np.int32
+    assert window["segment_ids"].dtype == np.int32
+    assert window["positions"].dtype == np.int32
+
+
+def test_packing_never_supervises_a_segment_start():
+    # A fully supervised example: after the causal shift its first token would
+    # be predicted from the preceding segment's final position.
+    examples = [_encoded([11, 12], 0), _encoded([21, 22], 0)]
+    (window,) = data_module.pack_encoded_examples(examples, max_length=8, pad_id=0)
+    assert window["input_mask"].tolist() == [
+        False,
+        True,
+        False,
+        True,
+        False,
+        False,
+        False,
+        False,
+    ]
+
+
+def test_packing_uses_first_fit_across_open_windows():
+    examples = [
+        _encoded([1] * 6, 0),
+        _encoded([2] * 5, 0),
+        _encoded([3] * 2, 0),
+    ]
+    windows = list(data_module.pack_encoded_examples(examples, max_length=8, pad_id=0))
+    assert len(windows) == 2
+    # The third example returns to the first window's remaining space.
+    assert windows[0]["input_tokens"].tolist() == [1, 1, 1, 1, 1, 1, 3, 3]
+    assert windows[0]["segment_ids"].tolist() == [1, 1, 1, 1, 1, 1, 2, 2]
+    assert windows[1]["segment_ids"].tolist() == [1, 1, 1, 1, 1, 0, 0, 0]
+
+
+def test_packing_emits_the_fullest_window_when_the_pool_is_full():
+    examples = [
+        _encoded([1] * 3, 0),
+        _encoded([2] * 4, 0),
+        _encoded([3] * 4, 0),
+    ]
+    windows = list(
+        data_module.pack_encoded_examples(
+            examples, max_length=6, pad_id=0, open_windows=2
+        )
+    )
+    assert len(windows) == 3
+    # The 4-token window is fuller than the 3-token one, so it is emitted
+    # first to make room; the others flush at the end of the stream.
+    assert windows[0]["input_tokens"].tolist()[:4] == [2, 2, 2, 2]
+    assert windows[1]["input_tokens"].tolist()[:3] == [1, 1, 1]
+    assert windows[2]["input_tokens"].tolist()[:4] == [3, 3, 3, 3]
+
+
+def test_packing_rejects_examples_longer_than_the_window():
+    with pytest.raises(ValueError, match="longer than the packing window"):
+        list(
+            data_module.pack_encoded_examples(
+                [_encoded([1] * 9, 0)], max_length=8, pad_id=0
+            )
+        )
+
+
+def test_packed_batches_stack_windows_and_drop_the_remainder():
+    examples = [_encoded([value] * 8, 0, max_length=8) for value in (1, 2, 3)]
+    dataset = data_module.PackedBatchDataset(
+        examples, max_length=8, pad_id=0, batch_size=2
+    )
+    batches = list(dataset)
+    assert len(batches) == 1
+    batch = batches[0]
+    assert set(batch) == set(data_module.PACKED_FIELDS)
+    assert batch["input_tokens"].shape == (2, 8)
+    assert batch["input_tokens"][0].tolist() == [1] * 8
+    assert batch["input_tokens"][1].tolist() == [2] * 8
+    # The trainer restarts iteration on resume and eval; the wrapper must be
+    # re-iterable and deterministic.
+    assert [b["input_tokens"].tolist() for b in dataset] == [
+        batch["input_tokens"].tolist()
+    ]
+
+
+def test_load_reasoning_datasets_forwards_the_packing_flag(monkeypatch):
+    captured = {}
+
+    class FakeDataset:
+        def __len__(self):
+            return 1
+
+    monkeypatch.setitem(
+        sys.modules,
+        "datasets",
+        SimpleNamespace(load_dataset=lambda *a, **k: FakeDataset()),
+    )
+
+    def fake_build(data_source, *args, **kwargs):
+        captured.update(kwargs)
+        return data_source
+
+    monkeypatch.setattr(data_module, "build_grain_dataset", fake_build)
+    data_module.load_reasoning_datasets(
+        {
+            "name": "parquet",
+            "config": None,
+            "batch_size": 2,
+            "max_length": 128,
+            "packing": True,
+        },
+        FakeTokenizer(),
+    )
+    assert captured["packing"] is True

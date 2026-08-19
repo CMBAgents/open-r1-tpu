@@ -392,6 +392,22 @@ def run(config: dict[str, Any]) -> None:
     )
 
     def gen_model_input(training_input):
+        if isinstance(training_input, dict):
+            # Packed batch: the packer already carries per-segment positions
+            # and segment ids (1..K per example, 0 on padding). segment_ids
+            # gate the splash kernel; the block-diagonal causal mask serves
+            # the non-flash attention path, which ignores segment_ids.
+            segment_ids = jnp.asarray(training_input["segment_ids"])
+            seq_len = segment_ids.shape[-1]
+            causal = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
+            same_segment = segment_ids[:, :, None] == segment_ids[:, None, :]
+            return {
+                "input_tokens": training_input["input_tokens"],
+                "input_mask": training_input["input_mask"],
+                "positions": training_input["positions"],
+                "attention_mask": same_segment & causal[None, ...],
+                "segment_ids": segment_ids,
+            }
         # Derive sequence lengths from the target mask instead of comparing
         # token IDs. Some chat tokenizers use EOS as PAD, so ID comparison
         # would incorrectly hide real in-sequence end-of-turn tokens.
@@ -413,9 +429,12 @@ def run(config: dict[str, Any]) -> None:
         input_mask,
         positions,
         attention_mask,
+        segment_ids=None,
     ):
         """Assistant-only causal loss without a vocabulary-sized one-hot target."""
-        logits, _ = model(input_tokens, positions, None, attention_mask)
+        logits, _ = model(
+            input_tokens, positions, None, attention_mask, segment_ids=segment_ids
+        )
         token_loss = optax.softmax_cross_entropy_with_integer_labels(
             logits[:, :-1, :], input_tokens[:, 1:]
         )

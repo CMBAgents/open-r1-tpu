@@ -10,9 +10,9 @@
 # could not emit the special chat tokens (<think>, </think>, <|im_end|>): their
 # rows live in the tied embedding matrix, which LoRA freezes. Training all
 # parameters includes that matrix. Fixed optimizer state is ~20.6 GiB of the
-# 32 GiB HBM (bf16 params and grads, fp32 Adam moments), which is why the
-# microbatch below is 1. Mid-run chat inspection is unavailable: the chat
-# client restores LoRA adapters only, so judge this run by its merged export.
+# 32 GiB HBM (bf16 params and grads, fp32 Adam moments). Mid-run chat
+# inspection is unavailable: the chat client restores LoRA adapters only, so
+# judge this run by its merged export.
 model:
   model_name: qwen3-1.7b-base
   model_id: Qwen/Qwen3-1.7B-Base
@@ -62,11 +62,13 @@ dataset:
   # trained on.
   data_files: data/smoltalk/data/all/train-*.parquet
   messages_column: messages
-  # Full-parameter training holds ~20.6 GiB of fixed state before the first
-  # batch, so the microbatch stays at 1 and the logits tensor (B*T*151936) is
-  # the main transient. Effective batch stays 32 via accumulation. Measure peak
-  # HBM before raising this.
-  batch_size: 1
+  # Microbatch of packed windows. The full-FT run at batch_size 1 measured
+  # 25.2 GiB steady-state HBM of 31.25 GiB; the second window's logits chain
+  # (B*T*151936 plus log-softmax and its gradient) is the main increment and is
+  # expected to fit only because eval (the source of 28.4-31.2 GiB spikes) is
+  # disabled below. If step 1 OOMs, drop this back to 1 with
+  # gradient_accumulation_steps: 32.
+  batch_size: 2
   # Overlength examples are dropped rather than truncated. Measured under this
   # encoder on a stratified 8,000-row sample: median templated length 590 tokens,
   # p90 1,677, p99 3,022. 2048 retains 95.9% of the corpus, with 13.5% of each
@@ -74,15 +76,27 @@ dataset:
   # (4096: 99.6%, 8192: 99.8%) while costing far more than the token count
   # suggests, because attention is quadratic: one 8192 sequence is roughly 5.5x
   # one at 2048. The card's 8192 describes what its authors could afford on a
-  # multi-GPU node, not a length this corpus needs. Padding waste is fixable by
-  # packing, blocked on the same segment_ids gap as the splash-attention sampler.
+  # multi-GPU node, not a length this corpus needs.
   max_length: 2048
+  # First-fit packing of whole examples into 2048-token windows: without it,
+  # roughly two-thirds of every window is padding (median example 590 tokens).
+  # Attention cannot cross example boundaries: segment_ids gate the splash
+  # kernel and the fallback path gets a block-diagonal causal mask, and RoPE
+  # positions restart per example. Each window carries ~2-3 examples, so one
+  # optimizer step sees ~2-3x the examples of the unpacked run at the same
+  # window count.
+  packing: true
   # Inert while max_steps binds. It only keeps the input iterator from exhausting
-  # if max_steps ever exceeds one epoch, which is roughly 32,600 optimizer steps
-  # at this batch size before length filtering.
+  # if max_steps ever exceeds one epoch — roughly 13,000 optimizer steps with
+  # packing (~80 examples per step) before length filtering.
   num_train_epochs: 2
   max_examples: null
-  eval_fraction: 0.01
+  # Disabled: W&B system metrics for the 4000-step full-FT run showed the
+  # 250-step evals spiking HBM from a 25.2 GiB steady state to 28.4 GiB, once
+  # to 31.23 of 31.25 GiB. batch_size 2 spends that headroom on throughput
+  # instead. Raise this (with eval_max_examples) only after re-measuring peak
+  # HBM at the new microbatch.
+  eval_fraction: 0.0
   eval_max_examples: 64
   seed: 42
   # Every assistant turn is supervised; user and system tokens carry no loss.
@@ -123,9 +137,11 @@ training:
   # max_steps is the training-length control: _compute_max_steps returns it
   # directly whenever it is set, so dataset.num_train_epochs above is inert and
   # serves only to keep the input iterator from exhausting. 4000 steps at
-  # 1 x 32 consumes 128,000 examples, 0.12 of one epoch.
+  # 2 x 16 is 32 packed windows per step, roughly 80 examples — around 0.3 of
+  # one epoch, against 0.12 unpacked.
   max_steps: 4000
-  gradient_accumulation_steps: 32
+  gradient_accumulation_steps: 16
+  # Inert while eval_fraction is 0.0.
   eval_every_n_steps: 250
   checkpoint_dir: artifacts/Qwen3-1.7B-Instruct/checkpoints
   checkpointing_options:
@@ -138,9 +154,9 @@ training:
     timeout_secs: 1200
   metrics_log_dir: artifacts/Qwen3-1.7B-Instruct/logs
   project_name: open-r1-tpu
-  # Distinct from the LoRA run's name so wandb.resume: allow cannot append
-  # this run to the old one.
-  run_name: qwen3-1.7b-instruct-sft-full
+  # Distinct from the LoRA and unpacked full-FT runs' names so wandb.resume:
+  # allow cannot append this run to an old one.
+  run_name: qwen3-1.7b-instruct-sft-packed
   flush_every_n_steps: 10
   wandb:
     enabled: true
