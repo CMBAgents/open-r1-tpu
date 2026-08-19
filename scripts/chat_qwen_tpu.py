@@ -7,16 +7,17 @@ environment::
     python scripts/chat_qwen_tpu.py --model-path models/Qwen3-1.7B-Base
 
 To talk to a training run's own weights, pass the recipe it was trained with.
-The LoRA adapters from its latest checkpoint are then restored on top of the
-base model, which is how a run can be inspected before it has finished and
-exported merged weights::
+Its latest checkpoint is then restored on top of the base model, which is how
+a run can be inspected before it has finished and exported merged weights::
 
     python scripts/chat_qwen_tpu.py \
       --recipe recipes/Qwen3-1.7B-Instruct/sft/config_instruct.yaml
 
-The rank, alpha and target modules come from that recipe rather than from
-flags of their own: adapters restored under a different LoRA geometry than
-they were trained with produce confident nonsense rather than an error.
+A full fine-tune's checkpoint replaces every parameter; a LoRA recipe's
+checkpoint restores adapters alone. Which applies is read from the recipe's
+model.lora_config rather than from flags of its own: adapters restored under
+a different LoRA geometry than they were trained with produce confident
+nonsense rather than an error.
 
 The model is loaded with Tunix/JAX directly from ``model.safetensors``. It
 never contacts the Hugging Face Hub. Type ``/help`` at the prompt for the
@@ -80,8 +81,8 @@ def parse_args() -> argparse.Namespace:
         "--recipe",
         default=None,
         help=(
-            "Training recipe whose latest LoRA checkpoint to restore on top "
-            "of --model-path. Omit to talk to the base weights."
+            "Training recipe whose latest checkpoint to restore on top of "
+            "--model-path. Omit to talk to the base weights."
         ),
     )
     parser.add_argument(
@@ -156,8 +157,9 @@ def validate_options(args: argparse.Namespace) -> None:
 
     if args.checkpoint_dir and not args.recipe:
         raise ValueError(
-            "--checkpoint-dir needs --recipe, which supplies the LoRA rank, "
-            "alpha and target modules the checkpoint was written under"
+            "--checkpoint-dir needs --recipe, which says whether the "
+            "checkpoint holds full-model parameters or LoRA adapters, and "
+            "for adapters supplies the geometry they were written under"
         )
     if args.recipe:
         recipe_path = Path(args.recipe).expanduser().resolve()
@@ -194,17 +196,12 @@ def model_config(
     return config
 
 
-def recipe_lora_settings(recipe_path: str) -> tuple[dict[str, Any], str]:
-    """Read the LoRA geometry and checkpoint root a recipe trains with."""
+def recipe_restore_settings(recipe_path: str) -> tuple[dict[str, Any] | None, str]:
+    """Read the LoRA geometry (None for a full fine-tune) and checkpoint root."""
     from open_r1_tpu.config import load_config
 
     config = load_config(recipe_path)
-    lora_config = config["model"].get("lora_config")
-    if not lora_config:
-        raise ValueError(
-            f"Recipe trains no LoRA adapters, so it has none to restore: {recipe_path}"
-        )
-    return lora_config, config["training"]["checkpoint_dir"]
+    return config["model"].get("lora_config"), config["training"]["checkpoint_dir"]
 
 
 def available_steps(checkpoint_root: str) -> list[int]:
@@ -240,10 +237,10 @@ def resolve_step(checkpoint_root: str, step: int | None) -> int | None:
     return step
 
 
-def restore_lora_checkpoint(
-    model: Any, checkpoint_dir: str, step: int | None = None
+def restore_checkpoint(
+    model: Any, checkpoint_dir: str, step: int | None = None, *, lora_only: bool
 ) -> int:
-    """Restore LoRA parameters into `model`, returning the step restored."""
+    """Restore checkpoint parameters into `model`, returning the step restored."""
     from tunix.sft import checkpoint_manager as checkpoint_manager_lib
 
     from open_r1_tpu.sft import _absolute_checkpoint_dir
@@ -262,10 +259,11 @@ def restore_lora_checkpoint(
             "one every training.checkpointing_options.save_interval_steps "
             "optimizer steps."
         )
-    # Training saves adapters alone, since model.lora_config is set and Tunix
-    # passes save_only_lora_params through to Orbax.
+    # A LoRA run saves adapters alone (model.lora_config makes Tunix pass
+    # save_only_lora_params through to Orbax); a full fine-tune saves every
+    # parameter. The restore must match what training wrote.
     restored_step, _metadata = manager.maybe_restore(
-        model, optimizer=None, step=step, restore_only_lora_params=True
+        model, optimizer=None, step=step, restore_only_lora_params=lora_only
     )
     manager.close()
     return int(restored_step)
@@ -427,8 +425,7 @@ def load_runtime(
     lora_config = None
     checkpoint_dir = args.checkpoint_dir
     if args.recipe:
-        recipe_lora, recipe_checkpoint_dir = recipe_lora_settings(args.recipe)
-        lora_config = recipe_lora
+        lora_config, recipe_checkpoint_dir = recipe_restore_settings(args.recipe)
         checkpoint_dir = checkpoint_dir or recipe_checkpoint_dir
 
     config = {
@@ -441,10 +438,13 @@ def load_runtime(
         "tokenizer": tokenizer_config(args.model_path),
     }
     model, tokenizer_path = _create_model(config, mesh)
-    if lora_config:
-        restored = restore_lora_checkpoint(model, checkpoint_dir, args.step)
+    if args.recipe:
+        restored = restore_checkpoint(
+            model, checkpoint_dir, args.step, lora_only=bool(lora_config)
+        )
         # Named explicitly because it is rarely the step the run stopped on.
-        print(f"Restored LoRA adapters from step {restored}.")
+        what = "LoRA adapters" if lora_config else "full model parameters"
+        print(f"Restored {what} from step {restored}.")
     tokenizer = model_utils.create_tokenizer(config["tokenizer"], tokenizer_path)
     model_runtime_config = getattr(model, "config", None)
     if model_runtime_config is None:
