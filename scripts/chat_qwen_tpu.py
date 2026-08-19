@@ -33,7 +33,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_MODEL_PATH = "models/Qwen3-1.7B-Base"
 # Empty by default because SFT trains on conversations as they come, and the
 # recipes leave dataset.system_prompt null. Injecting a system prompt here
@@ -102,7 +101,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--system-prompt",
         default=DEFAULT_SYSTEM_PROMPT,
-        help="System prompt prepended to every conversation; pass an empty string to omit it.",
+        help=(
+            "System prompt prepended to every conversation; pass an empty "
+            "string to omit it."
+        ),
     )
     parser.add_argument(
         "--max-new-tokens",
@@ -200,8 +202,7 @@ def recipe_lora_settings(recipe_path: str) -> tuple[dict[str, Any], str]:
     lora_config = config["model"].get("lora_config")
     if not lora_config:
         raise ValueError(
-            f"Recipe trains no LoRA adapters, so it has none to restore: "
-            f"{recipe_path}"
+            f"Recipe trains no LoRA adapters, so it has none to restore: {recipe_path}"
         )
     return lora_config, config["training"]["checkpoint_dir"]
 
@@ -243,8 +244,9 @@ def restore_lora_checkpoint(
     model: Any, checkpoint_dir: str, step: int | None = None
 ) -> int:
     """Restore LoRA parameters into `model`, returning the step restored."""
-    from open_r1_tpu.sft import _absolute_checkpoint_dir
     from tunix.sft import checkpoint_manager as checkpoint_manager_lib
+
+    from open_r1_tpu.sft import _absolute_checkpoint_dir
 
     root = _absolute_checkpoint_dir(checkpoint_dir)
     step = resolve_step(root, step)
@@ -325,9 +327,7 @@ def stop_token_ids(tokenizer: Any) -> list[int]:
         if resolved is not None and resolved not in stop_ids:
             stop_ids.append(resolved)
     if not stop_ids:
-        raise ValueError(
-            "tokenizer defines none of " + ", ".join(TURN_END_TOKENS)
-        )
+        raise ValueError("tokenizer defines none of " + ", ".join(TURN_END_TOKENS))
     return stop_ids
 
 
@@ -447,11 +447,13 @@ def load_runtime(
         print(f"Restored LoRA adapters from step {restored}.")
     tokenizer = model_utils.create_tokenizer(config["tokenizer"], tokenizer_path)
     model_runtime_config = getattr(model, "config", None)
+    if model_runtime_config is None:
+        raise SystemExit("model exposes no config; cannot size the KV cache")
     cache_config = sampler_lib.CacheConfig(
         cache_size=args.max_prompt_length + args.max_new_tokens,
-        num_layers=int(getattr(model_runtime_config, "num_layers")),
-        num_kv_heads=int(getattr(model_runtime_config, "num_kv_heads")),
-        head_dim=int(getattr(model_runtime_config, "head_dim")),
+        num_layers=int(model_runtime_config.num_layers),
+        num_kv_heads=int(model_runtime_config.num_kv_heads),
+        head_dim=int(model_runtime_config.head_dim),
     )
     sampler = sampler_lib.Sampler(
         transformer=model,

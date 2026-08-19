@@ -20,7 +20,6 @@ from open_r1_tpu.config import load_config
 from open_r1_tpu.data import load_reasoning_datasets
 from open_r1_tpu.logging import LOG_LEVELS, configure_logging
 
-
 LOGGER = logging.getLogger(__name__)
 
 _WANDB_INIT_KEYS = {
@@ -150,7 +149,9 @@ def _create_model(config: dict[str, Any], mesh: Any) -> tuple[Any, str]:
     return model, str(local_path)
 
 
-def _compute_max_steps(config: dict[str, Any], raw_train_size: int | None = None) -> int:
+def _compute_max_steps(
+    config: dict[str, Any], raw_train_size: int | None = None
+) -> int:
     configured = config["training"].get("max_steps")
     if configured is not None:
         return int(configured)
@@ -280,9 +281,7 @@ def _export_model(
     if output_path in protected_paths or any(
         protected.is_relative_to(output_path) for protected in protected_paths
     ):
-        raise ValueError(
-            f"Refusing unsafe merged export directory: {output_path}"
-        )
+        raise ValueError(f"Refusing unsafe merged export directory: {output_path}")
     if output_path.exists() and not export.get("overwrite", False):
         raise FileExistsError(
             f"Merged export directory already exists: {output_path}. Set "
@@ -296,9 +295,7 @@ def _export_model(
         params_module = automodel.get_model_module(
             config["model"]["model_name"], automodel.ModelModule.PARAMS
         )
-        save_fn = getattr(
-            params_module, "save_lora_merged_model_as_safetensors", None
-        )
+        save_fn = getattr(params_module, "save_lora_merged_model_as_safetensors", None)
         if save_fn is None:
             raise NotImplementedError(
                 "This Tunix model does not expose merged-LoRA safetensors "
@@ -336,9 +333,7 @@ def run(config: dict[str, Any]) -> None:
     import jax.numpy as jnp
     import optax
     from tunix.cli.utils import model as model_utils
-    from tunix.sft import checkpoint_options
-    from tunix.sft import metrics_logger
-    from tunix.sft import peft_trainer
+    from tunix.sft import checkpoint_options, metrics_logger, peft_trainer
     from tunix.sft import utils as sft_utils
     from tunix.utils import mesh as mesh_utils
 
@@ -358,9 +353,7 @@ def run(config: dict[str, Any]) -> None:
             "LoRA was requested but Tunix found no matching modules. Check "
             "model.lora_config.module_path before training."
         )
-    tokenizer = model_utils.create_tokenizer(
-        config["tokenizer"], tokenizer_path
-    )
+    tokenizer = model_utils.create_tokenizer(config["tokenizer"], tokenizer_path)
     if config["tokenizer"].get("chat_template"):
         tokenizer.tokenizer.chat_template = config["tokenizer"]["chat_template"]
 
@@ -394,9 +387,7 @@ def run(config: dict[str, Any]) -> None:
             metrics_logging_options=metrics,
             profiler_options=None,
             data_sharding_axis=tuple(training.get("data_sharding_axis", ["fsdp"])),
-            max_inflight_computations=int(
-                training.get("max_inflight_computations", 1)
-            ),
+            max_inflight_computations=int(training.get("max_inflight_computations", 1)),
         ),
     )
 

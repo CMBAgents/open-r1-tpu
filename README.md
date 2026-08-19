@@ -660,3 +660,21 @@ filtering, chat-template boundaries, and the assistant-only loss mask without
 requiring a TPU or downloading model weights. These tests are useful for the
 host-independent code, but they are not a substitute for `check_env` plus the
 four-step smoke run on the target TPU VM.
+
+## Linting and type checking
+
+Ruff and pyright run as pre-commit hooks. Install them once per clone:
+
+```bash
+python -m pip install -e '.[dev]'
+pre-commit install
+```
+
+To check the whole tree without committing:
+
+```bash
+pre-commit run --all-files
+```
+
+Pyright reports the TPU-only imports as warnings off target, so the same checks
+pass on a laptop and on the TPU VM.

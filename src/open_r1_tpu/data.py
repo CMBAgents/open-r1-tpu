@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
 import json
-from typing import Any, Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
@@ -71,7 +71,9 @@ def _as_token_ids(value: Any) -> list[int]:
         if len(value) != 1:
             raise ValueError("chat template unexpectedly returned a token batch")
         value = value[0]
-    if not isinstance(value, list) or not all(isinstance(token, int) for token in value):
+    if not isinstance(value, list) or not all(
+        isinstance(token, int) for token in value
+    ):
         raise ValueError("chat template did not return a list of token IDs")
     return value
 
@@ -177,12 +179,15 @@ def _assistant_turn_spans(
 
 
 def _pad_id(tokenizer: Any) -> int:
-    pad_id_method = getattr(tokenizer, "pad_id", None)
+    pad_id_method: Any = getattr(tokenizer, "pad_id", None)
     if callable(pad_id_method):
-        return int(pad_id_method())
-    pad_id = getattr(tokenizer, "pad_token_id", None)
+        # `callable()` narrows Any to a callable returning object, so restate
+        # the dynamic result before coercing it.
+        resolved: Any = pad_id_method()
+        return int(resolved)
+    pad_id: Any = getattr(tokenizer, "pad_token_id", None)
     if pad_id is None:
-        eos_id = getattr(tokenizer, "eos_token_id", None)
+        eos_id: Any = getattr(tokenizer, "eos_token_id", None)
         if eos_id is None:
             raise ValueError("tokenizer defines neither a pad token nor an EOS token")
         return int(eos_id)
@@ -227,9 +232,7 @@ def encode_reasoning_example(
         return None
 
     try:
-        full_ids = _render_ids(
-            tokenizer, messages, add_generation_prompt=False
-        )
+        full_ids = _render_ids(tokenizer, messages, add_generation_prompt=False)
     except (TypeError, ValueError):
         return None
 
@@ -292,9 +295,7 @@ def build_grain_dataset(
     if num_epochs > 1:
         dataset = dataset.repeat(num_epochs)
     dataset = dataset.map(
-        lambda record: encode_reasoning_example(
-            record, tokenizer, **encode_kwargs
-        )
+        lambda record: encode_reasoning_example(record, tokenizer, **encode_kwargs)
     )
     dataset = dataset.filter(lambda example: example is not None)
     dataset = dataset.map(

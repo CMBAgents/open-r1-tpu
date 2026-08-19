@@ -3,9 +3,9 @@ import sys
 from collections import UserDict
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, ClassVar
 
 import pytest
-
 
 SCRIPT_PATH = Path(__file__).parents[1] / "scripts" / "chat_qwen_tpu.py"
 SPEC = importlib.util.spec_from_file_location("chat_qwen_tpu", SCRIPT_PATH)
@@ -14,9 +14,7 @@ chat = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(chat)
 sys.modules["chat_qwen_tpu"] = chat
 
-COMPLETION_SCRIPT_PATH = (
-    Path(__file__).parents[1] / "scripts" / "complete_qwen_tpu.py"
-)
+COMPLETION_SCRIPT_PATH = Path(__file__).parents[1] / "scripts" / "complete_qwen_tpu.py"
 COMPLETION_SPEC = importlib.util.spec_from_file_location(
     "complete_qwen_tpu", COMPLETION_SCRIPT_PATH
 )
@@ -26,7 +24,7 @@ COMPLETION_SPEC.loader.exec_module(completion)
 
 
 class FakeTokenizer:
-    def apply_chat_template(self, messages, tokenize, add_generation_prompt):
+    def apply_chat_template(self, messages, tokenize, add_generation_prompt) -> Any:
         assert add_generation_prompt is True
         rendered = "|".join(
             f"{message['role']}:{message['content']}" for message in messages
@@ -104,7 +102,7 @@ def test_prompt_token_count_accepts_a_batch_encoding_mapping():
 
 class FakeCompletionSampler:
     def __init__(self):
-        self.kwargs = None
+        self.kwargs: dict[str, Any] = {}
 
     def tokenize(self, prompt):
         return list(range(len(prompt)))
@@ -159,7 +157,7 @@ def test_completion_prompt_length_need_not_match_splash_block(tmp_path):
 
 
 class StopTokenTokenizer:
-    IDS = {"<|im_end|>": 151645, "<|endoftext|>": 151643}
+    IDS: ClassVar[dict[str, int]] = {"<|im_end|>": 151645, "<|endoftext|>": 151643}
 
     def convert_tokens_to_ids(self, token):
         return self.IDS.get(token)
@@ -199,9 +197,7 @@ def test_clean_reply_drops_only_the_trailing_turn_marker():
 def test_visible_reply_hides_the_empty_reasoning_scaffold():
     # The template opens every assistant turn with this when the message
     # carries no trace, so a model trained on SmolTalk learns to emit it.
-    assert (
-        chat.visible_reply("<think>\n\n</think>\n\nParis.<|im_end|>") == "Paris."
-    )
+    assert chat.visible_reply("<think>\n\n</think>\n\nParis.<|im_end|>") == "Paris."
 
 
 def test_visible_reply_keeps_a_reasoning_trace_that_has_content():
@@ -215,9 +211,12 @@ def test_model_config_carries_lora_only_when_asked():
         "/models/base", 0, use_flash_attention=False
     )
     lora = {"rank": 8, "alpha": 8.0, "module_path": ".*q_proj"}
-    assert chat.model_config(
-        "/models/base", 0, use_flash_attention=False, lora_config=lora
-    )["lora_config"] == lora
+    assert (
+        chat.model_config(
+            "/models/base", 0, use_flash_attention=False, lora_config=lora
+        )["lora_config"]
+        == lora
+    )
 
 
 def test_recipe_lora_settings_match_the_distill_recipe():

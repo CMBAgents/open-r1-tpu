@@ -1,6 +1,7 @@
-from collections import UserDict
 import sys
+from collections import UserDict
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 
@@ -12,7 +13,7 @@ class FakeTokenizer:
     pad_token_id = 0
     eos_token_id = 3
 
-    def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
+    def apply_chat_template(self, messages, *, tokenize, add_generation_prompt) -> Any:
         assert tokenize
         rendered = "".join(
             f"<{message['role']}>{message['content']}</{message['role']}>"
@@ -75,7 +76,7 @@ def test_multi_turn_supervises_every_assistant_turn():
     final_target = "<think>easy</think>4</assistant>"
     assert encoded.prompt_length == len(rendered) - len(final_target)
     assert encoded.input_mask[encoded.prompt_length : encoded.unpadded_length].all()
-    assert not encoded.input_mask[: first_start].any()
+    assert not encoded.input_mask[:first_start].any()
     assert not encoded.input_mask[encoded.unpadded_length :].any()
 
 
@@ -127,10 +128,7 @@ def test_missing_reasoning_tags_is_filtered():
 
 
 def test_overlength_trace_is_filtered_not_truncated():
-    assert (
-        encode_reasoning_example(_record(), FakeTokenizer(), max_length=20)
-        is None
-    )
+    assert encode_reasoning_example(_record(), FakeTokenizer(), max_length=20) is None
 
 
 def test_full_sequence_loss_can_be_enabled():
@@ -152,9 +150,7 @@ def test_messages_may_be_json_encoded():
 
 
 def test_mapping_tokenizer_output_is_supported():
-    encoded = encode_reasoning_example(
-        _record(), MappingTokenizer(), max_length=256
-    )
+    encoded = encode_reasoning_example(_record(), MappingTokenizer(), max_length=256)
     assert encoded is not None
     assert encoded.input_mask.sum() > 0
 

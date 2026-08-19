@@ -72,9 +72,7 @@ def resolve_settings(config: dict[str, Any]) -> dict[str, Any]:
         "temperature": float(raw.get("temperature", 0.0)),
         "seed": int(raw.get("seed", dataset.get("seed", 42))),
         # The cache holds the rendered prompt as well as the completion.
-        "max_prompt_length": (
-            int(max_prompt_length) if max_prompt_length else None
-        ),
+        "max_prompt_length": (int(max_prompt_length) if max_prompt_length else None),
         # An explicit null in the recipe means "derive it", so treat a missing
         # key and a null value the same way.
         "cache_size": int(raw.get("cache_size") or prompt_budget + max_new_tokens),
@@ -172,7 +170,7 @@ def log_records_to_wandb(records: list[dict[str, Any]], step: int) -> None:
         "hit_token_cap",
     ]
     table = wandb.Table(
-        columns=columns,
+        columns=columns,  # pyright: ignore[reportArgumentType]  # wandb stub is over-narrow
         data=[[record.get(column) for column in columns] for record in records],
     )
     wandb.log({"samples/transcripts": table}, step=step)
@@ -217,7 +215,7 @@ def sample_transcripts(
             generated_tokens=count,
         )
         for prompt, completion, count in zip(
-            settings["prompts"], completions, token_counts
+            settings["prompts"], completions, token_counts, strict=True
         )
     ]
 
@@ -229,11 +227,15 @@ def create_training_hooks(model: Any, tokenizer: Any, settings: dict[str, Any]) 
 
     def build_sampler() -> Any:
         model_config = getattr(model, "config", None)
+        if model_config is None:
+            raise ValueError(
+                "model exposes no config; cannot size the sampler KV cache"
+            )
         cache_config = sampler_lib.CacheConfig(
             cache_size=int(settings["cache_size"]),
-            num_layers=int(getattr(model_config, "num_layers")),
-            num_kv_heads=int(getattr(model_config, "num_kv_heads")),
-            head_dim=int(getattr(model_config, "head_dim")),
+            num_layers=int(model_config.num_layers),
+            num_kv_heads=int(model_config.num_kv_heads),
+            head_dim=int(model_config.head_dim),
         )
         return sampler_lib.Sampler(
             transformer=model,
@@ -295,7 +297,7 @@ def create_training_hooks(model: Any, tokenizer: Any, settings: dict[str, Any]) 
                     settings["output_path"],
                     unbalanced,
                 )
-            except Exception:  # noqa: BLE001 - inspection must never kill a run
+            except Exception:
                 # Disable rather than retry: a sampler that OOMs or fails to
                 # compile will do so at every interval, and the training run
                 # matters more than the transcripts.

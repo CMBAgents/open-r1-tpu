@@ -136,6 +136,35 @@ for script in scripts/*.sh; do bash -n "$script"; done
 git diff --check
 ```
 
+Lint, format, and type checks run through pre-commit. Install the dev extra and
+the hook once per clone:
+
+```bash
+python -m pip install -e '.[dev]'
+pre-commit install
+```
+
+The hooks then run on every commit, and across the whole tree on demand:
+
+```bash
+pre-commit run --all-files
+```
+
+The same tools can be driven directly:
+
+```bash
+ruff check .
+ruff format .
+pyright
+```
+
+Ruff and pyright settings live in `pyproject.toml`. Pyright runs in `standard`
+mode and reports unresolved imports as warnings rather than errors, because
+JAX, Tunix, Grain, and Orbax are installed only on the TPU VM; a laptop check
+must stay useful without them. It resolves everything else from `.venv`, so
+keep that environment installed. Warnings about the TPU stack are expected off
+target and do not fail the hook; anything else is a real finding.
+
 Target-TPU preflight:
 
 ```bash

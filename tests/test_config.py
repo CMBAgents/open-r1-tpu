@@ -4,20 +4,18 @@ import pytest
 
 from open_r1_tpu.config import load_config, parse_override
 from open_r1_tpu.sft import (
-    _SteppedTrainingMetricsBackend,
     _absolute_checkpoint_dir,
     _metrics_logger_options,
+    _SteppedTrainingMetricsBackend,
     _wandb_backend_kwargs,
 )
-
 
 RECIPE = (
     Path(__file__).parents[1]
     / "recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml"
 )
 INSTRUCT_RECIPE = (
-    Path(__file__).parents[1]
-    / "recipes/Qwen3-1.7B-Instruct/sft/config_instruct.yaml"
+    Path(__file__).parents[1] / "recipes/Qwen3-1.7B-Instruct/sft/config_instruct.yaml"
 )
 
 
@@ -96,8 +94,7 @@ def test_instruct_recipe_exports_where_the_distill_recipe_can_read_it():
     # checkpoint directory or the second run would restore the first one's state.
     assert instruct["export"]["enabled"] is True
     assert (
-        instruct["training"]["checkpoint_dir"]
-        != distill["training"]["checkpoint_dir"]
+        instruct["training"]["checkpoint_dir"] != distill["training"]["checkpoint_dir"]
     )
 
 
@@ -180,9 +177,7 @@ def test_metrics_options_use_custom_backends():
 
     disabled_config = load_config(RECIPE, ["training.wandb.enabled=false"])
     disabled_options = _metrics_logger_options(disabled_config, FakeMetricsLogger)
-    disabled_factories = disabled_options.kwargs["backend_kwargs"][
-        "custom_backend"
-    ]
+    disabled_factories = disabled_options.kwargs["backend_kwargs"]["custom_backend"]
     assert len(disabled_factories) == 1
 
 

@@ -57,7 +57,13 @@ def _loader_transform(hf_tensor, permute, reshape):
             (1, 0),
             None,
         ),
-        ("model.embed_tokens.weight", "embedder.input_embedding", (VOCAB, EMBED), None, None),
+        (
+            "model.embed_tokens.weight",
+            "embedder.input_embedding",
+            (VOCAB, EMBED),
+            None,
+            None,
+        ),
         ("model.norm.weight", "final_norm.w", (EMBED,), None, None),
         (
             "model.layers.2.self_attn.q_norm.weight",

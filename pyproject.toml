@@ -24,6 +24,14 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8.0"]
+# Host-independent developer tooling. Deliberately free of the TPU stack so it
+# installs on a laptop; see the pyright note below.
+dev = [
+  "pre-commit>=4.0",
+  "pyright>=1.1.400",
+  "pytest>=8.0",
+  "ruff>=0.14",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -31,3 +39,58 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+src = ["src", "tests", "scripts"]
+extend-exclude = ["data", "models", "artifacts"]
+
+[tool.ruff.lint]
+select = [
+  "E",    # pycodestyle errors
+  "W",    # pycodestyle warnings
+  "F",    # pyflakes
+  "I",    # import sorting
+  "UP",   # pyupgrade
+  "B",    # bugbear
+  "SIM",  # simplify
+  "C4",   # comprehensions
+  "BLE",  # blind except
+  "TRY",  # exception antipatterns
+  "EXE",  # shebang correctness
+  "RUF",  # ruff-specific
+]
+ignore = [
+  # Config and message validation raise ValueError uniformly for every invalid
+  # input, type errors included. The contract is asserted by tests; TypeError
+  # would split it in two for no operator benefit.
+  "TRY004",
+  # Failure messages are written at the raise site on purpose, so that a bad
+  # recipe explains itself before it wastes TPU time.
+  "TRY003",
+  # Re-raising as a bare `raise ... from err` chain adds noise to preflight
+  # errors that are already the whole story.
+  "TRY400",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests build deliberately awkward inputs and stub classes.
+"tests/*" = ["B008"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["open_r1_tpu"]
+
+[tool.pyright]
+include = ["src", "tests", "scripts"]
+exclude = ["**/__pycache__", ".venv", "data", "models", "artifacts"]
+venvPath = "."
+venv = ".venv"
+extraPaths = ["src"]
+pythonVersion = "3.13"
+typeCheckingMode = "standard"
+# JAX, Tunix, Grain, Orbax and Transformers are installed only on the TPU VM.
+# A laptop check must still be useful, so unresolved imports are reported as
+# warnings: visible in the output, but they do not fail the hook off-target.
+reportMissingImports = "warning"
+reportMissingModuleSource = "warning"

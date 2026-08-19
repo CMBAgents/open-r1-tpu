@@ -6,7 +6,6 @@ import pytest
 from open_r1_tpu import transcripts
 from open_r1_tpu.config import load_config
 
-
 RECIPE = (
     Path(__file__).parents[1]
     / "recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml"
@@ -81,9 +80,7 @@ def test_rendered_prompt_matches_the_training_prefix():
     rendered = transcripts.render_prompt(
         FakeTokenizer(), "What is 2+2?", "Think first."
     )
-    assert rendered == (
-        "<|system|>Think first.<|user|>What is 2+2?<|assistant|>"
-    )
+    assert rendered == ("<|system|>Think first.<|user|>What is 2+2?<|assistant|>")
 
 
 def test_rendered_prompt_omits_an_absent_system_turn():
@@ -204,8 +201,8 @@ def test_default_settings_pad_prompts_to_the_attention_block():
 
     # Short prompts would otherwise pad to 128 and raise
     # "q_block_size=1024 should divide q_seq_len=128".
-    assert settings["max_prompt_length"] == (
-        config["model"]["flash_attention_block_size"]
+    assert (
+        settings["max_prompt_length"] == (config["model"]["flash_attention_block_size"])
     )
     # The cache has to cover the padded prompt plus the completion.
     assert settings["cache_size"] == (

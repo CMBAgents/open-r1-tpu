@@ -23,7 +23,6 @@ from chat_qwen_tpu import (
     tunix_mesh_context,
 )
 
-
 DEFAULT_MAX_NEW_TOKENS = 100
 DEFAULT_MAX_PROMPT_LENGTH = 2048
 
@@ -57,10 +56,7 @@ def parse_args() -> argparse.Namespace:
         "--max-prompt-length",
         type=int,
         default=DEFAULT_MAX_PROMPT_LENGTH,
-        help=(
-            "Fixed raw-prompt token budget "
-            f"(default: {DEFAULT_MAX_PROMPT_LENGTH})."
-        ),
+        help=(f"Fixed raw-prompt token budget (default: {DEFAULT_MAX_PROMPT_LENGTH})."),
     )
     parser.add_argument(
         "--seed",
@@ -97,9 +93,7 @@ def load_completion_runtime(args: argparse.Namespace) -> tuple[Any, Any, Any, An
     return load_runtime(args, use_flash_attention=False)
 
 
-def generate_completion(
-    sampler: Any, prompt: str, args: argparse.Namespace
-) -> str:
+def generate_completion(sampler: Any, prompt: str, args: argparse.Namespace) -> str:
     """Generate from exactly ``prompt`` without chat formatting or history."""
     if not prompt:
         raise ValueError("prompt cannot be empty")

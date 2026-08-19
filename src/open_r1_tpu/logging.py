@@ -21,7 +21,6 @@ from __future__ import annotations
 import logging
 import os
 
-
 LOG_LEVELS = {
     "debug": logging.DEBUG,
     "info": logging.INFO,

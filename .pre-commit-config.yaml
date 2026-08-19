@@ -1,0 +1,37 @@
+# Host-independent checks. None of these need a TPU, JAX, or Tunix, so they run
+# the same on a laptop as on the TPU VM.
+#
+# Install once per clone:
+#   pre-commit install
+# Run across everything:
+#   pre-commit run --all-files
+
+exclude: '^(data|models|artifacts)/'
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+        # Checkpoints, weights, and Parquet shards belong in GCS, never here.
+        args: [--maxkb=512]
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.3
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/RobertCraigie/pyright-python
+    rev: v1.1.411
+    hooks:
+      - id: pyright
+        # Resolves third-party types from .venv via venvPath/venv in
+        # pyproject.toml, so the hook needs no project dependencies of its own.
+        pass_filenames: false

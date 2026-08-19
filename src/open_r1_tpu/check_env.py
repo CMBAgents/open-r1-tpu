@@ -10,7 +10,6 @@ from importlib import metadata
 from open_r1_tpu.config import load_config
 from open_r1_tpu.data import encode_reasoning_example
 
-
 DEFAULT_CONFIG = "recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml"
 
 
@@ -39,22 +38,17 @@ def main() -> None:
     devices = jax.devices()
     mesh_size = math.prod(config["model"]["mesh"]["shape"])
     if len(devices) != mesh_size:
-        errors.append(
-            f"recipe needs {mesh_size} devices but JAX sees {len(devices)}"
-        )
+        errors.append(f"recipe needs {mesh_size} devices but JAX sees {len(devices)}")
     non_tpu = [str(device) for device in devices if device.platform != "tpu"]
     if non_tpu:
         errors.append(f"non-TPU JAX devices detected: {non_tpu}")
-    if (
-        config["model"]["model_source"] == "huggingface"
-        and not os.environ.get("HF_TOKEN")
+    if config["model"]["model_source"] == "huggingface" and not os.environ.get(
+        "HF_TOKEN"
     ):
         errors.append("HF_TOKEN is unset; Tunix's downloader requires it")
 
     required_api = {
-        "PeftTrainer.with_loss_fn": hasattr(
-            peft_trainer.PeftTrainer, "with_loss_fn"
-        ),
+        "PeftTrainer.with_loss_fn": hasattr(peft_trainer.PeftTrainer, "with_loss_fn"),
         "PeftTrainer.with_gen_model_input_fn": hasattr(
             peft_trainer.PeftTrainer, "with_gen_model_input_fn"
         ),

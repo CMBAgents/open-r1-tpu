@@ -31,9 +31,7 @@ def _set_dotted(config: dict[str, Any], key: str, value: Any) -> None:
 def parse_override(raw: str) -> tuple[str, Any]:
     """Parse a Tunix-style ``section.key=value`` command-line override."""
     if "=" not in raw:
-        raise ValueError(
-            f"Invalid override {raw!r}; expected section.key=value"
-        )
+        raise ValueError(f"Invalid override {raw!r}; expected section.key=value")
     key, raw_value = raw.split("=", 1)
     return key, yaml.safe_load(raw_value)
 
@@ -62,14 +60,14 @@ def validate_config(config: dict[str, Any]) -> None:
     mesh = config["model"].get("mesh", {})
     shape = mesh.get("shape")
     axis_names = mesh.get("axis_names")
-    if not isinstance(shape, list) or not shape or not all(
-        isinstance(size, int) and size > 0 for size in shape
+    if (
+        not isinstance(shape, list)
+        or not shape
+        or not all(isinstance(size, int) and size > 0 for size in shape)
     ):
         raise ValueError("model.mesh.shape must be a non-empty list of integers")
     if not isinstance(axis_names, list) or len(axis_names) != len(shape):
-        raise ValueError(
-            "model.mesh.axis_names must have one name per mesh dimension"
-        )
+        raise ValueError("model.mesh.axis_names must have one name per mesh dimension")
 
     batch_size = config["dataset"].get("batch_size")
     if not isinstance(batch_size, int) or batch_size <= 0:
@@ -92,9 +90,7 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("training.wandb.enabled must be a boolean")
     mode = wandb.get("mode", "online")
     if mode not in {"online", "offline", "disabled"}:
-        raise ValueError(
-            "training.wandb.mode must be online, offline, or disabled"
-        )
+        raise ValueError("training.wandb.mode must be online, offline, or disabled")
     tags = wandb.get("tags", [])
     if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
         raise ValueError("training.wandb.tags must be a list of strings")
@@ -106,9 +102,7 @@ def validate_config(config: dict[str, Any]) -> None:
     if eval_max_examples is not None and (
         not isinstance(eval_max_examples, int) or eval_max_examples <= 0
     ):
-        raise ValueError(
-            "dataset.eval_max_examples must be a positive integer or null"
-        )
+        raise ValueError("dataset.eval_max_examples must be a positive integer or null")
 
     transcripts = config["training"].get("transcripts", {})
     if not isinstance(transcripts, dict):

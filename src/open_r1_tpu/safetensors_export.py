@@ -89,9 +89,7 @@ def collect_safetensors_state(
     return exported
 
 
-def export_full_model(
-    *, model: Any, local_model_path: str, output_dir: str
-) -> None:
+def export_full_model(*, model: Any, local_model_path: str, output_dir: str) -> None:
     """Write the model's live parameters as an unsharded HF checkpoint.
 
     The key set must match the base checkpoint's exactly: a missing key means
@@ -99,9 +97,9 @@ def export_full_model(
     (for example an untied lm_head the base never had). Either aborts the
     export rather than producing a checkpoint that silently loses training.
     """
-    from flax import nnx
     import jax.numpy as jnp
     import safetensors.flax as safe_flax
+    from flax import nnx
 
     named_params: list[tuple[str, np.ndarray]] = []
     state = nnx.state(model, nnx.Param)

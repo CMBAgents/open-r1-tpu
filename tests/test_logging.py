@@ -6,7 +6,6 @@ from open_r1_tpu.logging import (
     _DemoteNoisyPackages,
 )
 
-
 SITE = "/venv/lib/python3.13/site-packages"
 ORBAX = f"{SITE}/orbax/checkpoint/_src/handlers/pytree_handler.py"
 TUNIX = f"{SITE}/tunix/sft/peft_trainer.py"
@@ -35,9 +34,7 @@ class _RecordingHandler(logging.Handler):
         self.records.append(record)
 
 
-def _logger_at(
-    level: int, name: str
-) -> tuple[logging.Logger, _RecordingHandler]:
+def _logger_at(level: int, name: str) -> tuple[logging.Logger, _RecordingHandler]:
     logger = logging.getLogger(name)
     logger.handlers.clear()
     logger.filters.clear()
