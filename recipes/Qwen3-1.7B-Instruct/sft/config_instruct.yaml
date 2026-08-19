@@ -150,7 +150,13 @@ training:
     # free on the VM).
     save_interval_steps: 500
     max_to_keep: 2
-    enable_async_checkpointing: true
+    # Synchronous: an async save holds references to the live train state, which
+    # defeats buffer donation and transiently double-allocates params + Adam
+    # moments on device. At microbatch 2 that spike exceeded the HBM headroom
+    # and OOMed the first save at step 500. Blocking for the save (~tens of
+    # seconds every 500 steps) costs a few percent of throughput and keeps the
+    # spike off the device entirely.
+    enable_async_checkpointing: false
     timeout_secs: 1200
   metrics_log_dir: artifacts/Qwen3-1.7B-Instruct/logs
   project_name: open-r1-tpu
