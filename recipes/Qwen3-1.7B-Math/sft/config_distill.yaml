@@ -1,0 +1,239 @@
+# Single-stage reasoning distillation from OpenR1-Math-220k on one TPU v6e-1
+# (32 GiB HBM). Full-parameter fine-tune of Qwen3-1.7B-Base at max_length 4096,
+# dropping over-length traces rather than truncating them.
+#
+# WHY THIS CORPUS AT THIS LENGTH. OpenThoughts3 does not fit a short window:
+# its traces were generated under a ~16,800-token cap and 62% never close their
+# <think> block, so recipes/Qwen3-1.7B-OT3 has to truncate. This corpus is the
+# opposite. Measured on 3,000 rows sampled evenly across the 93,733 in the
+# `default` config, rendered with the Qwen3-1.7B-Base chat template and the
+# system prompt below, then tokenized with that tokenizer:
+#
+#   - <think> appears in 100% of assistant messages and </think> in 99.9%
+#     (3 of 3,000), so require_reasoning_tags stays true and costs ~0.1%
+#   - templated length: median 4,855 tokens, p75 8,127, p90 12,070, p99 16,790
+#   - retention under drop: 11.6% at 2048, 40.5% at 4096 (~37,900 of 93,733
+#     rows), 75.4% at 8192, 98.5% at 16384
+#
+# 4096 keeps traces whole. Every retained example carries a complete chain of
+# thought ending in a boxed answer, which is the property a reasoning stage is
+# trying to teach and the one truncation destroys. The cost is the 59.5% of the
+# corpus that does not fit; the desk-research figure of "54% under 4k" recorded
+# in the project log was optimistic, because it counted the trace alone rather
+# than the templated render with the system prompt and the problem in front of
+# it.
+#
+# SINGLE STAGE, FROM BASE. This trains Qwen3-1.7B-Base directly rather than the
+# instruct stage's merged export, following Olmo 3, DeepSeek-R1 and Qwen3, all
+# of which run long-CoT SFT on the base model. The consequence is that the
+# result is a math reasoner and not a general chat model: this corpus is
+# math-only and carries no instruction-following or open-ended chat data. Fold
+# chat/IF data into the mix before treating the output as a general instruct
+# model.
+#
+# FULL FINE-TUNE, NOT LoRA. The instruct stage established that a rank-64 LoRA
+# on this model chats coherently but cannot emit the special chat tokens: the
+# rows for <think>, </think> and <|im_end|> live in the tied embedding matrix,
+# which LoRA freezes. A reasoning stage is defined by emitting exactly those
+# tokens, so LoRA is not an option here. Fixed optimizer state is ~20.6 GiB of
+# the 32 GiB HBM (bf16 params and grads, fp32 Adam moments).
+#
+# PEAK HBM IS UNMEASURED AT 4096. The full-FT instruct run measured 25.2 GiB
+# steady state at max_length 2048, microbatch 1. This doubles the sequence, and
+# the logits chain (B*T*151936 plus log-softmax and its gradient) grows with
+# it. There is no measurement behind the assumption that the remaining ~6 GiB
+# absorbs that. Measure peak HBM in a short run (dataset.max_examples,
+# training.max_steps) before committing a full one, and revisit
+# model.remat_config first if it does not fit.
+model:
+  model_name: qwen3-1.7b-base
+  model_id: Qwen/Qwen3-1.7B-Base
+  model_source: huggingface
+  model_path: ""
+  model_download_path: /tmp/open-r1-tpu/models/qwen3-1.7b-base
+  intermediate_ckpt_dir: /tmp/open-r1-tpu/intermediate_ckpt
+  rng_seed: 42
+  model_display: false
+  dtype: bfloat16
+  load_dtype: bfloat16
+  # Inherited from the recipes validated at shorter sequences, and the first
+  # thing to revisit if step 1 OOMs: stored activations grow with the sequence
+  # and attention with its square. Valid names are the attributes of the model
+  # module's RematConfig, resolved by _create_model in src/open_r1_tpu/sft.py.
+  remat_config: DECODER
+  use_flash_attention: true
+  # The splash kernel needs its block size to divide the sequence length.
+  # 1024 divides 4096; change both together.
+  flash_attention_block_size: 1024
+  # No lora_config: this is a full-parameter fine-tune. See the header.
+  mesh:
+    shape: [1, 1]
+    axis_names: [fsdp, tp]
+
+tokenizer:
+  tokenizer_path: Qwen/Qwen3-1.7B-Base
+  tokenizer_type: huggingface
+  add_bos: false
+  add_eos: false
+  # Use the tokenizer's own Qwen3 template. It routes the final assistant turn's
+  # <think>...</think> into the reasoning slot and renders it back verbatim, so
+  # the trace survives the round trip; earlier turns would have their reasoning
+  # stripped, which does not arise here because every row is one user turn and
+  # one assistant turn.
+  chat_template: null
+
+dataset:
+  # 93,733 verified math problems with DeepSeek-R1 traces, Apache 2.0. Columns
+  # include `messages` as a list of {role, content} — the default schema, so no
+  # dataset.message_schema block is needed.
+  #
+  # Read from Parquet already staged on the VM's local disk, not from the Hub:
+  #   ./scripts/copy_gcs_bucket_data.sh --dataset OpenR1-Math-220k
+  # The bucket is deployment-specific and stays in $GCS_BUCKET. To fall back to
+  # the Hub, override dataset.name=open-r1/OpenR1-Math-220k
+  # dataset.config=default dataset.data_files=null.
+  name: parquet
+  config: null
+  train_split: train
+  # Only the ten train shards of the `default` config. The repository also
+  # publishes `extended` and `all` views over the same problems; globbing more
+  # broadly would train on duplicates. data_files carries no split mapping, so
+  # every match lands in the train split.
+  data_files: data/OpenR1-Math-220k/data/train-*.parquet
+  messages_column: messages
+  # One 4096-token window per microbatch. At a full fine-tune of this model
+  # there is no headroom to grow it; buy effective batch from accumulation.
+  batch_size: 1
+  max_length: 4096
+  # drop, the default, is left unstated so this recipe reads as a corpus and
+  # length change. Dropping is correct here precisely because the traces are
+  # complete: see the retention figures in the header.
+  packing: true
+  # Retained examples average 2,609 tokens, 63.7% of the window, so without
+  # packing more than a third of every window would be padding. Attention
+  # cannot cross example boundaries: segment_ids gate the splash kernel and
+  # RoPE positions restart per example. Windows carry ~1.5 examples each.
+  num_train_epochs: 4
+  max_examples: null
+  # Disabled by default, and the one thing to turn on first once peak HBM at
+  # 4096 is known. This run covers ~3 epochs, so examples are seen repeatedly
+  # and held-out loss is a real overfitting signal — unlike the OT3 recipe,
+  # which sees no example twice. It is off only because the instruct run's
+  # 2048-token evals spiked HBM from a 25.2 GiB steady state to 31.23 of
+  # 31.25 GiB, and a full fine-tune at twice that sequence has less room, not
+  # more. Enable this and eval_max_examples together.
+  eval_fraction: 0.0
+  eval_max_examples: 64
+  seed: 42
+  # Every assistant turn is supervised; system and user tokens carry no loss.
+  # Examples whose rendering is not prefix-stable are dropped rather than
+  # trained with a guessed mask.
+  assistant_only_loss: true
+  # Measured at 99.9% of rows carrying both tags, so this filters almost
+  # nothing and still catches a malformed trace. Contrast the OT3 recipe, where
+  # the same setting would have dropped 62% of the corpus.
+  require_reasoning_tags: true
+  reasoning_start: <think>
+  reasoning_end: </think>
+  # Rows carry no system message, so prepare_messages injects this in front of
+  # every example. It describes what the traces actually do, which is why it is
+  # safe here and is not in the instruct recipe.
+  system_prompt: >-
+    You are an assistant that solves problems by reasoning carefully before
+    giving the final answer. Put your detailed reasoning between <think> and
+    </think>, then give the concise final solution after </think>.
+
+optimizer:
+  # The instruct stage's full-fine-tune rate, not the distill recipe's 4.0e-5,
+  # which was chosen for a rank-64 LoRA. Tulu 3 uses 5.0e-6 for an 8B and a
+  # 1.7B tolerates a little more. The effective batch here (~48 examples per
+  # step) is below the instruct run's (~80), so this rate is not being applied
+  # at a larger batch than it was set for.
+  learning_rate: 1.0e-5
+  warmup_ratio: 0.03
+  min_lr_ratio: 0.1
+  b1: 0.9
+  b2: 0.99
+  eps: 1.0e-8
+  # 0.0 on a full fine-tune, as in the instruct recipe. The distill recipe's
+  # 0.1 only pulled LoRA adapters toward the base model; on full parameters it
+  # would decay the pretrained weights themselves.
+  weight_decay: 0.0
+  # 1.0, the standard default. The distill recipe's 0.2 clips nearly every step
+  # at this learning rate, making the effective step size a function of the
+  # clip threshold rather than of the schedule.
+  max_grad_norm: 1.0
+
+training:
+  # Roughly three epochs. Derivation from the measured numbers: ~37,900
+  # retained examples at a mean 2,609 tokens is ~99M tokens, which first-fit
+  # packs into ~25,400 windows of 4096; at 32 windows per optimizer step that
+  # is ~790 steps per epoch. Unlike the OT3 recipe this is a converging run
+  # rather than a first pass, which is what makes eval worth enabling above.
+  # Seconds per step is unmeasured at this sequence length — the instruct run
+  # held 2.98 s/step at 2048 over 32 windows, and this doubles the tokens per
+  # step — so re-derive the wall clock from the first steps.
+  max_steps: 2400
+  # Effective batch of 32 windows, ~131k tokens and ~48 examples per optimizer
+  # step. The microbatch cannot grow at a full fine-tune of this sequence
+  # length, so batch comes from here.
+  gradient_accumulation_steps: 32
+  # Inert while eval_fraction is 0.0.
+  eval_every_n_steps: 250
+  checkpoint_dir: artifacts/Qwen3-1.7B-Math/checkpoints
+  checkpointing_options:
+    # ~23 minutes apart at an estimated 7 s/step. Full-state checkpoints carry
+    # all params plus fp32 Adam moments — on the order of 17 GiB each — so
+    # max_to_keep is a disk budget as much as a retention policy.
+    save_interval_steps: 200
+    max_to_keep: 2
+    # Synchronous, as in the instruct recipe. An async save holds references to
+    # the live train state, defeating buffer donation and transiently
+    # double-allocating params plus Adam moments on device; that spike OOMed
+    # the instruct run's first save. Blocking for the save costs a few percent
+    # of throughput and keeps the spike off the device.
+    enable_async_checkpointing: false
+    timeout_secs: 1200
+  metrics_log_dir: artifacts/Qwen3-1.7B-Math/logs
+  project_name: open-r1-tpu
+  # Distinct from the other recipes' run names so wandb.resume: allow cannot
+  # append this run to one of theirs.
+  run_name: qwen3-1.7b-math-sft
+  flush_every_n_steps: 10
+  wandb:
+    enabled: true
+    # Leave null to use WANDB_ENTITY or the account's default entity.
+    entity: null
+    mode: online
+    group: qwen3-1.7b-math-distillation
+    job_type: sft
+    tags: [tpu, sft, full-finetune, qwen3, math, reasoning]
+    resume: allow
+    save_code: true
+  # Disabled, as elsewhere: an autoregressive decode, a second XLA compilation
+  # and a KV cache on a memory profile that is unmeasured at this sequence
+  # length. Worth enabling once peak HBM is known — whether the model closes
+  # </think> and stops is a question only generation answers.
+  transcripts:
+    enabled: false
+    every_n_steps: 250
+    max_new_tokens: 512
+    # Greedy decoding keeps successive samples comparable across steps.
+    temperature: 0.0
+    seed: 42
+    log_to_wandb: true
+    output_path: artifacts/Qwen3-1.7B-Math/transcripts.jsonl
+    # Leave null to use the built-in prompt set.
+    prompts: null
+    # Defaults to max_prompt_length + max_new_tokens.
+    cache_size: null
+    # Null derives it from model.flash_attention_block_size; the splash kernel
+    # requires that block size to divide the prompt length.
+    max_prompt_length: null
+  data_sharding_axis: [fsdp]
+  max_inflight_computations: 1
+
+export:
+  enabled: true
+  overwrite: true
+  output_dir: artifacts/Qwen3-1.7B-Math/merged

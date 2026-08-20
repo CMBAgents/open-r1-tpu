@@ -25,8 +25,8 @@ repository's ignored models/ and data/ directories.
   --bucket gs://BUCKET   Source bucket. Defaults to $GCS_BUCKET.
   --dataset NAME         Dataset directory name. Defaults to $GCS_DATASET, or
                          Mixture-of-Thoughts. Also accepts smoltalk, the
-                         instruction-tuning corpus, and its smol-smoltalk
-                         variant.
+                         instruction-tuning corpus, its smol-smoltalk variant,
+                         and OpenR1-Math-220k, the math reasoning corpus.
 
 Objects are read from datasets/NAME and written to data/NAME. Override the
 layout with $GCS_MODEL_PREFIX, $GCS_DATA_PREFIX, and $GCS_DATA_GLOB.
@@ -67,6 +67,10 @@ case "${DATASET}" in
   # smoltalk ships one directory per subset; `all` is the full mix.
   smoltalk) DATA_GLOB="${GCS_DATA_GLOB:-data/all/train-*.parquet}" ;;
   smol-smoltalk) DATA_GLOB="${GCS_DATA_GLOB:-data/train-*.parquet}" ;;
+  # Only the `default` config's shards under data/. The repository's `extended`
+  # and `all` views cover the same problems, so a wider glob would train on
+  # duplicates.
+  OpenR1-Math-220k) DATA_GLOB="${GCS_DATA_GLOB:-data/train-*.parquet}" ;;
   *) DATA_GLOB="${GCS_DATA_GLOB:-*.parquet}" ;;
 esac
 

@@ -20,6 +20,9 @@ INSTRUCT_RECIPE = (
 OT3_RECIPE = (
     Path(__file__).parents[1] / "recipes/Qwen3-1.7B-OT3/sft/config_distill.yaml"
 )
+MATH_RECIPE = (
+    Path(__file__).parents[1] / "recipes/Qwen3-1.7B-Math/sft/config_distill.yaml"
+)
 
 
 def test_parse_override_uses_yaml_types():
@@ -53,8 +56,8 @@ def test_default_recipe_targets_one_32gb_tpu():
 
 @pytest.mark.parametrize(
     "recipe",
-    [RECIPE, INSTRUCT_RECIPE, OT3_RECIPE],
-    ids=["distill", "instruct", "ot3"],
+    [RECIPE, INSTRUCT_RECIPE, OT3_RECIPE, MATH_RECIPE],
+    ids=["distill", "instruct", "ot3", "math"],
 )
 def test_every_recipe_targets_one_device_and_names_no_entity(recipe):
     config = load_config(recipe)
@@ -151,8 +154,47 @@ def test_ot3_recipe_reads_sharegpt_rows_from_an_unnamed_config():
     }
 
 
+def test_math_recipe_drops_whole_traces_at_a_short_window():
+    math = load_config(MATH_RECIPE)["dataset"]
+
+    # Measured on 3,000 rows: 4096 retains 40.5% of the corpus, and every
+    # retained trace is complete. Dropping is what buys that property, so the
+    # default is relied on and left unstated.
+    assert "overlength_policy" not in math
+    assert math["max_length"] == 4096
+    assert math["batch_size"] == 1
+    # 99.9% of rows carry both tags, unlike OpenThoughts3, where requiring the
+    # closing tag would drop 62% of the corpus.
+    assert math["require_reasoning_tags"] is True
+    assert load_config(OT3_RECIPE)["dataset"]["require_reasoning_tags"] is False
+    # Standard {role, content} rows, so no schema mapping is needed.
+    assert math["messages_column"] == "messages"
+    assert "message_schema" not in math
+
+
+def test_math_recipe_is_a_full_finetune_from_base():
+    math = load_config(MATH_RECIPE)
+
+    # LoRA freezes the tied embedding matrix, whose rows carry <think>,
+    # </think> and <|im_end|>. A reasoning stage is defined by emitting them.
+    assert "lora_config" not in math["model"]
+    # Single stage: trained from the base model, not the instruct export.
+    assert math["model"]["model_source"] == "huggingface"
+    assert math["model"]["model_id"] == "Qwen/Qwen3-1.7B-Base"
+    # Full-fine-tune optimizer settings, not the LoRA recipe's.
+    assert math["optimizer"]["weight_decay"] == 0.0
+    assert math["optimizer"]["max_grad_norm"] == 1.0
+    # An async save transiently double-allocates params plus Adam moments,
+    # which OOMed the sibling full fine-tune.
+    checkpointing = math["training"]["checkpointing_options"]
+    assert checkpointing["enable_async_checkpointing"] is False
+
+
 def test_recipes_do_not_share_checkpoint_dirs_or_run_names():
-    configs = [load_config(recipe) for recipe in (RECIPE, INSTRUCT_RECIPE, OT3_RECIPE)]
+    configs = [
+        load_config(recipe)
+        for recipe in (RECIPE, INSTRUCT_RECIPE, OT3_RECIPE, MATH_RECIPE)
+    ]
 
     # wandb.resume: allow would otherwise append one run to another, and a
     # shared checkpoint directory would restore another run's state.

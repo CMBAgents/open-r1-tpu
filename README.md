@@ -680,6 +680,51 @@ and under truncation most examples are full-length, so the worst case is now the
 common case. Measure peak HBM in a short run before committing TPU time, and
 revisit `model.remat_config` first.
 
+## Math reasoning SFT on OpenR1-Math-220k
+
+[`recipes/Qwen3-1.7B-Math/sft/config_distill.yaml`](recipes/Qwen3-1.7B-Math/sft/config_distill.yaml)
+is the short-window counterpart to the OpenThoughts3 recipe: a full-parameter
+fine-tune of `Qwen3-1.7B-Base` on `open-r1/OpenR1-Math-220k` at
+`dataset.max_length: 4096`, dropping over-length traces rather than truncating
+them.
+
+```bash
+./scripts/copy_gcs_bucket_data.sh --dataset OpenR1-Math-220k
+RECIPE=recipes/Qwen3-1.7B-Math/sft/config_distill.yaml ./scripts/run_sft_tpu.sh
+```
+
+The corpus permits what OpenThoughts3 does not. Measured on 3,000 rows sampled
+evenly across the 93,733 in the `default` config, rendered with the
+Qwen3-1.7B-Base chat template and the recipe's system prompt: `<think>` appears
+in 100% of assistant messages and `</think>` in 99.9%, and the templated length
+has a median of 4,855 tokens (p75 8,127, p90 12,070). Retention under `drop` is
+11.6% at 2048, **40.5% at 4096** (~37,900 rows), 75.4% at 8192 and 98.5% at
+16384.
+
+4096 therefore buys complete traces rather than more of them. Every retained
+example carries a full chain of thought ending in a boxed answer, which is the
+property a reasoning stage exists to teach and the one truncation destroys; the
+price is the 59.5% of the corpus that does not fit. Retained examples average
+2,609 tokens, 63.7% of the window, so `dataset.packing` is worth keeping on and
+windows carry roughly 1.5 examples each.
+
+The run is a full fine-tune rather than LoRA because a reasoning stage is
+defined by emitting `<think>`, `</think>` and `<|im_end|>`, whose rows live in
+the tied embedding matrix that LoRA freezes — the failure the instruct stage
+already hit. It trains the base model directly rather than the instruct stage's
+merged export, following Olmo 3, DeepSeek-R1 and Qwen3, all of which run
+long-CoT SFT on the base model. The consequence is that the output is a math
+reasoner, not a general chat model: this corpus carries no instruction-following
+or open-ended chat data.
+
+`training.max_steps: 2400` is about three epochs — ~99M retained tokens pack into
+~25,400 windows, or ~790 optimizer steps per epoch at 32 windows per step. That
+makes held-out loss a real overfitting signal here, unlike the OpenThoughts3 run,
+which sees no example twice. It is still `eval_fraction: 0.0` by default, because
+the instruct run's 2048-token evals spiked HBM to 31.23 of 31.25 GiB and a full
+fine-tune at twice that sequence has less room. Peak HBM at 4096 is unmeasured:
+measure it in a short run before committing TPU time, then enable eval.
+
 ## Checkpoints and GRPO handoff
 
 Training writes resumable Tunix/Orbax LoRA checkpoints under:
