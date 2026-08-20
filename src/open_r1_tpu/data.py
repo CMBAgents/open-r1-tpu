@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any
 
 import numpy as np
@@ -20,8 +21,71 @@ class EncodedExample:
     unpadded_length: int
 
 
-def normalize_messages(value: Any) -> list[dict[str, str]]:
-    """Normalize a Hugging Face ``messages`` value to role/content dictionaries."""
+@dataclass(frozen=True)
+class MessageSchema:
+    """How one corpus spells the fields and the roles of a chat message.
+
+    ShareGPT-style corpora store a turn as ``{"from": "human", "value": ...}``
+    instead of ``{"role": "user", "content": ...}``. ``role_key`` and
+    ``content_key`` name the fields to read; ``role_map`` renames role values.
+    Roles absent from the map keep their own name, so partial maps are allowed.
+    """
+
+    role_key: str = "role"
+    content_key: str = "content"
+    role_map: Mapping[str, str] = MappingProxyType({})
+
+
+DEFAULT_MESSAGE_SCHEMA = MessageSchema()
+
+# What to do with a rendered conversation longer than the training window.
+DROP_OVERLENGTH = "drop"
+TRUNCATE_OVERLENGTH = "truncate"
+OVERLENGTH_POLICIES = (DROP_OVERLENGTH, TRUNCATE_OVERLENGTH)
+
+
+def message_schema_from_config(value: Any) -> MessageSchema:
+    """Build a :class:`MessageSchema` from a ``dataset.message_schema`` block.
+
+    A mismatched schema is invisible at runtime — every record fails validation
+    and is filtered, leaving an empty dataset rather than an error — so the
+    block itself is validated strictly and as early as possible.
+    """
+    if value is None:
+        return DEFAULT_MESSAGE_SCHEMA
+    if not isinstance(value, Mapping):
+        raise ValueError("dataset.message_schema must be a configuration mapping")
+    unknown = sorted(set(value) - {"role_key", "content_key", "role_map"})
+    if unknown:
+        raise ValueError(f"unknown dataset.message_schema keys: {unknown}")
+    role_key = value.get("role_key", DEFAULT_MESSAGE_SCHEMA.role_key)
+    content_key = value.get("content_key", DEFAULT_MESSAGE_SCHEMA.content_key)
+    for name, key in (("role_key", role_key), ("content_key", content_key)):
+        if not isinstance(key, str) or not key:
+            raise ValueError(
+                f"dataset.message_schema.{name} must be a non-empty string"
+            )
+    role_map = value.get("role_map") or {}
+    if not isinstance(role_map, Mapping) or not all(
+        isinstance(source, str) and isinstance(target, str)
+        for source, target in role_map.items()
+    ):
+        raise ValueError("dataset.message_schema.role_map must map strings to strings")
+    return MessageSchema(
+        role_key=role_key,
+        content_key=content_key,
+        role_map=MappingProxyType(dict(role_map)),
+    )
+
+
+def normalize_messages(
+    value: Any, *, schema: MessageSchema = DEFAULT_MESSAGE_SCHEMA
+) -> list[dict[str, str]]:
+    """Normalize a Hugging Face conversation value to role/content dictionaries.
+
+    ``schema`` adapts corpora that name the fields or the roles differently.
+    The default reads ``role``/``content`` and renames nothing.
+    """
     if isinstance(value, str):
         value = json.loads(value)
     if isinstance(value, np.ndarray):
@@ -33,11 +97,14 @@ def normalize_messages(value: Any) -> list[dict[str, str]]:
     for message in value:
         if not isinstance(message, dict):
             raise ValueError("each message must be a mapping")
-        role = message.get("role")
-        content = message.get("content")
+        role = message.get(schema.role_key)
+        content = message.get(schema.content_key)
         if not isinstance(role, str) or not isinstance(content, str):
-            raise ValueError("each message needs string role and content fields")
-        messages.append({"role": role, "content": content})
+            raise ValueError(
+                "each message needs string "
+                f"{schema.role_key!r} and {schema.content_key!r} fields"
+            )
+        messages.append({"role": schema.role_map.get(role, role), "content": content})
     if not messages:
         raise ValueError("messages cannot be empty")
     return messages
@@ -48,11 +115,12 @@ def prepare_messages(
     *,
     messages_column: str,
     system_prompt: str | None,
+    message_schema: MessageSchema = DEFAULT_MESSAGE_SCHEMA,
 ) -> list[dict[str, str]]:
     """Read a conversation, inject the reasoning system prompt, and validate it."""
     if messages_column not in record:
         raise ValueError(f"record has no {messages_column!r} column")
-    messages = normalize_messages(record[messages_column])
+    messages = normalize_messages(record[messages_column], schema=message_schema)
     if messages[-1]["role"] != "assistant":
         raise ValueError("the final message must be an assistant reasoning trace")
     if system_prompt and messages[0]["role"] != "system":
@@ -205,22 +273,42 @@ def encode_reasoning_example(
     require_reasoning_tags: bool = True,
     reasoning_start: str = "<think>",
     reasoning_end: str = "</think>",
+    message_schema: MessageSchema = DEFAULT_MESSAGE_SCHEMA,
+    overlength_policy: str = DROP_OVERLENGTH,
 ) -> EncodedExample | None:
-    """Tokenize one trace, preserving only complete examples.
+    """Tokenize one trace under the configured overlength policy.
 
     With ``assistant_only_loss`` every assistant turn in the conversation is
     supervised, not just the final one; user and system tokens never carry
     loss. ``prompt_length`` still reports the context length of the final turn.
 
-    Overlength examples are deliberately filtered instead of truncated. Cutting a
-    reasoning trace teaches the model incomplete chains and often removes the final
-    answer, so it is a poor default for reasoning distillation.
+    ``overlength_policy`` decides what happens to a conversation whose render
+    exceeds ``max_length``. Under ``drop``, the default, the example is
+    filtered: cutting a reasoning trace teaches incomplete chains and usually
+    removes the final answer, which is a poor default for reasoning
+    distillation. Under ``truncate`` the render is cut on the right, keeping the
+    prompt and as much of the reasoning as fits, for corpora whose traces were
+    themselves generated under a context cap and mostly stop mid-sentence —
+    there, dropping is an exclusion policy over most of the corpus.
+
+    Truncation deliberately leaves the sequence unterminated. The chat
+    template's closing ``<|im_end|>`` is cut away with the rest of the tail, and
+    appending any terminator in its place would teach the model to stop
+    mid-reasoning, which is exactly the failure the policy exists to avoid. An
+    example whose prompt alone fills the window is still dropped, since nothing
+    of the trace survives to supervise.
     """
+    if overlength_policy not in OVERLENGTH_POLICIES:
+        raise ValueError(
+            "overlength_policy must be one of "
+            f"{', '.join(OVERLENGTH_POLICIES)}; got {overlength_policy!r}"
+        )
     try:
         messages = prepare_messages(
             record,
             messages_column=messages_column,
             system_prompt=system_prompt,
+            message_schema=message_schema,
         )
     except (TypeError, ValueError, json.JSONDecodeError):
         return None
@@ -236,18 +324,31 @@ def encode_reasoning_example(
     except (TypeError, ValueError):
         return None
 
-    if len(full_ids) > max_length or len(full_ids) < 2:
+    if len(full_ids) < 2:
         return None
+    if len(full_ids) > max_length and overlength_policy == DROP_OVERLENGTH:
+        return None
+    # Right-truncation, so the prompt survives and the tail is cut. No
+    # terminator replaces the closing sequence this removes.
+    length = min(len(full_ids), max_length)
 
     mask = np.zeros((max_length,), dtype=np.bool_)
     try:
         if assistant_only_loss:
+            # Spans are located in the untruncated render: the prefix renders
+            # they are matched against are of whole messages, so deriving them
+            # from cut ids would misplace the mask.
             spans = _assistant_turn_spans(tokenizer, messages, full_ids)
             if spans is None:
                 return None
             for start, end in spans:
-                mask[start:end] = True
-            prompt_length = spans[-1][0]
+                if start >= length:
+                    # This turn begins past the truncation boundary.
+                    continue
+                mask[start : min(end, length)] = True
+            if not mask.any():
+                return None
+            prompt_length = min(spans[-1][0], length)
         else:
             prompt_ids = _render_ids(
                 tokenizer, messages[:-1], add_generation_prompt=True
@@ -259,19 +360,23 @@ def encode_reasoning_example(
                 # An exact prompt prefix is still required so prompt_length is
                 # meaningful; a guessed boundary would misreport it.
                 return None
+            if len(prompt_ids) >= length:
+                return None
             prompt_length = len(prompt_ids)
-            mask[: len(full_ids)] = True
+            mask[:length] = True
     except (TypeError, ValueError):
         return None
 
     tokens = np.full((max_length,), _pad_id(tokenizer), dtype=np.int32)
-    tokens[: len(full_ids)] = np.asarray(full_ids, dtype=np.int32)
+    tokens[:length] = np.asarray(full_ids[:length], dtype=np.int32)
 
     return EncodedExample(
         input_tokens=tokens,
         input_mask=mask,
         prompt_length=prompt_length,
-        unpadded_length=len(full_ids),
+        # Post-truncation: the packer slices by this, so a pre-truncation
+        # value would silently corrupt every window it lands in.
+        unpadded_length=length,
     )
 
 
@@ -330,6 +435,8 @@ def pack_encoded_examples(
     for example in examples:
         length = int(example.unpadded_length)
         if length > max_length:
+            # Unreachable through the encoder, which drops or truncates to the
+            # same window; kept so a hand-built example cannot corrupt one.
             raise ValueError("example is longer than the packing window")
         window = next((w for w in pool if w.used + length <= max_length), None)
         if window is None:
@@ -469,6 +576,13 @@ def load_reasoning_datasets(config: dict[str, Any], tokenizer: Any) -> tuple[Any
         "require_reasoning_tags": bool(config.get("require_reasoning_tags", True)),
         "reasoning_start": config.get("reasoning_start", "<think>"),
         "reasoning_end": config.get("reasoning_end", "</think>"),
+        # Corpora that name messages differently — ShareGPT's from/value with
+        # human/gpt roles, for one — are adapted here from the recipe rather
+        # than by a special case in the encoder, and lazily rather than by
+        # rewriting the corpus: the rename costs nothing per record, while
+        # materializing a renamed copy of a million-row dataset costs a lot.
+        "message_schema": message_schema_from_config(config.get("message_schema")),
+        "overlength_policy": str(config.get("overlength_policy", DROP_OVERLENGTH)),
     }
     common = {
         "tokenizer": tokenizer,

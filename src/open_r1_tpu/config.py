@@ -95,6 +95,18 @@ def validate_config(config: dict[str, Any]) -> None:
     if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
         raise ValueError("training.wandb.tags must be a list of strings")
 
+    # Imported here so the data module stays out of this module's import
+    # graph; both checks are cheap and catch a recipe that would otherwise
+    # filter every example and train on an empty dataset.
+    from open_r1_tpu.data import OVERLENGTH_POLICIES, message_schema_from_config
+
+    overlength_policy = config["dataset"].get("overlength_policy", "drop")
+    if overlength_policy not in OVERLENGTH_POLICIES:
+        raise ValueError(
+            "dataset.overlength_policy must be one of " + ", ".join(OVERLENGTH_POLICIES)
+        )
+    message_schema_from_config(config["dataset"].get("message_schema"))
+
     eval_fraction = config["dataset"].get("eval_fraction", 0.0)
     if not isinstance(eval_fraction, (int, float)) or not 0.0 <= eval_fraction < 1.0:
         raise ValueError("dataset.eval_fraction must be in [0.0, 1.0)")

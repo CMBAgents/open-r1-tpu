@@ -47,8 +47,12 @@ The default path is:
   token IDs.
 - Derive valid attention positions from the supervised sequence boundary. Do
   not assume padding and EOS have different token IDs.
-- Require complete `<think>...</think>` traces by default. Filter overlength
-  examples instead of truncating away reasoning or final answers.
+- Require complete `<think>...</think>` traces by default, and filter overlength
+  examples by default instead of truncating away reasoning or final answers.
+  `dataset.overlength_policy: truncate` is opt-in, for corpora whose traces were
+  themselves generated under a context cap and are mostly incomplete; it must
+  leave the truncated sequence unterminated, since appending a terminator would
+  teach the model to stop mid-reasoning.
 - Keep integer-label cross-entropy. Tunix's default vocabulary-sized one-hot
   target is unnecessarily expensive at long sequence lengths.
 - If LoRA is requested, fail when no model modules match the configured regex.

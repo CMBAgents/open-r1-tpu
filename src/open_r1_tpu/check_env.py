@@ -6,9 +6,10 @@ import argparse
 import math
 import os
 from importlib import metadata
+from typing import Any
 
 from open_r1_tpu.config import load_config
-from open_r1_tpu.data import encode_reasoning_example
+from open_r1_tpu.data import encode_reasoning_example, message_schema_from_config
 
 DEFAULT_CONFIG = "recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml"
 
@@ -18,6 +19,37 @@ def _version(distribution: str) -> str:
         return metadata.version(distribution)
     except metadata.PackageNotFoundError:
         return "unknown"
+
+
+def _preflight_example(
+    dataset: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build a probe conversation in the shape the recipe's own corpus uses.
+
+    The recipe chooses the conversation column and how a turn spells its role
+    and content, so a hardcoded role/content record would fail the boundary
+    check on a ShareGPT-style corpus and report a tokenizer fault that is not
+    there. Inverting the role map writes the probe in the corpus's own
+    vocabulary, which exercises the mapping on the way through.
+    """
+    schema = message_schema_from_config(dataset.get("message_schema"))
+    sources = {target: source for source, target in schema.role_map.items()}
+    column = dataset.get("messages_column", "messages")
+    record = {
+        column: [
+            {schema.role_key: sources.get(role, role), schema.content_key: content}
+            for role, content in (
+                ("user", "What is 2 + 2?"),
+                ("assistant", "<think>Adding gives four.</think>4"),
+            )
+        ]
+    }
+    encode_kwargs = {
+        "messages_column": column,
+        "system_prompt": dataset.get("system_prompt"),
+        "message_schema": schema,
+    }
+    return record, encode_kwargs
 
 
 def main() -> None:
@@ -74,20 +106,12 @@ def main() -> None:
     )
     if config["tokenizer"].get("chat_template"):
         tokenizer.tokenizer.chat_template = config["tokenizer"]["chat_template"]
-    sample = {
-        "messages": [
-            {"role": "user", "content": "What is 2 + 2?"},
-            {
-                "role": "assistant",
-                "content": "<think>Adding gives four.</think>4",
-            },
-        ]
-    }
+    sample, encode_kwargs = _preflight_example(config["dataset"])
     encoded = encode_reasoning_example(
         sample,
         tokenizer,
         max_length=256,
-        system_prompt=config["dataset"].get("system_prompt"),
+        **encode_kwargs,
     )
     if encoded is None:
         errors.append(

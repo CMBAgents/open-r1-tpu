@@ -17,6 +17,9 @@ RECIPE = (
 INSTRUCT_RECIPE = (
     Path(__file__).parents[1] / "recipes/Qwen3-1.7B-Instruct/sft/config_instruct.yaml"
 )
+OT3_RECIPE = (
+    Path(__file__).parents[1] / "recipes/Qwen3-1.7B-OT3/sft/config_distill.yaml"
+)
 
 
 def test_parse_override_uses_yaml_types():
@@ -49,7 +52,9 @@ def test_default_recipe_targets_one_32gb_tpu():
 
 
 @pytest.mark.parametrize(
-    "recipe", [RECIPE, INSTRUCT_RECIPE], ids=["distill", "instruct"]
+    "recipe",
+    [RECIPE, INSTRUCT_RECIPE, OT3_RECIPE],
+    ids=["distill", "instruct", "ot3"],
 )
 def test_every_recipe_targets_one_device_and_names_no_entity(recipe):
     config = load_config(recipe)
@@ -110,6 +115,64 @@ def test_instruct_recipe_exports_where_the_distill_recipe_can_read_it():
     assert (
         instruct["training"]["checkpoint_dir"] != distill["training"]["checkpoint_dir"]
     )
+
+
+def test_ot3_recipe_truncates_where_the_distill_recipe_drops():
+    ot3 = load_config(OT3_RECIPE)
+    distill = load_config(RECIPE)
+
+    # A live packed run trains against the distill recipe; its semantics must
+    # not move, so drop stays the default and stays unstated there.
+    assert "overlength_policy" not in distill["dataset"]
+    assert ot3["dataset"]["overlength_policy"] == "truncate"
+    # 62% of OpenThoughts3 traces never close their <think> block. Requiring
+    # the closing tag would drop them and undo the truncation policy.
+    assert ot3["dataset"]["require_reasoning_tags"] is False
+    assert ot3["dataset"]["max_length"] == 16384
+    # The microbatch cannot grow at this sequence length; batch comes from
+    # accumulation instead.
+    assert ot3["dataset"]["batch_size"] == 1
+    accumulation = ot3["training"]["gradient_accumulation_steps"]
+    assert accumulation > distill["training"]["gradient_accumulation_steps"]
+
+
+def test_ot3_recipe_reads_sharegpt_rows_from_an_unnamed_config():
+    config = load_config(OT3_RECIPE)["dataset"]
+
+    # OpenThoughts3 publishes no named config; `all` would fail to load.
+    assert config["config"] is None
+    # Rows are {from: human|gpt, value: ...} under `conversations`. Without the
+    # mapping every row is filtered and the dataset comes out empty.
+    assert config["messages_column"] == "conversations"
+    assert config["message_schema"] == {
+        "role_key": "from",
+        "content_key": "value",
+        "role_map": {"human": "user", "gpt": "assistant"},
+    }
+
+
+def test_recipes_do_not_share_checkpoint_dirs_or_run_names():
+    configs = [load_config(recipe) for recipe in (RECIPE, INSTRUCT_RECIPE, OT3_RECIPE)]
+
+    # wandb.resume: allow would otherwise append one run to another, and a
+    # shared checkpoint directory would restore another run's state.
+    for key in ("checkpoint_dir", "run_name"):
+        values = [config["training"][key] for config in configs]
+        assert len(set(values)) == len(values)
+
+
+@pytest.mark.parametrize(
+    ("override", "error"),
+    [
+        ("dataset.overlength_policy=clip", "overlength_policy"),
+        ("dataset.message_schema=3", "message_schema"),
+        ("dataset.message_schema={from: human}", "unknown"),
+        ("dataset.message_schema={role_map: {human: 1}}", "role_map"),
+    ],
+)
+def test_invalid_dataset_policy_config_is_rejected(override, error):
+    with pytest.raises(ValueError, match=error):
+        load_config(RECIPE, [override])
 
 
 def test_invalid_mesh_is_rejected():

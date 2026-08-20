@@ -128,8 +128,241 @@ def test_missing_reasoning_tags_is_filtered():
     )
 
 
+def _rendered(messages):
+    """The exact string FakeTokenizer renders, one token per character."""
+    return "".join(
+        f"<{message['role']}>{message['content']}</{message['role']}>"
+        for message in messages
+    )
+
+
 def test_overlength_trace_is_filtered_not_truncated():
     assert encode_reasoning_example(_record(), FakeTokenizer(), max_length=20) is None
+    # The default is what a live run depends on; state it explicitly too.
+    assert (
+        encode_reasoning_example(
+            _record(), FakeTokenizer(), max_length=20, overlength_policy="drop"
+        )
+        is None
+    )
+
+
+def test_the_overlength_policy_only_affects_overlength_examples():
+    dropped = encode_reasoning_example(_record(), FakeTokenizer(), max_length=256)
+    truncated = encode_reasoning_example(
+        _record(), FakeTokenizer(), max_length=256, overlength_policy="truncate"
+    )
+    assert dropped is not None and truncated is not None
+    assert dropped.unpadded_length == truncated.unpadded_length
+    assert dropped.prompt_length == truncated.prompt_length
+    assert dropped.input_tokens.tolist() == truncated.input_tokens.tolist()
+    assert dropped.input_mask.tolist() == truncated.input_mask.tolist()
+
+
+def test_unknown_overlength_policy_is_rejected():
+    with pytest.raises(ValueError, match="overlength_policy"):
+        encode_reasoning_example(
+            _record(), FakeTokenizer(), max_length=256, overlength_policy="clip"
+        )
+
+
+def test_truncation_cuts_the_tail_and_appends_no_terminator():
+    tokenizer = FakeTokenizer()
+    record = _record()
+    rendered = _rendered(record["messages"])
+    # Cut mid-reasoning, before the trace closes its <think> block.
+    max_length = rendered.index("</think>")
+
+    encoded = encode_reasoning_example(
+        record, tokenizer, max_length=max_length, overlength_policy="truncate"
+    )
+
+    assert encoded is not None
+    # The packer slices by unpadded_length, so it must be the cut length.
+    assert encoded.unpadded_length == max_length
+    assert encoded.input_tokens.tolist() == [ord(c) for c in rendered[:max_length]]
+    kept = "".join(chr(token) for token in encoded.input_tokens.tolist())
+    # The template's closing sequence went with the tail, and nothing replaced
+    # it: a terminator here would teach the model to stop mid-reasoning.
+    assert not kept.endswith("</assistant>")
+    assert "</think>" not in kept
+    assert tokenizer.eos_token_id not in encoded.input_tokens.tolist()
+    assert not encoded.input_mask[: encoded.prompt_length].any()
+    assert encoded.input_mask[encoded.prompt_length :].all()
+
+
+def test_truncated_example_packs_at_its_truncated_length():
+    record = _record()
+    max_length = _rendered(record["messages"]).index("</think>")
+    encoded = encode_reasoning_example(
+        record, FakeTokenizer(), max_length=max_length, overlength_policy="truncate"
+    )
+    assert encoded is not None
+
+    (window,) = data_module.pack_encoded_examples(
+        [encoded], max_length=max_length, pad_id=0
+    )
+
+    # A pre-truncation unpadded_length would overrun the window instead.
+    assert window["input_tokens"].tolist() == encoded.input_tokens.tolist()
+    assert window["segment_ids"].tolist() == [1] * max_length
+
+
+def _multi_turn_record():
+    return {
+        "messages": [
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "<think>greet</think>Hello"},
+            {"role": "user", "content": "2+2?"},
+            {"role": "assistant", "content": "<think>easy</think>4"},
+        ]
+    }
+
+
+def test_truncation_clamps_a_span_that_crosses_the_boundary():
+    record = _multi_turn_record()
+    first_start = len("<user>Hi</user><assistant>")
+    max_length = first_start + 5
+
+    encoded = encode_reasoning_example(
+        record, FakeTokenizer(), max_length=max_length, overlength_policy="truncate"
+    )
+
+    assert encoded is not None
+    assert encoded.unpadded_length == max_length
+    # Spans come from the untruncated render, so the mask still starts exactly
+    # at the assistant header and simply stops at the boundary.
+    assert not encoded.input_mask[:first_start].any()
+    assert encoded.input_mask[first_start:max_length].all()
+    # Nothing of the final turn survives, so the whole window is context.
+    assert encoded.prompt_length == max_length
+
+
+def test_truncation_discards_a_turn_that_starts_past_the_boundary():
+    record = _multi_turn_record()
+    first_start = len("<user>Hi</user><assistant>")
+    first_end = len("<user>Hi</user><assistant><think>greet</think>Hello</assistant>")
+    max_length = first_end + 3
+
+    encoded = encode_reasoning_example(
+        record, FakeTokenizer(), max_length=max_length, overlength_policy="truncate"
+    )
+
+    assert encoded is not None
+    assert encoded.input_mask[first_start:first_end].all()
+    # The second assistant turn begins after the cut and carries no loss.
+    assert not encoded.input_mask[first_end:].any()
+    assert encoded.unpadded_length == max_length
+
+
+def test_a_prompt_longer_than_the_window_is_still_dropped():
+    record = _record()
+    prompt = "<user>What is 2+2?</user><assistant>"
+
+    for max_length in (len(prompt) - 4, len(prompt)):
+        # No assistant token fits, so there is nothing trainable in the window.
+        assert (
+            encode_reasoning_example(
+                record,
+                FakeTokenizer(),
+                max_length=max_length,
+                overlength_policy="truncate",
+            )
+            is None
+        )
+
+
+def test_full_sequence_loss_drops_a_window_holding_only_the_prompt():
+    record = _record()
+    prompt = "<user>What is 2+2?</user><assistant>"
+    assert (
+        encode_reasoning_example(
+            record,
+            FakeTokenizer(),
+            max_length=len(prompt),
+            assistant_only_loss=False,
+            overlength_policy="truncate",
+        )
+        is None
+    )
+
+
+SHAREGPT_SCHEMA = {
+    "role_key": "from",
+    "content_key": "value",
+    "role_map": {"human": "user", "gpt": "assistant"},
+}
+
+
+def _sharegpt_record():
+    return {
+        "conversations": [
+            {"from": "human", "value": "What is 2+2?"},
+            {"from": "gpt", "value": "<think>two plus two is four</think>4"},
+        ]
+    }
+
+
+def test_sharegpt_rows_are_mapped_onto_role_and_content():
+    encoded = encode_reasoning_example(
+        _sharegpt_record(),
+        FakeTokenizer(),
+        max_length=256,
+        messages_column="conversations",
+        message_schema=data_module.message_schema_from_config(SHAREGPT_SCHEMA),
+    )
+
+    assert encoded is not None
+    assert encoded.prompt_length == len("<user>What is 2+2?</user><assistant>")
+    assert not encoded.input_mask[: encoded.prompt_length].any()
+    assert encoded.input_mask[encoded.prompt_length : encoded.unpadded_length].all()
+
+
+def test_sharegpt_rows_are_dropped_without_a_schema():
+    # The failure that motivates the schema: no error, just an empty dataset.
+    assert (
+        encode_reasoning_example(
+            _sharegpt_record(),
+            FakeTokenizer(),
+            max_length=256,
+            messages_column="conversations",
+        )
+        is None
+    )
+
+
+def test_the_default_schema_leaves_role_content_rows_untouched():
+    messages = normalize_messages(
+        [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]
+    )
+    assert messages == [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "a"},
+    ]
+
+
+def test_an_unmapped_role_keeps_its_own_name():
+    schema = data_module.message_schema_from_config({"role_map": {"human": "user"}})
+    messages = normalize_messages(
+        [{"role": "system", "content": "s"}, {"role": "human", "content": "q"}],
+        schema=schema,
+    )
+    assert [message["role"] for message in messages] == ["system", "user"]
+
+
+@pytest.mark.parametrize(
+    ("block", "error"),
+    [
+        ("not a mapping", "configuration mapping"),
+        ({"from": "human"}, "unknown"),
+        ({"role_key": ""}, "role_key"),
+        ({"content_key": 3}, "content_key"),
+        ({"role_map": {"human": 1}}, "role_map"),
+    ],
+)
+def test_an_invalid_message_schema_is_rejected(block, error):
+    with pytest.raises(ValueError, match=error):
+        data_module.message_schema_from_config(block)
 
 
 def test_full_sequence_loss_can_be_enabled():
@@ -450,3 +683,70 @@ def test_load_reasoning_datasets_forwards_the_packing_flag(monkeypatch):
         FakeTokenizer(),
     )
     assert captured["packing"] is True
+
+
+def test_load_reasoning_datasets_builds_the_schema_and_policy(monkeypatch):
+    captured = {}
+
+    class FakeDataset:
+        def __len__(self):
+            return 1
+
+    monkeypatch.setitem(
+        sys.modules,
+        "datasets",
+        SimpleNamespace(load_dataset=lambda *a, **k: FakeDataset()),
+    )
+    monkeypatch.setattr(
+        data_module,
+        "build_grain_dataset",
+        lambda data_source, *args, **kwargs: captured.update(kwargs) or data_source,
+    )
+
+    data_module.load_reasoning_datasets(
+        {
+            "name": "parquet",
+            "config": None,
+            "batch_size": 1,
+            "max_length": 128,
+            "messages_column": "conversations",
+            "message_schema": SHAREGPT_SCHEMA,
+            "overlength_policy": "truncate",
+        },
+        FakeTokenizer(),
+    )
+
+    encode_kwargs = captured["encode_kwargs"]
+    assert encode_kwargs["overlength_policy"] == "truncate"
+    assert encode_kwargs["messages_column"] == "conversations"
+    schema = encode_kwargs["message_schema"]
+    assert (schema.role_key, schema.content_key) == ("from", "value")
+    assert dict(schema.role_map) == {"human": "user", "gpt": "assistant"}
+
+
+def test_load_reasoning_datasets_defaults_to_the_drop_policy(monkeypatch):
+    captured = {}
+
+    class FakeDataset:
+        def __len__(self):
+            return 1
+
+    monkeypatch.setitem(
+        sys.modules,
+        "datasets",
+        SimpleNamespace(load_dataset=lambda *a, **k: FakeDataset()),
+    )
+    monkeypatch.setattr(
+        data_module,
+        "build_grain_dataset",
+        lambda data_source, *args, **kwargs: captured.update(kwargs) or data_source,
+    )
+
+    data_module.load_reasoning_datasets(
+        {"name": "parquet", "config": None, "batch_size": 1, "max_length": 128},
+        FakeTokenizer(),
+    )
+
+    encode_kwargs = captured["encode_kwargs"]
+    assert encode_kwargs["overlength_policy"] == "drop"
+    assert encode_kwargs["message_schema"] is data_module.DEFAULT_MESSAGE_SCHEMA
