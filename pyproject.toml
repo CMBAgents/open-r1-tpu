@@ -23,6 +23,25 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Benchmark evaluation: the vLLM server, the LightEval harness, and Math-Verify
+# for symbolic answer equivalence. Optional because a training-only install has
+# no use for them, not because they conflict with anything.
+#
+# Nothing here is pinned yet. The evaluation protocol wants a frozen, recorded
+# stack, but pinning versions that have never run on this hardware would be
+# false precision; open_r1_tpu.evaluate records the installed versions in every
+# summary, which is what the first successful run should pin from.
+eval = [
+  # The math extra brings Math-Verify. Without it maths accuracy is scored by
+  # string equality, which understates it substantially.
+  "lighteval[math]",
+  # The backend LightEval reaches the local vLLM server through.
+  "litellm",
+  # Reading LightEval's Parquet detail shards.
+  "pyarrow>=15.0",
+  # Pulls in vllm and the tpu-inference plugin.
+  "vllm-tpu",
+]
 test = ["pytest>=8.0"]
 # Host-independent developer tooling. Deliberately free of the TPU stack so it
 # installs on a laptop; see the pyright note below.
