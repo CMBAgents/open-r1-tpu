@@ -30,10 +30,16 @@ The default path is:
   and merged export.
 - `src/open_r1_tpu/check_env.py`: target-TPU environment preflight.
 - `src/open_r1_tpu/transcripts.py`: periodic free-running sample transcripts.
-- `recipes/`: versioned model and training configurations.
+- `src/open_r1_tpu/evaluate.py`: benchmark evaluation -- recipe validation, the
+  LightEval harness run, and reduction of its output to a summary.
+- `src/open_r1_tpu/check_eval_env.py`: inference-environment and export
+  preflight.
+- `recipes/`: versioned model, training, and evaluation configurations.
 - `scripts/setup_tpu_vm.sh`: uv-based TPU VM environment provisioning.
 - `scripts/copy_gcs_bucket_data.sh`: copy GCS bucket data to local disk.
 - `scripts/run_sft_tpu.sh`: standard SFT launcher.
+- `scripts/run_eval_tpu.sh`: evaluation launcher; owns the vLLM server's
+  lifecycle.
 - `tests/`: host-independent unit tests.
 
 ## Architectural invariants
@@ -73,6 +79,20 @@ The default path is:
   large. Keep `artifacts/`, `data/`, and `models/` untracked.
 - Maintain the export-path safety checks. Merged export must never replace the
   repository, home directory, base-model cache, or checkpoint directory.
+- Keep `open_r1_tpu.evaluate` free of JAX, Tunix, and vLLM imports. It drives
+  LightEval as a subprocess and the server over a socket, so it stays coupled
+  to their command line and wire format rather than to their Python API, both
+  of which move faster. Only one process can hold the chip, so evaluation runs
+  after training, not beside it.
+- Never report a benchmark number from a single seed. Seed variance alone moves
+  small reasoning benchmarks by 5-15 points, so results carry a mean and a
+  standard deviation, and one seed reports a null spread rather than `0.0`.
+- Keep generation-level metrics honest about missing data. Truncation rate and
+  mean completion length are `null` when LightEval's detail shards carry no
+  token counts; do not substitute a character-length estimate.
+- Treat LightEval's CLI and detail-column names as unstable. Task strings and
+  extra flags belong in the recipe, and detail fields are probed with a failure
+  that names the keys that were actually present.
 
 ## Tunix compatibility
 
@@ -193,13 +213,22 @@ Full run:
 ./scripts/run_sft_tpu.sh
 ```
 
+Evaluation preflight and smoke tier, with the `eval` extra installed:
+
+```bash
+python -m open_r1_tpu.check_eval_env \
+  --config recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml
+RECIPE=recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml ./scripts/run_eval_tpu.sh
+```
+
 The first TPU step includes JAX/XLA compilation and can be much slower than
 subsequent steps.
 
 ## Testing expectations
 
 - Add or update unit tests for changes to configuration parsing, message
-  validation, tag filtering, token boundaries, padding, or loss masking.
+  validation, tag filtering, token boundaries, padding, or loss masking, or to
+  evaluation recipe validation, command construction, or metric reduction.
 - Use fake tokenizers for deterministic unit tests. Validate against the real
   configured Qwen tokenizer during TPU preflight.
 - Run the smallest relevant tests during development, then the complete unit

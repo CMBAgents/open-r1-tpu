@@ -725,6 +725,136 @@ the instruct run's 2048-token evals spiked HBM to 31.23 of 31.25 GiB and a full
 fine-tune at twice that sequence has less room. Peak HBM at 4096 is unmeasured:
 measure it in a short run before committing TPU time, then enable eval.
 
+## Benchmark evaluation
+
+Held-out loss is teacher-forced: every scored token is conditioned on ground
+truth, so it cannot say whether the model closes its reasoning trace, stops, or
+reaches the right answer unaided. Those are the questions a reasoning stage is
+judged on, and only free generation scored against a reference answers them.
+
+The stack is three decoupled layers. Generation is vLLM on the TPU, serving the
+merged export behind an OpenAI-compatible endpoint. The harness is LightEval,
+reached over HTTP through its litellm backend. Scoring is whatever metric the
+LightEval task declares, which for maths is Math-Verify's symbolic equivalence
+rather than string equality. `src/open_r1_tpu/evaluate.py` owns the layers either
+side of the harness — it validates the recipe, runs the harness once per seed,
+and reduces what the harness wrote into a single summary — and imports neither
+JAX, Tunix, nor vLLM.
+
+### Installing and running
+
+The harness lives behind the `eval` extra:
+
+```bash
+uv pip install -e '.[eval]'
+```
+
+Evaluation runs *after* training rather than beside it. Only one process can
+hold the TPU chip, so stop the training job before starting the server.
+
+### Preflight, then the smoke tier
+
+```bash
+python -m open_r1_tpu.check_eval_env \
+  --config recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml
+```
+
+This checks the inference environment and the export it is pointed at. Two
+failures are worth catching before a benchmark rather than after it. A merged
+export missing its tokenizer files or its chat template loads far enough to
+serve requests and then answers off-distribution, producing a number that
+measures the wrong thing. And Qwen3-Base names `<|endoftext|>` as its EOS while
+the chat template closes turns with `<|im_end|>`, so a server left to the
+tokenizer's own EOS runs past the end of every reply and writes the user's next
+turn as well — which under a benchmark reads as a model that cannot stop
+reasoning. The recipes set `sampling.stop` to `<|im_end|>` for that reason.
+
+```bash
+RECIPE=recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml ./scripts/run_eval_tpu.sh
+```
+
+`scripts/run_eval_tpu.sh` owns the vLLM server's lifecycle and nothing else: it
+builds the `vllm serve` command from the recipe, waits for the server to answer,
+runs the evaluation, and stops the server on the way out. Both halves read the
+same recipe and the same dotted overrides, so the port and the served model name
+cannot drift apart. Set `SKIP_SERVER=1` to reuse a server that is already up.
+
+### The tiers
+
+| Recipe | Cost | When |
+| --- | --- | --- |
+| `eval/tier0_smoke.yaml` | ~5 min | Every run. GSM8K, 200 problems, greedy. |
+| `eval/tier1_core.yaml` | ~1 h | Every checkpoint worth keeping. MATH-500, AMC23, GSM8K over three seeds. |
+| `eval/tier2_headline.yaml` | hours | Milestones. AIME24, AIME25, OlympiadBench over ten seeds. |
+| `eval/tier3_regression.yaml` | hours | Milestones. IFEval, GPQA-Diamond, MMLU-Pro. |
+
+Tier 0 does not measure ability; it catches a model that is broken in a way loss
+cannot show. Tier 1 is the tier that decides whether a recipe change helped.
+Tier 2 exists because AIME is the number the field quotes, not because 30
+problems can settle an argument — one extra correct answer there moves pass@1 by
+3.3 points. Tier 3 answers what the math-only corpus cost, which is an open
+question for this project: `OpenR1-Math-220k` carries no instruction-following
+or chat data at all.
+
+### Seeds are not optional
+
+Seed variance alone moves small reasoning benchmarks by 5–15 points
+([arXiv 2504.07086](https://arxiv.org/abs/2504.07086)), which is more than most
+recipe changes are worth. Every task runs once per seed and is reported as mean
+and standard deviation; `aggregate_across_seeds` reports a null standard
+deviation at one seed rather than a reassuring `0.0`. Three seeds is the
+documented minimum at MATH-500's size, ten at AIME's.
+
+Published numbers are not a baseline either — they were produced by a different
+stack. Measure the base model on this one:
+
+```bash
+RECIPE=recipes/Qwen3-1.7B-Math/eval/tier1_core.yaml ./scripts/run_eval_tpu.sh \
+  server.model_path=models/Qwen3-1.7B-Base
+```
+
+### What the summary records
+
+The run writes `summary_<tier>.json` under `reporting.output_dir`, holding the
+per-task metrics aggregated across seeds, the sampling parameters, the model
+path, and the installed versions of LightEval, vLLM and Math-Verify. A result
+that does not name its stack cannot be compared with one produced months later.
+`reporting.summary_path` accepts a `gs://` URI to land it beside the checkpoint
+it scored.
+
+Alongside accuracy it records four things read out of LightEval's detail shards,
+each diagnosing a failure accuracy alone cannot separate:
+
+- `truncation_rate` — the fraction that hit the token cap. A truncated trace
+  scores as wrong and reads as a reasoning failure, so if this is not near zero
+  then `sampling.max_new_tokens` is too low and the accuracy under it is not
+  trustworthy.
+- `reasoning_closed_rate` and `answer_marker_rate` — whether the model produces
+  the shape SFT was teaching, independent of whether the answer is right.
+- `mean_completion_tokens` — the length-inflation signal.
+
+`truncation_rate` and `mean_completion_tokens` are `null` when the detail shards
+carry no token counts, which is honest about the gap rather than filling it with
+a character-length guess.
+
+Set `reporting.wandb.run_id` to the training run's W&B id to put these numbers on
+the same run as the loss curves. W&B resumes by id, never by name, so without one
+this logs to a standalone run rather than silently appending to whichever run
+happens to share a name.
+
+### Known constraints
+
+- **Task names are not verified.** LightEval renames and moves tasks between
+  releases, and the names in the recipes have not been run. Confirm them with
+  `lighteval tasks list` before the first run; a wrong name fails immediately and
+  costs nothing.
+- **Only generative tasks work.** An OpenAI-compatible endpoint returns no
+  per-token log probabilities for a supplied continuation, so LightEval's
+  loglikelihood tasks — plain MMLU, HellaSwag, ARC — cannot run through this
+  backend at all. Tier 3 uses generative tasks throughout for that reason.
+- **Single-chip vLLM is undocumented.** The vLLM TPU docs recommend v6e as a
+  generation but say nothing about `v6e-1`. Nothing here has been run on a TPU.
+
 ## Checkpoints and GRPO handoff
 
 Training writes resumable Tunix/Orbax LoRA checkpoints under:
