@@ -186,6 +186,42 @@ def test_lighteval_command_joins_tasks_and_appends_extra_args():
     assert command[command.index("--max-samples") + 1] == "8"
 
 
+def test_the_server_binary_can_live_outside_this_environment():
+    # tpu-inference does not support this project's Python, so vLLM is reached
+    # wherever it is installed rather than imported from here.
+    settings = evaluate.resolve_settings(
+        minimal_config(server={"serve_command": ["/opt/vllm-venv/bin/vllm", "serve"]})
+    )
+
+    command = evaluate.vllm_serve_command(settings)
+
+    assert command[:2] == ["/opt/vllm-venv/bin/vllm", "serve"]
+    assert command[2] == "artifacts/model"
+
+
+def test_a_containerised_server_command_is_accepted():
+    settings = evaluate.resolve_settings(
+        minimal_config(
+            server={"serve_command": ["docker", "run", "--rm", "img", "serve"]}
+        )
+    )
+
+    assert evaluate.vllm_serve_command(settings)[:4] == [
+        "docker",
+        "run",
+        "--rm",
+        "img",
+    ]
+
+
+@pytest.mark.parametrize("serve_command", [[], "vllm serve", [""], [1]], ids=str)
+def test_an_invalid_serve_command_is_rejected(serve_command):
+    with pytest.raises(ValueError, match="serve_command"):
+        evaluate.validate_eval_config(
+            minimal_config(server={"serve_command": serve_command})
+        )
+
+
 def test_serve_command_carries_the_recipe_port_and_window():
     settings = evaluate.resolve_settings(
         minimal_config(server={"port": 9001, "max_model_len": 20480})
@@ -382,7 +418,10 @@ def test_build_summary_records_the_stack_and_the_sampling_parameters():
     )
 
     assert summary["sampling"]["temperature"] == evaluate.DEFAULT_TEMPERATURE
-    assert set(summary["stack"]) >= {"lighteval", "vllm"}
+    assert set(summary["stack"]) >= {"lighteval", "math-verify"}
+    # vLLM runs outside this environment, so what served the model is
+    # recorded as the command rather than as an importable version.
+    assert summary["serve_command"] == ["vllm", "serve"]
     assert summary["tasks_metrics"]["t"]["acc"]["mean"] == pytest.approx(0.4)
     assert summary["generation"]["format_rate"]["mean"] == pytest.approx(1.0)
     # Absent in every seed, so it stays absent rather than becoming 0.0.

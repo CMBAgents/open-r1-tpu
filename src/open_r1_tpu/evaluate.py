@@ -86,6 +86,11 @@ DEFAULT_STOP_TOKENS = ("<|im_end|>",)
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 DEFAULT_LIGHTEVAL_BINARY = "lighteval"
+# vLLM is an external service, not a dependency: nothing here imports it, and
+# it cannot share this environment anyway because tpu-inference classifies as
+# Python 3.10-3.12 while this project is on 3.13. Override this to reach it
+# wherever it does live -- a 3.12 virtualenv's binary, or a container.
+DEFAULT_SERVE_COMMAND = ("vllm", "serve")
 
 # LightEval writes one Parquet row per evaluated document, with the model's
 # generations nested under this column. Its inner field names have moved
@@ -97,8 +102,10 @@ _TOKEN_KEYS = ("output_tokens", "generated_tokens", "num_generated_tokens")
 
 # Distributions whose versions pin the meaning of a number. Recorded with every
 # summary because a result that does not name its stack cannot be compared with
-# one produced months later.
-_STACK_DISTRIBUTIONS = ("lighteval", "vllm", "tpu-inference", "math-verify")
+# one produced months later. vLLM is absent because it runs outside this
+# environment and would always read back as "unknown"; the summary records the
+# serve command instead, which is the honest record of what served the model.
+_STACK_DISTRIBUTIONS = ("lighteval", "litellm", "math-verify")
 
 
 def _version(distribution: str) -> str:
@@ -146,6 +153,16 @@ def validate_eval_config(config: dict[str, Any]) -> None:
     model_path = config["server"].get("model_path")
     if not isinstance(model_path, str) or not model_path:
         raise ValueError("server.model_path must be a non-empty string")
+    serve_command = config["server"].get("serve_command")
+    if serve_command is not None and (
+        not isinstance(serve_command, list)
+        or not serve_command
+        or not all(isinstance(part, str) and part for part in serve_command)
+    ):
+        raise ValueError(
+            "server.serve_command must be a non-empty list of strings or null"
+        )
+
     port = config["server"].get("port", DEFAULT_PORT)
     if not isinstance(port, int) or not 1 <= port <= 65535:
         raise ValueError("server.port must be a TCP port number")
@@ -223,6 +240,9 @@ def resolve_settings(config: dict[str, Any]) -> dict[str, Any]:
         "port": port,
         "base_url": str(server.get("base_url") or f"http://{host}:{port}/v1"),
         "max_model_len": server.get("max_model_len"),
+        "serve_command": [
+            str(part) for part in (server.get("serve_command") or DEFAULT_SERVE_COMMAND)
+        ],
         "temperature": float(sampling.get("temperature", DEFAULT_TEMPERATURE)),
         "top_p": float(sampling.get("top_p", DEFAULT_TOP_P)),
         "max_new_tokens": int(sampling.get("max_new_tokens", DEFAULT_MAX_NEW_TOKENS)),
@@ -283,15 +303,18 @@ def litellm_model_config(settings: Mapping[str, Any], seed: int) -> dict[str, An
 
 
 def vllm_serve_command(settings: Mapping[str, Any]) -> list[str]:
-    """Build the `vllm serve` invocation for this recipe.
+    """Build the server invocation for this recipe.
 
     Emitted from here rather than written into the shell launcher so the recipe
     stays the single source of truth for the port, the served name, and the
     context window. The launcher owns the process; this owns its arguments.
+
+    `server.serve_command` supplies everything up to the model path, so the
+    server can live outside this environment -- which it must, since
+    tpu-inference does not support the Python this project runs on.
     """
     command = [
-        "vllm",
-        "serve",
+        *settings.get("serve_command", DEFAULT_SERVE_COMMAND),
         str(settings["model_path"]),
         "--served-model-name",
         str(settings["served_model_name"]),
@@ -709,6 +732,7 @@ def build_summary(
         },
         "max_samples": settings.get("max_samples"),
         "stack": stack_versions(),
+        "serve_command": list(settings.get("serve_command", DEFAULT_SERVE_COMMAND)),
         "tasks_metrics": aggregate_across_seeds(per_seed_metrics),
         "generation": generation,
         "per_seed_generation": {str(k): v for k, v in per_seed_stats.items()},

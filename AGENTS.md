@@ -84,6 +84,10 @@ The default path is:
   to their command line and wire format rather than to their Python API, both
   of which move faster. Only one process can hold the chip, so evaluation runs
   after training, not beside it.
+- Keep vLLM out of the project's dependencies. It is a service this package
+  invokes, not a library it imports, and `tpu-inference` supports Python
+  3.10-3.12 while this project is on 3.13, so declaring it makes the `eval`
+  extra unresolvable. Reach it through `server.serve_command`.
 - Never report a benchmark number from a single seed. Seed variance alone moves
   small reasoning benchmarks by 5-15 points, so results carry a mean and a
   standard deviation, and one seed reports a null spread rather than `0.0`.

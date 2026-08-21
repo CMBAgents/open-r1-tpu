@@ -1,8 +1,11 @@
 """Preflight the evaluation stack before committing TPU time to a benchmark.
 
 The training preflight in `check_env.py` validates the Tunix/JAX stack. This
-validates the serving side: vLLM and LightEval from the `eval` extra, and the
-exported checkpoint they are pointed at.
+validates the serving side: the LightEval harness, and the exported checkpoint
+it will be pointed at. vLLM itself is not checked for here, because it runs
+outside this environment -- tpu-inference does not support this project's
+Python -- and whether it is reachable is a question for the server, not an
+import.
 
 It exists because the two failures worth catching here are both silent and
 both expensive. A merged export missing its tokenizer files or its chat
@@ -107,12 +110,14 @@ def main() -> None:
     errors: list[str] = []
     warnings: list[str] = []
 
-    for distribution in ("vllm", "lighteval"):
-        if _version(distribution) == "unknown":
-            errors.append(
-                f"{distribution} is not installed; install the evaluation "
-                "extra with `pip install -e '.[eval]'`"
-            )
+    if _version("lighteval") == "unknown":
+        errors.append(
+            "lighteval is not installed; install the evaluation extra with "
+            "`pip install -e '.[eval]'`"
+        )
+    # vLLM is not expected in this environment -- it cannot be, on this Python
+    # -- so its absence here is not an error. Whether the server is reachable
+    # is answered by the server itself, not by an import.
     if _version("math-verify") == "unknown":
         warnings.append(
             "math-verify is not installed; maths tasks fall back to string "
@@ -143,7 +148,7 @@ def main() -> None:
         except ImportError:
             errors.append("writing the summary to GCS requires the gcsfs package")
 
-    print(f"vLLM {_version('vllm')}; LightEval {_version('lighteval')}")
+    print(f"LightEval {_version('lighteval')}")
     print(f"Devices ({len(devices)}): {devices}")
     print(f"Export: {settings['model_path']}")
     print(

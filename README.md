@@ -749,6 +749,32 @@ The harness lives behind the `eval` extra:
 uv pip install -e '.[eval]'
 ```
 
+**vLLM is not part of it.** Nothing in this package imports vLLM — the launcher
+starts `vllm serve` as a subprocess and everything after that is HTTP — and it
+could not share this environment anyway: `tpu-inference` classifies as Python
+3.10–3.12 while this project runs 3.13, so putting it in the extra makes the
+whole extra unresolvable. Treat it as an external service. Install it wherever
+suits and point `server.serve_command` at it:
+
+```bash
+uv venv --python 3.12 ~/.venv-vllm
+uv pip install --python ~/.venv-vllm vllm-tpu
+```
+
+```yaml
+server:
+  serve_command: ["/home/you/.venv-vllm/bin/vllm", "serve"]
+```
+
+A container works the same way, since the recipe supplies the whole command up
+to the model path:
+
+```yaml
+server:
+  serve_command: ["docker", "run", "--rm", "--privileged", "--net=host",
+                  "<image>", "serve"]
+```
+
 Evaluation runs *after* training rather than beside it. Only one process can
 hold the TPU chip, so stop the training job before starting the server.
 

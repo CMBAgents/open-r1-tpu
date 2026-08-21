@@ -28,6 +28,12 @@ eval:
 server:
   model_path: artifacts/Qwen3-1.7B-Math/merged
   served_model_name: null
+  # vLLM lives outside this environment: tpu-inference supports Python 3.10-3.12
+  # and this project is on 3.13, and nothing in the package imports it anyway.
+  # Point this at wherever it is installed, for example:
+  #   ["/home/you/.venv-vllm/bin/vllm", "serve"]
+  #   ["docker", "run", "--rm", "--privileged", "--net=host", "<image>", "serve"]
+  serve_command: ["vllm", "serve"]
   host: 127.0.0.1
   port: 8000
   max_model_len: 20480

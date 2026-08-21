@@ -39,9 +39,12 @@ eval = [
   "litellm",
   # Reading LightEval's Parquet detail shards.
   "pyarrow>=15.0",
-  # Pulls in vllm and the tpu-inference plugin.
-  "vllm-tpu",
 ]
+# vLLM is deliberately absent. Nothing here imports it -- open_r1_tpu.evaluate
+# starts `vllm serve` as a subprocess and talks to it over HTTP -- so declaring
+# it would buy nothing and cost the install: tpu-inference classifies as Python
+# 3.10-3.12 and this project is on 3.13, which makes the extra unresolvable.
+# Treat vLLM as an external service and point server.serve_command at it.
 test = ["pytest>=8.0"]
 # Linters, type checker, and the pre-commit hook. Kept free of the TPU stack
 # because none of them need it, not because anything runs off-target.
