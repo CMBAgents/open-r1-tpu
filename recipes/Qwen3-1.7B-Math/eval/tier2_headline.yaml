@@ -1,0 +1,66 @@
+# Tier 2: the headline tier. Milestones only -- expensive, and not a decision
+# tool.
+#
+# AIME is 30 problems. One extra correct answer moves pass@1 by 3.3 points, so
+# no single AIME run can distinguish a real gain from a lucky sample. It is here
+# because it is the number the field quotes, not because it can settle an
+# argument. Ten seeds is the documented minimum at this size, and the standard
+# deviation matters more than the mean: if they overlap, the models are tied.
+#
+# AIME24 and AIME25 are both included on purpose. A large gap between them is
+# the signature of overfitting to AIME24, which is in wide circulation in
+# training corpora in a way AIME25 is not.
+#
+# Reference points at this scale: DeepSeek-R1-Distill-Qwen-1.5B reports 29.3%
+# AIME24 pass@1 and 82.9% MATH-500 pass@1.
+#
+# TASK NAMES ARE NOT VERIFIED. Confirm against `lighteval tasks list`.
+eval:
+  tier: tier2-headline
+  tasks:
+    - "lighteval|aime24|0|0"
+    - "lighteval|aime25|0|0"
+    - "lighteval|olympiadbench|0|0"
+  # Ten seeds. On a 30-problem benchmark this is what separates a measurement
+  # from an anecdote.
+  seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  max_samples: null
+  lighteval_binary: lighteval
+  extra_args: []
+
+server:
+  model_path: artifacts/Qwen3-1.7B-Math/merged
+  served_model_name: null
+  host: 127.0.0.1
+  port: 8000
+  # Olympiad-level problems produce the longest traces in the suite.
+  max_model_len: 24576
+  tensor_parallel_size: 1
+  startup_timeout_secs: 900
+  extra_args: []
+
+sampling:
+  temperature: 0.6
+  top_p: 0.95
+  max_new_tokens: 20480
+  stop: ["<|im_end|>"]
+  system_prompt: >-
+    You are an assistant that solves problems by reasoning carefully before
+    giving the final answer. Put your detailed reasoning between <think> and
+    </think>, then give the concise final solution after </think>.
+
+reporting:
+  output_dir: artifacts/Qwen3-1.7B-Math/eval/tier2
+  summary_path: null
+  reasoning_start: <think>
+  reasoning_end: </think>
+  answer_marker: "\\boxed{"
+  wandb:
+    enabled: true
+    project_name: open-r1-tpu
+    run_id: null
+    run_name: qwen3-1.7b-math-tier2
+    entity: null
+    mode: online
+    job_type: eval
+    tags: [tpu, eval, aime]

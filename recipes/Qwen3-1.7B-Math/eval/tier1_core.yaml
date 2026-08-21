@@ -1,0 +1,70 @@
+# Tier 1: the decision tier. Run on every checkpoint worth keeping, ~1 hour.
+#
+# This is the tier that decides whether a recipe change helped. MATH-500 is the
+# workhorse: 500 problems is large enough that three seeds pin the mean down,
+# and it spans difficulty rather than clustering at the top like GSM8K or at the
+# ceiling like AIME. AMC23 adds harder problems without AIME's tiny sample.
+# GSM8K stays in as the floor -- a model that regresses there has lost basic
+# arithmetic competence, whatever it gained elsewhere.
+#
+# Three seeds, not one. Seed variance alone moves reasoning benchmarks by 5-15
+# points (arXiv 2504.07086), which is larger than most recipe changes are worth,
+# so a single number cannot tell an improvement from noise. Three is the
+# documented minimum for a benchmark this size.
+#
+# TASK NAMES ARE NOT VERIFIED. Confirm against `lighteval tasks list` before the
+# first run.
+eval:
+  tier: tier1-core
+  tasks:
+    - "lighteval|math_500|0|0"
+    - "lighteval|amc23|0|0"
+    - "lighteval|gsm8k|0|0"
+  seeds: [0, 1, 2]
+  max_samples: null
+  lighteval_binary: lighteval
+  extra_args: []
+
+server:
+  model_path: artifacts/Qwen3-1.7B-Math/merged
+  served_model_name: null
+  host: 127.0.0.1
+  port: 8000
+  max_model_len: 20480
+  tensor_parallel_size: 1
+  startup_timeout_secs: 900
+  extra_args: []
+
+sampling:
+  # The DeepSeek-R1 recommended settings, which is what most published numbers
+  # for distilled reasoning models use. Greedy decoding on a reasoning model
+  # collapses into repetition often enough not to be a safe default, and it
+  # makes pass@k meaningless.
+  temperature: 0.6
+  top_p: 0.95
+  # Deliberately large. A trace cut off by the cap scores as wrong and reads as
+  # a reasoning failure, so an undersized cap silently understates the model.
+  # Watch generation.truncation_rate in the summary: if it is not near zero,
+  # this number is too low and the accuracy below it is not trustworthy.
+  max_new_tokens: 16384
+  stop: ["<|im_end|>"]
+  system_prompt: >-
+    You are an assistant that solves problems by reasoning carefully before
+    giving the final answer. Put your detailed reasoning between <think> and
+    </think>, then give the concise final solution after </think>.
+
+reporting:
+  output_dir: artifacts/Qwen3-1.7B-Math/eval/tier1
+  summary_path: null
+  reasoning_start: <think>
+  reasoning_end: </think>
+  answer_marker: "\\boxed{"
+  wandb:
+    enabled: true
+    project_name: open-r1-tpu
+    run_id: null
+    run_name: qwen3-1.7b-math-tier1
+    entity: null
+    mode: online
+    job_type: eval
+    tags: [tpu, eval, math]

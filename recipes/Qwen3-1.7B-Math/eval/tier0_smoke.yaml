@@ -1,0 +1,76 @@
+# Tier 0: the smoke test. Runs after every training run, in about five minutes.
+#
+# WHAT IT IS FOR. Not measuring ability -- catching a model that is broken in a
+# way loss cannot show: reasoning traces that never close, generation that runs
+# past the turn boundary, or output that collapsed into repetition. A short
+# greedy pass over easy problems answers that. If Tier 0 looks wrong there is no
+# point paying for Tier 1.
+#
+# Greedy, one seed, 200 problems. Seeds exist to average out sampling noise, and
+# at temperature 0 there is none; this tier is a functional check, so its number
+# is a tripwire rather than a result. Everything reported here is a single
+# sample and must not be quoted as a benchmark score.
+#
+# TASK NAMES ARE NOT VERIFIED. LightEval renames and moves tasks between
+# releases. Confirm against `lighteval tasks list` before the first run; a wrong
+# name fails immediately and costs nothing.
+eval:
+  tier: tier0-smoke
+  tasks:
+    - "lighteval|gsm8k|0|0"
+  # One seed: greedy decoding has no sampling variance to average out.
+  seeds: [0]
+  # Enough to expose a systematic format failure, far too few to score.
+  max_samples: 200
+  lighteval_binary: lighteval
+  extra_args: []
+
+server:
+  # The merged export, not a checkpoint: vLLM reads Hugging Face safetensors.
+  # Override to models/Qwen3-1.7B-Base to measure the untrained baseline on this
+  # identical stack.
+  model_path: artifacts/Qwen3-1.7B-Math/merged
+  served_model_name: null
+  host: 127.0.0.1
+  port: 8000
+  # Prompt plus completion. Must exceed sampling.max_new_tokens with room for
+  # the problem, which the recipe loader enforces.
+  max_model_len: 12288
+  tensor_parallel_size: 1
+  # ~15 minutes. TPU startup includes weight transfer and an XLA compilation,
+  # neither of which is fast the first time.
+  startup_timeout_secs: 900
+  extra_args: []
+
+sampling:
+  # Greedy. Successive smoke tests stay comparable, and a repetition loop shows
+  # up rather than being sampled around.
+  temperature: 0.0
+  top_p: 1.0
+  max_new_tokens: 8192
+  # Qwen3-Base names <|endoftext|> as EOS while the chat template closes turns
+  # with <|im_end|>. Without this the model writes the next turn as well.
+  stop: ["<|im_end|>"]
+  # Must match the training recipe's dataset.system_prompt verbatim.
+  system_prompt: >-
+    You are an assistant that solves problems by reasoning carefully before
+    giving the final answer. Put your detailed reasoning between <think> and
+    </think>, then give the concise final solution after </think>.
+
+reporting:
+  output_dir: artifacts/Qwen3-1.7B-Math/eval/tier0
+  summary_path: null
+  reasoning_start: <think>
+  reasoning_end: </think>
+  answer_marker: "\\boxed{"
+  wandb:
+    enabled: false
+    project_name: open-r1-tpu
+    # Set to the training run's W&B id to put these numbers on the same run as
+    # the loss curves. W&B resumes by id, never by name.
+    run_id: null
+    run_name: qwen3-1.7b-math-tier0
+    entity: null
+    mode: online
+    job_type: eval
+    tags: [tpu, eval, smoke]

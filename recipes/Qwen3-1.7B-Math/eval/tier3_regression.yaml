@@ -1,0 +1,68 @@
+# Tier 3: the regression tier. Milestones only.
+#
+# This tier answers a question the maths tiers cannot: what did the math-only
+# corpus cost? OpenR1-Math-220k carries no instruction-following and no chat
+# data, and the first run's chat test showed the model answering non-maths
+# questions with no reasoning at all. Whether that is a gap or the intended
+# stage-one behaviour is an open project question, and it needs a number.
+#
+# Read these as deltas against the base model on the identical stack, not as
+# absolutes. A 1.7B scores near the floor on GPQA whatever you do to it; the
+# question is whether it scores *lower* than it did before SFT.
+#
+# ONLY GENERATIVE TASKS WORK HERE. An OpenAI-compatible endpoint returns no
+# per-token log probabilities for a supplied continuation, so LightEval's
+# loglikelihood tasks -- which is how plain MMLU, HellaSwag and ARC are scored
+# -- cannot run through this backend at all. They would need a backend that
+# loads the model in-process. Everything in this tier is generative.
+#
+# TASK NAMES ARE NOT VERIFIED. Confirm against `lighteval tasks list`.
+eval:
+  tier: tier3-regression
+  tasks:
+    - "lighteval|ifeval|0|0"
+    - "lighteval|gpqa:diamond|0|0"
+    - "lighteval|mmlu_pro|0|0"
+  seeds: [0, 1, 2]
+  max_samples: null
+  lighteval_binary: lighteval
+  extra_args: []
+
+server:
+  model_path: artifacts/Qwen3-1.7B-Math/merged
+  served_model_name: null
+  host: 127.0.0.1
+  port: 8000
+  max_model_len: 8192
+  tensor_parallel_size: 1
+  startup_timeout_secs: 900
+  extra_args: []
+
+sampling:
+  temperature: 0.6
+  top_p: 0.95
+  # Shorter than the maths tiers: these are not long-CoT benchmarks, and IFEval
+  # in particular scores instruction compliance rather than reasoning depth.
+  max_new_tokens: 4096
+  stop: ["<|im_end|>"]
+  # Deliberately null, unlike the maths tiers. The training system prompt
+  # instructs the model to emit a reasoning trace before answering, which on
+  # IFEval is itself an instruction-following failure. This tier measures the
+  # model as a general assistant, so it is asked as one.
+  system_prompt: null
+
+reporting:
+  output_dir: artifacts/Qwen3-1.7B-Math/eval/tier3
+  summary_path: null
+  reasoning_start: <think>
+  reasoning_end: </think>
+  answer_marker: "\\boxed{"
+  wandb:
+    enabled: true
+    project_name: open-r1-tpu
+    run_id: null
+    run_name: qwen3-1.7b-math-tier3
+    entity: null
+    mode: online
+    job_type: eval
+    tags: [tpu, eval, regression]
