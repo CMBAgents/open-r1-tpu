@@ -7,14 +7,17 @@ outside this environment -- tpu-inference does not support this project's
 Python -- and whether it is reachable is a question for the server, not an
 import.
 
-It exists because the two failures worth catching here are both silent and
-both expensive. A merged export missing its tokenizer files or its chat
+It exists because the failures worth catching here are silent, expensive, or
+both. A merged export missing its tokenizer files or its chat
 template loads far enough to serve requests and then answers off-distribution,
 producing a benchmark number that measures the wrong thing. And Qwen3-Base
 names `<|endoftext|>` as its EOS while the chat template closes turns with
 `<|im_end|>`, so a server left to the tokenizer's own EOS runs past the end of
 every reply and writes the user's next turn as well -- which under a benchmark
-looks like a model that cannot stop reasoning.
+looks like a model that cannot stop reasoning. Task names are checked here
+too. That failure is loud rather than silent, but LightEval moves tasks between
+suites and releases and a recipe naming one that no longer exists is worth
+knowing before the server spends fifteen minutes loading weights.
 
 Run from the repository root::
 
@@ -25,6 +28,7 @@ Run from the repository root::
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 from importlib import metadata
 from pathlib import Path
@@ -40,6 +44,88 @@ REQUIRED_FILES = ("config.json", "tokenizer_config.json")
 WEIGHT_FILES = ("model.safetensors", "model.safetensors.index.json")
 # Qwen3 closes a chat turn with this; see the module docstring.
 TURN_END_TOKEN = "<|im_end|>"
+
+
+def registry_task_names() -> set[str] | None:
+    """Every task LightEval can resolve here, as ``suite|name``.
+
+    Returns None when the registry cannot be read. `_task_registry` is private
+    to an upstream class, and `task_to_configs` -- the public-looking mapping
+    beside it -- is empty, so there is no supported way to ask this question.
+    A rename upstream must therefore degrade to "unchecked" rather than to
+    "every task is missing", which would be a preflight that fails the moment
+    LightEval is upgraded.
+
+    Multilingual tasks are left unloaded on purpose: that tree calls
+    `langcodes.language_name()` at import, which needs an optional package we
+    do not install, and no recipe uses the suite.
+    """
+    try:
+        from lighteval.tasks.registry import Registry
+    except ImportError:
+        return None
+    for load_community in (True, False):
+        try:
+            registry = Registry(
+                custom_tasks=None,
+                load_community=load_community,
+                load_extended=True,
+                load_multilingual=False,
+            )
+        except Exception:  # noqa: BLE001 - any import in any task tree
+            continue
+        names = getattr(registry, "_task_registry", None)
+        if isinstance(names, dict) and names:
+            return set(names)
+    return None
+
+
+def check_task_names(
+    tasks: list[str], known: set[str] | None = None
+) -> tuple[list[str], list[str]]:
+    """Check recipe task strings against what LightEval can actually resolve."""
+    if known is None:
+        known = registry_task_names()
+    if known is None:
+        return ([], ["could not read LightEval's task registry; task names unchecked"])
+
+    errors: list[str] = []
+    warnings: list[str] = []
+    suites = {name.split("|", 1)[0] for name in known}
+    for task in tasks:
+        parts = str(task).split("|")
+        if len(parts) < 2 or not parts[0] or not parts[1]:
+            errors.append(f"task {task!r} is not in suite|name|few_shot|truncate form")
+            continue
+        suite, name = parts[0], parts[1]
+        if f"{suite}|{name}" in known:
+            continue
+        if suite not in suites:
+            warnings.append(
+                f"task {task!r}: suite {suite!r} is not loaded here, so the "
+                "name is unchecked"
+            )
+            continue
+        errors.append(
+            f"task {task!r} is not in LightEval's registry{_hint(name, known)}"
+        )
+    return (errors, warnings)
+
+
+def _hint(name: str, known: set[str]) -> str:
+    """Suggest what a missing task was probably meant to be.
+
+    Same name in another suite first: LightEval splits tasks across `lighteval`
+    and `extended` with no rule you can infer from the name, so naming the
+    right task in the wrong suite is the likeliest mistake by some margin.
+    """
+    elsewhere = sorted(other for other in known if other.split("|", 1)[1] == name)
+    close = difflib.get_close_matches(name, [k.split("|", 1)[1] for k in known], n=3)
+    suggestions = (
+        elsewhere
+        or sorted({other for other in known if other.split("|", 1)[1] in close})[:3]
+    )
+    return f"; did you mean {', '.join(suggestions)}?" if suggestions else ""
 
 
 def _version(distribution: str) -> str:
@@ -141,6 +227,10 @@ def main() -> None:
     export_errors, export_warnings = check_export_dir(settings["model_path"])
     errors.extend(export_errors)
     warnings.extend(export_warnings)
+
+    task_errors, task_warnings = check_task_names(settings["tasks"])
+    errors.extend(task_errors)
+    warnings.extend(task_warnings)
 
     if str(settings["summary_path"]).startswith("gs://"):
         try:

@@ -785,8 +785,9 @@ python -m open_r1_tpu.check_eval_env \
   --config recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml
 ```
 
-This checks the inference environment and the export it is pointed at. Two
-failures are worth catching before a benchmark rather than after it. A merged
+This checks the inference environment, the export it is pointed at, and the
+recipe's task names. Three failures are worth catching before a benchmark
+rather than after it. A merged
 export missing its tokenizer files or its chat template loads far enough to
 serve requests and then answers off-distribution, producing a number that
 measures the wrong thing. And Qwen3-Base names `<|endoftext|>` as its EOS while
@@ -794,6 +795,10 @@ the chat template closes turns with `<|im_end|>`, so a server left to the
 tokenizer's own EOS runs past the end of every reply and writes the user's next
 turn as well — which under a benchmark reads as a model that cannot stop
 reasoning. The recipes set `sampling.stop` to `<|im_end|>` for that reason.
+Third, LightEval moves tasks between suites and releases, so a recipe naming one
+that no longer exists is worth hearing about now rather than after the server has
+spent fifteen minutes loading weights. A name that exists in a different suite is
+reported with the suite it actually lives in.
 
 ```bash
 RECIPE=recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml ./scripts/run_eval_tpu.sh

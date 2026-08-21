@@ -32,8 +32,8 @@ The default path is:
 - `src/open_r1_tpu/transcripts.py`: periodic free-running sample transcripts.
 - `src/open_r1_tpu/evaluate.py`: benchmark evaluation -- recipe validation, the
   LightEval harness run, and reduction of its output to a summary.
-- `src/open_r1_tpu/check_eval_env.py`: inference-environment and export
-  preflight.
+- `src/open_r1_tpu/check_eval_env.py`: inference-environment, export, and
+  task-name preflight.
 - `recipes/`: versioned model, training, and evaluation configurations.
 - `scripts/setup_tpu_vm.sh`: uv-based TPU VM environment provisioning.
 - `scripts/copy_gcs_bucket_data.sh`: copy GCS bucket data to local disk.
