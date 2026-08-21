@@ -40,14 +40,14 @@ The default path is:
 - `scripts/run_sft_tpu.sh`: standard SFT launcher.
 - `scripts/run_eval_tpu.sh`: evaluation launcher; owns the vLLM server's
   lifecycle.
-- `tests/`: host-independent unit tests.
+- `tests/`: unit and integration tests. They run on the TPU VM.
 
 ## Architectural invariants
 
 - Keep the training path TPU-native. Do not introduce CUDA, PyTorch, TRL,
   Accelerate, DeepSpeed, or GPU vLLM dependencies into the SFT stage.
-- Keep heavyweight JAX/Tunix imports inside runtime functions where practical.
-  Config and preprocessing tests must remain runnable without a TPU stack.
+- Keep heavyweight JAX/Tunix imports inside runtime functions where practical,
+  so that importing a module does not initialize the TPU.
 - Preserve assistant-only loss by default. The prompt boundary must come from
   an exact chat-template prefix; do not guess it from string lengths or special
   token IDs.
@@ -129,9 +129,9 @@ sampler never supplies them.) Any pin update requires a fresh review of:
   which `src/open_r1_tpu/safetensors_export.py` inverts; and
 - checkpoint option construction.
 
-Do not claim that training is TPU-compatible merely because unit tests pass on
-a Mac or CPU host. Runtime compatibility requires the TPU-side preflight and a
-compiled smoke run.
+Do not claim that training is TPU-compatible merely because the unit suite
+passes. Runtime compatibility requires the TPU-side preflight and a compiled
+smoke run.
 
 ## Environment and Hugging Face
 
@@ -185,11 +185,9 @@ pyright
 ```
 
 Ruff and pyright settings live in `pyproject.toml`. Pyright runs in `standard`
-mode and reports unresolved imports as warnings rather than errors, because
-JAX, Tunix, Grain, and Orbax are installed only on the TPU VM; a laptop check
-must stay useful without them. It resolves everything else from `.venv`, so
-keep that environment installed. Warnings about the TPU stack are expected off
-target and do not fail the hook; anything else is a real finding.
+mode and resolves imports from `.venv`, so keep that environment installed with
+the `dev`, `test`, and `eval` extras. On the TPU VM every import resolves and an
+unresolved-import warning is a real finding.
 
 Target-TPU preflight:
 
@@ -229,16 +227,22 @@ subsequent steps.
 - Add or update unit tests for changes to configuration parsing, message
   validation, tag filtering, token boundaries, padding, or loss masking, or to
   evaluation recipe validation, command construction, or metric reduction.
-- Use fake tokenizers for deterministic unit tests. Validate against the real
-  configured Qwen tokenizer during TPU preflight.
+- Test against the real thing. Use the configured Qwen tokenizer, real Parquet
+  shards, and a real served model rather than fakes; the suite runs on the TPU
+  VM, where the whole stack is installed. Reach for a stub only where the real
+  dependency cannot be reached at all, and say so at the test.
+- Mark tests that need a live vLLM server `@pytest.mark.integration`. They are
+  deselected by default and run with `pytest -m integration` once a server is
+  up.
 - Run the smallest relevant tests during development, then the complete unit
   suite before handoff.
 - When changing model topology, LoRA paths, sequence length, sharding, remat,
   flash attention, optimizer behavior, or checkpointing, also run the TPU
   preflight and smoke job.
-- Report validation precisely. Distinguish source inspection, CPU/Mac tests,
-  TPU preflight, JAX compilation, completed optimizer steps, checkpoint writes,
-  and merged export; they are not interchangeable evidence.
+- Report validation precisely. Distinguish source inspection, the unit suite,
+  the integration suite, TPU preflight, JAX compilation, completed optimizer
+  steps, checkpoint writes, and merged export; they are not interchangeable
+  evidence.
 
 ## Configuration guidance
 

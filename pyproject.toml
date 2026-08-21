@@ -43,8 +43,8 @@ eval = [
   "vllm-tpu",
 ]
 test = ["pytest>=8.0"]
-# Host-independent developer tooling. Deliberately free of the TPU stack so it
-# installs on a laptop; see the pyright note below.
+# Linters, type checker, and the pre-commit hook. Kept free of the TPU stack
+# because none of them need it, not because anything runs off-target.
 dev = [
   "pre-commit>=4.0",
   "pyright>=1.1.400",
@@ -112,8 +112,8 @@ venv = ".venv"
 extraPaths = ["src"]
 pythonVersion = "3.13"
 typeCheckingMode = "standard"
-# JAX, Tunix, Grain, Orbax and Transformers are installed only on the TPU VM.
-# A laptop check must still be useful, so unresolved imports are reported as
-# warnings: visible in the output, but they do not fail the hook off-target.
+# Warnings rather than errors so the hook still runs before the environment is
+# fully provisioned. On the TPU VM, with the eval extra installed, every import
+# resolves and any unresolved-import warning is a real finding.
 reportMissingImports = "warning"
 reportMissingModuleSource = "warning"
