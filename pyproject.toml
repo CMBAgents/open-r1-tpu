@@ -23,20 +23,25 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Benchmark evaluation: the vLLM server, the LightEval harness, and Math-Verify
-# for symbolic answer equivalence. Optional because a training-only install has
-# no use for them, not because they conflict with anything.
+# Benchmark evaluation: the LightEval harness and what it needs to score this
+# project's tasks. Optional because a training-only install has no use for it.
 #
 # Nothing here is pinned yet. The evaluation protocol wants a frozen, recorded
 # stack, but pinning versions that have never run on this hardware would be
 # false precision; open_r1_tpu.evaluate records the installed versions in every
 # summary, which is what the first successful run should pin from.
 eval = [
-  # The math extra brings Math-Verify. Without it maths accuracy is scored by
-  # string equality, which understates it substantially.
-  "lighteval[math]",
-  # The backend LightEval reaches the local vLLM server through.
-  "litellm",
+  # Three LightEval extras, all load-bearing:
+  #   extended_tasks - IFEval and friends live under lighteval/tasks/extended,
+  #     and the task registry imports that whole tree unconditionally, so
+  #     without it even `lighteval tasks list` fails on a missing emoji import.
+  #   litellm - the backend LightEval reaches the local vLLM server through.
+  #     Prefer the extra to a bare litellm: it adds the caching support
+  #     LightEval expects.
+  #   math - LaTeX parsing for symbolic answer equivalence. Without it maths
+  #     accuracy falls back to string equality, which understates it
+  #     substantially.
+  "lighteval[extended_tasks,litellm,math]",
   # Reading LightEval's Parquet detail shards.
   "pyarrow>=15.0",
 ]
