@@ -58,6 +58,10 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+# Integration tests need a vLLM server already serving the recipe's model. They
+# are deselected by default and run with `pytest -m integration` once one is up.
+markers = ["integration: needs a live vLLM server"]
+addopts = "-m 'not integration'"
 
 [tool.ruff]
 line-length = 88
