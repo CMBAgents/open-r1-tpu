@@ -20,9 +20,15 @@
 eval:
   tier: tier3-regression
   tasks:
-    - "lighteval|ifeval|0|0"
+    - "extended|ifeval|0|0"
     - "lighteval|gpqa:diamond|0|0"
-    - "lighteval|mmlu_pro|0|0"
+    # MMLU-Pro is not in LightEval's table. The nearest is mmlu_redux_2,
+    # which is 57 per-subject tasks with no aggregate -- and multiple
+    # choice, so it scores by comparing logprobs of supplied continuations.
+    # An OpenAI-compatible endpoint cannot return those, which rules out
+    # every MC task on this stack, not just this one. Tier 3 therefore
+    # tests instruction-following and science QA only; the broad knowledge
+    # regression needs a different scoring path.
   seeds: [0, 1, 2]
   max_samples: null
   lighteval_binary: lighteval

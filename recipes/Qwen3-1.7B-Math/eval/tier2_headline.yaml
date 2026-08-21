@@ -20,7 +20,10 @@ eval:
   tasks:
     - "lighteval|aime24|0|0"
     - "lighteval|aime25|0|0"
-    - "lighteval|olympiadbench|0|0"
+    # OlympiadBench splits by language, subject and source. This is the
+    # English open-ended maths competition subset; the rest are Chinese or
+    # physics.
+    - "extended|olympiad_bench:OE_TO_maths_en_COMP|0|0"
   # Ten seeds. On a 30-problem benchmark this is what separates a measurement
   # from an anecdote.
   seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]

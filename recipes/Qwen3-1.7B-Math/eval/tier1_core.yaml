@@ -18,8 +18,10 @@ eval:
   tier: tier1-core
   tasks:
     - "lighteval|math_500|0|0"
-    - "lighteval|amc23|0|0"
     - "lighteval|gsm8k|0|0"
+    # AMC23 belonged here and is not in LightEval's table -- Open-R1 carries
+    # it as a custom task. Left out rather than vendored: 40 problems swing
+    # 2.5pp per question, so it decides nothing that MATH-500 does not.
   seeds: [0, 1, 2]
   max_samples: null
   lighteval_binary: lighteval
