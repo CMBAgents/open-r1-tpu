@@ -18,7 +18,7 @@ ALL_TIERS = [TIER0, TIER1, TIER2, TIER3]
 
 def minimal_config(**overrides):
     config = {
-        "eval": {"tier": "t", "tasks": ["suite|task|0|0"], "seeds": [0]},
+        "eval": {"tier": "t", "tasks": ["suite|task|0"], "seeds": [0]},
         "server": {"model_path": "artifacts/model"},
         "sampling": {},
         "reporting": {},
@@ -182,7 +182,7 @@ def test_lighteval_command_joins_tasks_and_appends_extra_args():
     settings = evaluate.resolve_settings(
         minimal_config(
             eval={
-                "tasks": ["a|0|0", "b|0|0"],
+                "tasks": ["suite|a|0", "suite|b|0"],
                 "max_samples": 8,
                 "extra_args": ["--custom-tasks", "tasks.py"],
             }
@@ -191,7 +191,7 @@ def test_lighteval_command_joins_tasks_and_appends_extra_args():
 
     command = evaluate.lighteval_command(settings, "model.yaml", "out")
 
-    assert "a|0|0,b|0|0" in command
+    assert "suite|a|0,suite|b|0" in command
     assert command[-2:] == ["--custom-tasks", "tasks.py"]
     assert "--save-details" in command
     assert command[command.index("--max-samples") + 1] == "8"

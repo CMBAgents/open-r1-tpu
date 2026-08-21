@@ -104,7 +104,16 @@ def check_task_names(
     for task in tasks:
         parts = str(task).split("|")
         if len(parts) < 2 or not parts[0] or not parts[1]:
-            errors.append(f"task {task!r} is not in suite|name|few_shot|truncate form")
+            errors.append(f"task {task!r} is not in suite|name|num_fewshot form")
+            continue
+        if len(parts) > 3:
+            # LightEval deprecated the trailing truncate_fewshot field in 0.11
+            # and removed it in 0.13, where a four-field name fails to resolve
+            # at all rather than warning.
+            errors.append(
+                f"task {task!r} has a trailing field LightEval removed in "
+                f"0.13; use {'|'.join(parts[:3])!r}"
+            )
             continue
         suite, name = parts[0], parts[1]
         if f"{suite}|{name}" in known:

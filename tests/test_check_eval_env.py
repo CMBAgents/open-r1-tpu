@@ -131,7 +131,7 @@ KNOWN = {
 
 def test_task_names_in_the_registry_pass():
     errors, warnings = check_task_names(
-        ["lighteval|gsm8k|0|0", "extended|ifeval|0|0"], known=KNOWN
+        ["lighteval|gsm8k|0", "extended|ifeval|0"], known=KNOWN
     )
 
     assert errors == []
@@ -139,20 +139,20 @@ def test_task_names_in_the_registry_pass():
 
 
 def test_a_task_missing_from_every_suite_is_an_error():
-    errors, _ = check_task_names(["lighteval|amc23|0|0"], known=KNOWN)
+    errors, _ = check_task_names(["lighteval|amc23|0"], known=KNOWN)
 
     assert any("not in LightEval's registry" in error for error in errors)
 
 
 def test_the_right_name_in_the_wrong_suite_names_the_right_one():
-    errors, _ = check_task_names(["lighteval|ifeval|0|0"], known=KNOWN)
+    errors, _ = check_task_names(["lighteval|ifeval|0"], known=KNOWN)
 
     assert len(errors) == 1
     assert "extended|ifeval" in errors[0]
 
 
 def test_a_near_miss_is_suggested():
-    errors, _ = check_task_names(["lighteval|gpqa:diamnod|0|0"], known=KNOWN)
+    errors, _ = check_task_names(["lighteval|gpqa:diamnod|0"], known=KNOWN)
 
     assert "lighteval|gpqa:diamond" in errors[0]
 
@@ -166,7 +166,7 @@ def test_a_malformed_task_string_is_an_error():
 def test_an_unloaded_suite_warns_rather_than_failing():
     # Community and multilingual tasks are not loaded, so their names cannot be
     # checked. Failing on them would reject a valid recipe.
-    errors, warnings = check_task_names(["community|whatever|0|0"], known=KNOWN)
+    errors, warnings = check_task_names(["community|whatever|0"], known=KNOWN)
 
     assert errors == []
     assert any("unchecked" in warning for warning in warnings)
@@ -175,7 +175,7 @@ def test_an_unloaded_suite_warns_rather_than_failing():
 def test_an_unreadable_registry_warns_rather_than_failing_everything(monkeypatch):
     monkeypatch.setattr(check_eval_env, "registry_task_names", lambda: None)
 
-    errors, warnings = check_eval_env.check_task_names(["lighteval|gsm8k|0|0"])
+    errors, warnings = check_eval_env.check_task_names(["lighteval|gsm8k|0"])
 
     assert errors == []
     assert any("unchecked" in warning for warning in warnings)
@@ -190,3 +190,11 @@ def test_every_recipe_task_resolves_against_the_installed_lighteval():
         settings = resolve_settings(load_eval_config(str(recipe)))
         errors, _ = check_task_names(settings["tasks"], known=known)
         assert errors == [], f"{recipe}: {errors}"
+
+
+def test_the_removed_fourth_task_field_is_rejected():
+    # LightEval 0.13 fails to resolve a four-field name rather than warning.
+    errors, _ = check_task_names(["lighteval|gsm8k|0|0"], known=KNOWN)
+
+    assert len(errors) == 1
+    assert "lighteval|gsm8k|0" in errors[0]

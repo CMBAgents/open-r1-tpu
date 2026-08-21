@@ -11,13 +11,14 @@
 # is a tripwire rather than a result. Everything reported here is a single
 # sample and must not be quoted as a benchmark score.
 #
-# TASK NAMES ARE NOT VERIFIED. LightEval renames and moves tasks between
-# releases. Confirm against `lighteval tasks list` before the first run; a wrong
-# name fails immediately and costs nothing.
+# TASK NAMES MOVE BETWEEN RELEASES. LightEval renames tasks, shifts them
+# between suites, and has changed the name syntax itself once already.
+# `check_eval_env` resolves every name here against the installed registry, so
+# run the preflight rather than trusting this file.
 eval:
   tier: tier0-smoke
   tasks:
-    - "lighteval|gsm8k|0|0"
+    - "lighteval|gsm8k|0"
   # One seed: greedy decoding has no sampling variance to average out.
   seeds: [0]
   # Enough to expose a systematic format failure, far too few to score.
