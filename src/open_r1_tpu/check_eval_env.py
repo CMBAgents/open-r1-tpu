@@ -1,11 +1,12 @@
 """Preflight the evaluation stack before committing TPU time to a benchmark.
 
 The training preflight in `check_env.py` validates the Tunix/JAX stack. This
-validates the serving side: the LightEval harness, and the exported checkpoint
-it will be pointed at. vLLM itself is not checked for here, because it runs
-outside this environment -- tpu-inference does not support this project's
-Python -- and whether it is reachable is a question for the server, not an
-import.
+validates the serving side: the LightEval harness, the exported checkpoint it
+will be pointed at, and the recipe's task names. Neither vLLM nor the TPU is
+checked for here. Both live on the other side of the HTTP boundary -- vLLM runs
+in its own environment because tpu-inference does not support this project's
+Python, and it holds the chip while it serves, so a preflight that called
+`jax.devices()` would fail precisely when the server was up and working.
 
 It exists because the failures worth catching here are silent, expensive, or
 both. A merged export missing its tokenizer files or its chat
@@ -32,7 +33,6 @@ import difflib
 import json
 from importlib import metadata
 from pathlib import Path
-from typing import Any
 
 from open_r1_tpu.evaluate import load_eval_config, resolve_settings
 
@@ -210,20 +210,6 @@ def main() -> None:
             "matching, which understates accuracy substantially"
         )
 
-    try:
-        import jax
-
-        devices: list[Any] = jax.devices()
-    except ImportError:
-        errors.append("JAX is not installed; vLLM cannot reach the TPU without it")
-        devices = []
-    else:
-        non_tpu = [str(device) for device in devices if device.platform != "tpu"]
-        if not devices:
-            errors.append("JAX sees no devices at all")
-        elif non_tpu:
-            errors.append(f"non-TPU JAX devices detected: {non_tpu}")
-
     export_errors, export_warnings = check_export_dir(settings["model_path"])
     errors.extend(export_errors)
     warnings.extend(export_warnings)
@@ -239,7 +225,6 @@ def main() -> None:
             errors.append("writing the summary to GCS requires the gcsfs package")
 
     print(f"LightEval {_version('lighteval')}")
-    print(f"Devices ({len(devices)}): {devices}")
     print(f"Export: {settings['model_path']}")
     print(
         f"Tier {settings['tier']}: {len(settings['tasks'])} tasks x "

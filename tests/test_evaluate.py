@@ -69,9 +69,20 @@ def test_regression_tier_drops_the_reasoning_system_prompt():
     settings = evaluate.resolve_settings(evaluate.load_eval_config(TIER3))
 
     assert settings["system_prompt"] is None
-    assert "--system-prompt" not in evaluate.lighteval_command(
-        settings, "m.yaml", "out"
-    )
+    config = evaluate.litellm_model_config(settings, seed=0)
+    assert "system_prompt" not in config["model_parameters"]
+
+
+def test_the_system_prompt_travels_in_the_model_config_not_the_command_line():
+    # `endpoint litellm` has no --system-prompt flag; system_prompt is a field
+    # on LightEval's ModelConfig, read from the model_parameters mapping.
+    settings = evaluate.resolve_settings(evaluate.load_eval_config(TIER0))
+
+    config = evaluate.litellm_model_config(settings, seed=0)
+    command = evaluate.lighteval_command(settings, "m.yaml", "out")
+
+    assert config["model_parameters"]["system_prompt"] == settings["system_prompt"]
+    assert not any(argument.startswith("--system") for argument in command)
 
 
 # --- validation ------------------------------------------------------------

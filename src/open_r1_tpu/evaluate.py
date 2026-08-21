@@ -289,17 +289,23 @@ def litellm_model_config(settings: Mapping[str, Any], seed: int) -> dict[str, An
     }
     if settings.get("stop"):
         generation["stop_tokens"] = list(settings["stop"])
-    return {
-        "model_parameters": {
-            "provider": "hosted_vllm",
-            "model_name": f"hosted_vllm/{settings['served_model_name']}",
-            "base_url": settings["base_url"],
-            # The server is local and unauthenticated, but litellm refuses to
-            # send a request with no key at all.
-            "api_key": "local",
-            "generation_parameters": generation,
-        }
+    parameters: dict[str, Any] = {
+        "provider": "hosted_vllm",
+        "model_name": f"hosted_vllm/{settings['served_model_name']}",
+        "base_url": settings["base_url"],
+        # The server is local and unauthenticated, but litellm refuses to
+        # send a request with no key at all.
+        "api_key": "local",
+        "generation_parameters": generation,
     }
+    if settings.get("system_prompt"):
+        # The model was trained behind this prompt, and evaluating without it
+        # measures the model off-distribution -- the chat test of the first
+        # math run already showed that changes its behaviour. It belongs here
+        # rather than on the command line: `system_prompt` is a field on
+        # LightEval's ModelConfig, and `endpoint litellm` has no flag for it.
+        parameters["system_prompt"] = str(settings["system_prompt"])
+    return {"model_parameters": parameters}
 
 
 def vllm_serve_command(settings: Mapping[str, Any]) -> list[str]:
@@ -349,13 +355,6 @@ def lighteval_command(
     ]
     if settings.get("max_samples") is not None:
         command += ["--max-samples", str(settings["max_samples"])]
-    if settings.get("system_prompt"):
-        # The model was trained behind this prompt. Evaluating without it
-        # measures the model off-distribution, which the chat test of the first
-        # math run already showed changes its behaviour. Set it to null and use
-        # eval.extra_args if the installed LightEval spells the flag
-        # differently.
-        command += ["--system-prompt", str(settings["system_prompt"])]
     command += list(settings.get("extra_args", []))
     return command
 
