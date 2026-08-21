@@ -49,6 +49,12 @@ eval = [
   "lighteval[extended_tasks,litellm,math]>=0.13",
   # Reading LightEval's Parquet detail shards.
   "pyarrow>=15.0",
+  # LightEval imports xxhash without declaring it, so the version is whatever
+  # `datasets` happens to drag in. 4.0.0 (2026-08-12) stopped accepting str,
+  # and LightEval hashes `doc.query` -- a str -- for every sample, so metric
+  # computation dies after generation has already been paid for. Pinned here
+  # because LightEval cannot pin what it does not declare.
+  "xxhash<4",
 ]
 # vLLM is deliberately absent. Nothing here imports it -- open_r1_tpu.evaluate
 # starts `vllm serve` as a subprocess and talks to it over HTTP -- so declaring
