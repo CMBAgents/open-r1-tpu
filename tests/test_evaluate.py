@@ -248,20 +248,26 @@ def test_serve_command_carries_the_recipe_port_and_window():
 # --- reading LightEval details ---------------------------------------------
 
 
-def write_details_shard(output_dir, records, *, task="gsm8k", timestamp="2026-01-01"):
+def write_details_shard(
+    output_dir, records, *, task="gsm8k", timestamp="2026-01-01", legacy=False
+):
     """Write a real LightEval detail shard.
 
     Mirrors the layout the harness actually produces -- Parquet, one row per
-    document, generations nested in a struct under __model_response__ -- so the
+    document, generations nested in a struct under `model_response` -- so the
     reader is exercised against the real format rather than a dict that happens
-    to match today's field names.
+    to match today's field names. `legacy` writes the dunder-wrapped column
+    names LightEval used up to 0.12.
     """
     directory = Path(output_dir) / "details" / "model" / timestamp
     directory.mkdir(parents=True, exist_ok=True)
+    response, doc = (
+        ("__model_response__", "__doc__") if legacy else ("model_response", "doc")
+    )
     table = pa.table(
         {
-            evaluate.RESPONSE_COLUMN: records,
-            "__doc__": [{"gold": "4"}] * len(records),
+            response: records,
+            doc: [{"gold": "4"}] * len(records),
         }
     )
     path = directory / f"details_{task}_{timestamp}.parquet"
@@ -304,11 +310,9 @@ def test_unrecognised_response_shape_names_the_keys_it_found():
 def test_a_shard_without_the_generation_column_is_rejected(tmp_path):
     directory = tmp_path / "details" / "model" / "2026-01-01"
     directory.mkdir(parents=True)
-    pq.write_table(
-        pa.table({"__doc__": ["x"]}), directory / "details_t_2026-01-01.parquet"
-    )
+    pq.write_table(pa.table({"doc": ["x"]}), directory / "details_t_2026-01-01.parquet")
 
-    with pytest.raises(ValueError, match=evaluate.RESPONSE_COLUMN):
+    with pytest.raises(ValueError, match="model_response"):
         evaluate.read_detail_responses(evaluate.find_details_files(tmp_path))
 
 
@@ -609,3 +613,17 @@ def test_the_base_model_export_passes_preflight():
     errors, _ = check_export_dir("models/Qwen3-1.7B-Base")
 
     assert errors == []
+
+
+def test_a_shard_written_by_an_older_lighteval_is_still_readable(tmp_path):
+    # LightEval wrapped its detail columns in dunders up to 0.12. Results
+    # already on disk stay readable after an upgrade.
+    write_details_shard(
+        tmp_path,
+        [json.dumps({"text": ["<think>x</think> \\boxed{4}"]})],
+        legacy=True,
+    )
+
+    responses = evaluate.read_detail_responses(evaluate.find_details_files(tmp_path))
+
+    assert len(responses) == 1

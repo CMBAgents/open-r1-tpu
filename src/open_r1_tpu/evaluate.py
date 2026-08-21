@@ -96,7 +96,10 @@ DEFAULT_SERVE_COMMAND = ("vllm", "serve")
 # generations nested under this column. Its inner field names have moved
 # between releases, so they are probed rather than assumed; see
 # `extract_completions`.
-RESPONSE_COLUMN = "__model_response__"
+# LightEval wrapped its detail columns in dunders up to 0.12 and dropped
+# them in 0.13. Both are accepted so a shard written by either release can
+# still be read; the name is only ever used to find the column.
+RESPONSE_COLUMNS = ("model_response", "__model_response__")
 _TEXT_KEYS = ("text", "final_text", "generated_text", "predictions", "result")
 _TOKEN_KEYS = ("output_tokens", "generated_tokens", "num_generated_tokens")
 
@@ -421,11 +424,13 @@ def extract_completions(response: Any) -> list[str]:
     """
     mapping = _coerce_mapping(response)
     if mapping is None:
-        raise ValueError(f"Unreadable {RESPONSE_COLUMN} cell of type {type(response)}")
+        raise ValueError(
+            f"Unreadable {RESPONSE_COLUMNS[0]} cell of type {type(response)}"
+        )
     value = _first_present(mapping, _TEXT_KEYS)
     if value is None:
         raise ValueError(
-            f"No generation text in {RESPONSE_COLUMN}; tried "
+            f"No generation text in {RESPONSE_COLUMNS[0]}; tried "
             f"{list(_TEXT_KEYS)} but found keys {sorted(mapping)}"
         )
     if isinstance(value, str):
@@ -648,11 +653,15 @@ def read_detail_responses(paths: Iterable[Path]) -> list[Any]:
     responses: list[Any] = []
     for path in paths:
         table = pq.read_table(path)
-        if RESPONSE_COLUMN not in table.column_names:
+        column = next(
+            (name for name in RESPONSE_COLUMNS if name in table.column_names), None
+        )
+        if column is None:
             raise ValueError(
-                f"{path} has no {RESPONSE_COLUMN} column; found {table.column_names}"
+                f"{path} has none of {list(RESPONSE_COLUMNS)}; "
+                f"found {table.column_names}"
             )
-        responses.extend(table.column(RESPONSE_COLUMN).to_pylist())
+        responses.extend(table.column(column).to_pylist())
     return responses
 
 
