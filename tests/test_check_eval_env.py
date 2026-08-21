@@ -120,62 +120,62 @@ def test_unparseable_tokenizer_config_is_reported(tmp_path):
 # known names directly; the integration test below is the one that checks the
 # recipes against what is actually installed.
 KNOWN = {
-    "lighteval|gsm8k",
-    "lighteval|math_500",
-    "lighteval|gpqa:diamond",
-    "lighteval|gpqa:mc",
-    "extended|ifeval",
-    "extended|olympiad_bench:OE_TO_maths_en_COMP",
+    "gsm8k",
+    "math_500",
+    "gpqa:diamond",
+    "gpqa:mc",
+    "ifeval",
+    "olympiad_bench:OE_TO_maths_en_COMP",
 }
 
 
 def test_task_names_in_the_registry_pass():
-    errors, warnings = check_task_names(
-        ["lighteval|gsm8k|0", "extended|ifeval|0"], known=KNOWN
-    )
+    errors, warnings = check_task_names(["gsm8k|0", "ifeval|0"], known=KNOWN)
 
     assert errors == []
     assert warnings == []
 
 
-def test_a_task_missing_from_every_suite_is_an_error():
-    errors, _ = check_task_names(["lighteval|amc23|0"], known=KNOWN)
+def test_a_task_missing_from_the_registry_is_an_error():
+    errors, _ = check_task_names(["amc23|0"], known=KNOWN)
 
     assert any("not in LightEval's registry" in error for error in errors)
 
 
-def test_the_right_name_in_the_wrong_suite_names_the_right_one():
-    errors, _ = check_task_names(["lighteval|ifeval|0"], known=KNOWN)
+def test_a_suite_prefix_warns_and_names_the_form_that_replaced_it():
+    # 0.13 keys its registry by bare name and discards a leading suite without
+    # saying anything useful, so the recipe drifts from what actually ran.
+    errors, warnings = check_task_names(["lighteval|gsm8k|0"], known=KNOWN)
 
-    assert len(errors) == 1
-    assert "extended|ifeval" in errors[0]
+    assert errors == []
+    assert len(warnings) == 1
+    assert "'gsm8k|0'" in warnings[0]
 
 
 def test_a_near_miss_is_suggested():
-    errors, _ = check_task_names(["lighteval|gpqa:diamnod|0"], known=KNOWN)
+    errors, _ = check_task_names(["gpqa:diamnod|0"], known=KNOWN)
 
-    assert "lighteval|gpqa:diamond" in errors[0]
+    assert "gpqa:diamond" in errors[0]
 
 
-def test_a_malformed_task_string_is_an_error():
+def test_a_task_string_with_no_few_shot_field_is_an_error():
     errors, _ = check_task_names(["gsm8k"], known=KNOWN)
 
-    assert any("suite|name" in error for error in errors)
+    assert any("name|num_fewshot" in error for error in errors)
 
 
-def test_an_unloaded_suite_warns_rather_than_failing():
-    # Community and multilingual tasks are not loaded, so their names cannot be
-    # checked. Failing on them would reject a valid recipe.
-    errors, warnings = check_task_names(["community|whatever|0"], known=KNOWN)
+def test_the_removed_fourth_task_field_is_rejected():
+    # LightEval 0.13 fails to resolve a four-field name rather than warning.
+    errors, _ = check_task_names(["lighteval|gsm8k|0|0"], known=KNOWN)
 
-    assert errors == []
-    assert any("unchecked" in warning for warning in warnings)
+    assert len(errors) == 1
+    assert "'gsm8k|0'" in errors[0]
 
 
 def test_an_unreadable_registry_warns_rather_than_failing_everything(monkeypatch):
     monkeypatch.setattr(check_eval_env, "registry_task_names", lambda: None)
 
-    errors, warnings = check_eval_env.check_task_names(["lighteval|gsm8k|0"])
+    errors, warnings = check_eval_env.check_task_names(["gsm8k|0"])
 
     assert errors == []
     assert any("unchecked" in warning for warning in warnings)
@@ -188,13 +188,6 @@ def test_every_recipe_task_resolves_against_the_installed_lighteval():
 
     for recipe in sorted(Path("recipes").glob("*/eval/*.yaml")):
         settings = resolve_settings(load_eval_config(str(recipe)))
-        errors, _ = check_task_names(settings["tasks"], known=known)
+        errors, warnings = check_task_names(settings["tasks"], known=known)
         assert errors == [], f"{recipe}: {errors}"
-
-
-def test_the_removed_fourth_task_field_is_rejected():
-    # LightEval 0.13 fails to resolve a four-field name rather than warning.
-    errors, _ = check_task_names(["lighteval|gsm8k|0|0"], known=KNOWN)
-
-    assert len(errors) == 1
-    assert "lighteval|gsm8k|0" in errors[0]
+        assert warnings == [], f"{recipe}: {warnings}"

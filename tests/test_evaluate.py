@@ -429,7 +429,7 @@ def test_build_summary_records_the_stack_and_the_sampling_parameters():
     )
 
     assert summary["sampling"]["temperature"] == evaluate.DEFAULT_TEMPERATURE
-    assert set(summary["stack"]) >= {"lighteval", "math-verify"}
+    assert set(summary["stack"]) >= {"lighteval", "latex2sympy2-extended"}
     # vLLM runs outside this environment, so what served the model is
     # recorded as the command rather than as an importable version.
     assert summary["serve_command"] == ["vllm", "serve"]

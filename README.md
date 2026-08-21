@@ -735,8 +735,8 @@ judged on, and only free generation scored against a reference answers them.
 The stack is three decoupled layers. Generation is vLLM on the TPU, serving the
 merged export behind an OpenAI-compatible endpoint. The harness is LightEval,
 reached over HTTP through its litellm backend. Scoring is whatever metric the
-LightEval task declares, which for maths is Math-Verify's symbolic equivalence
-rather than string equality. `src/open_r1_tpu/evaluate.py` owns the layers either
+LightEval task declares, which for maths is symbolic equivalence via
+latex2sympy2-extended rather than string equality. `src/open_r1_tpu/evaluate.py` owns the layers either
 side of the harness — it validates the recipe, runs the harness once per seed,
 and reduces what the harness wrote into a single summary — and imports neither
 JAX, Tunix, nor vLLM.
@@ -848,8 +848,9 @@ RECIPE=recipes/Qwen3-1.7B-Math/eval/tier1_core.yaml ./scripts/run_eval_tpu.sh \
 
 The run writes `summary_<tier>.json` under `reporting.output_dir`, holding the
 per-task metrics aggregated across seeds, the sampling parameters, the model
-path, and the installed versions of LightEval, vLLM and Math-Verify. A result
-that does not name its stack cannot be compared with one produced months later.
+path, and the installed versions of LightEval, litellm and
+latex2sympy2-extended. A result that does not name its stack cannot be compared
+with one produced months later.
 `reporting.summary_path` accepts a `gs://` URI to land it beside the checkpoint
 it scored.
 

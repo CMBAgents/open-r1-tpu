@@ -18,7 +18,7 @@
 eval:
   tier: tier0-smoke
   tasks:
-    - "lighteval|gsm8k|0"
+    - "gsm8k|0"
   # One seed: greedy decoding has no sampling variance to average out.
   seeds: [0]
   # Enough to expose a systematic format failure, far too few to score.

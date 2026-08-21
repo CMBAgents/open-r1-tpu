@@ -105,7 +105,9 @@ _TOKEN_KEYS = ("output_tokens", "generated_tokens", "num_generated_tokens")
 # one produced months later. vLLM is absent because it runs outside this
 # environment and would always read back as "unknown"; the summary records the
 # serve command instead, which is the honest record of what served the model.
-_STACK_DISTRIBUTIONS = ("lighteval", "litellm", "math-verify")
+# latex2sympy2-extended rather than math-verify: LightEval 0.13 dropped the
+# latter and parses LaTeX through the former directly.
+_STACK_DISTRIBUTIONS = ("lighteval", "litellm", "latex2sympy2-extended")
 
 
 def _version(distribution: str) -> str:

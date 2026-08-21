@@ -20,8 +20,8 @@
 eval:
   tier: tier3-regression
   tasks:
-    - "extended|ifeval|0"
-    - "lighteval|gpqa:diamond|0"
+    - "ifeval|0"
+    - "gpqa:diamond|0"
     # MMLU-Pro is not in LightEval's table. The nearest is mmlu_redux_2,
     # which is 57 per-subject tasks with no aggregate -- and multiple
     # choice, so it scores by comparing logprobs of supplied continuations.

@@ -38,9 +38,10 @@ eval = [
   #   litellm - the backend LightEval reaches the local vLLM server through.
   #     Prefer the extra to a bare litellm: it adds the caching support
   #     LightEval expects.
-  #   math - LaTeX parsing for symbolic answer equivalence. Without it maths
-  #     accuracy falls back to string equality, which understates it
-  #     substantially.
+  #   math - latex2sympy2-extended, for symbolic answer equivalence. Without
+  #     it maths accuracy falls back to string equality, which understates it
+  #     substantially. LightEval used Math-Verify for this until 0.13 and now
+  #     parses LaTeX directly, so nothing here should name Math-Verify.
   # Floor at 0.13. 0.11 shipped `hf_repo="lighteval/openai/gsm8k"` in its task
   # table -- a repo id with two slashes, which no Hub lookup can resolve, so
   # GSM8K could not load at all. 0.13 is also the release whose CLI options and

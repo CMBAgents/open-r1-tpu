@@ -92,7 +92,14 @@ def registry_task_names() -> set[str] | None:
 def check_task_names(
     tasks: list[str], known: set[str] | None = None
 ) -> tuple[list[str], list[str]]:
-    """Check recipe task strings against what LightEval can actually resolve."""
+    """Check recipe task strings against what LightEval can actually resolve.
+
+    A task name is ``name|num_fewshot``. Both older spellings are reported
+    rather than passed through: 0.11 deprecated the trailing truncate_fewshot
+    field and 0.13 removed it, and 0.13 also stopped keying its registry by
+    suite, so a leading ``lighteval|`` is now discarded in silence. Neither
+    surfaces until the harness has already started.
+    """
     if known is None:
         known = registry_task_names()
     if known is None:
@@ -100,50 +107,39 @@ def check_task_names(
 
     errors: list[str] = []
     warnings: list[str] = []
-    suites = {name.split("|", 1)[0] for name in known}
     for task in tasks:
         parts = str(task).split("|")
-        if len(parts) < 2 or not parts[0] or not parts[1]:
-            errors.append(f"task {task!r} is not in suite|name|num_fewshot form")
-            continue
         if len(parts) > 3:
-            # LightEval deprecated the trailing truncate_fewshot field in 0.11
-            # and removed it in 0.13, where a four-field name fails to resolve
-            # at all rather than warning.
             errors.append(
                 f"task {task!r} has a trailing field LightEval removed in "
-                f"0.13; use {'|'.join(parts[:3])!r}"
+                f"0.13; use {'|'.join(parts[1:3])!r}"
             )
             continue
-        suite, name = parts[0], parts[1]
-        if f"{suite}|{name}" in known:
-            continue
-        if suite not in suites:
+        if len(parts) == 3:
             warnings.append(
-                f"task {task!r}: suite {suite!r} is not loaded here, so the "
-                "name is unchecked"
+                f"task {task!r} carries a suite prefix LightEval 0.13 ignores; "
+                f"use {'|'.join(parts[1:])!r}"
             )
+            name = parts[1]
+        elif len(parts) == 2:
+            name = parts[0]
+        else:
+            errors.append(f"task {task!r} is not in name|num_fewshot form")
             continue
-        errors.append(
-            f"task {task!r} is not in LightEval's registry{_hint(name, known)}"
-        )
+
+        if not name:
+            errors.append(f"task {task!r} is not in name|num_fewshot form")
+        elif name not in known:
+            errors.append(
+                f"task {task!r} is not in LightEval's registry{_hint(name, known)}"
+            )
     return (errors, warnings)
 
 
 def _hint(name: str, known: set[str]) -> str:
-    """Suggest what a missing task was probably meant to be.
-
-    Same name in another suite first: LightEval splits tasks across `lighteval`
-    and `extended` with no rule you can infer from the name, so naming the
-    right task in the wrong suite is the likeliest mistake by some margin.
-    """
-    elsewhere = sorted(other for other in known if other.split("|", 1)[1] == name)
-    close = difflib.get_close_matches(name, [k.split("|", 1)[1] for k in known], n=3)
-    suggestions = (
-        elsewhere
-        or sorted({other for other in known if other.split("|", 1)[1] in close})[:3]
-    )
-    return f"; did you mean {', '.join(suggestions)}?" if suggestions else ""
+    """Suggest what a missing task was probably meant to be."""
+    close = difflib.get_close_matches(name, sorted(known), n=3)
+    return f"; did you mean {', '.join(close)}?" if close else ""
 
 
 def _version(distribution: str) -> str:
@@ -222,10 +218,10 @@ def main() -> None:
     # vLLM is not expected in this environment -- it cannot be, on this Python
     # -- so its absence here is not an error. Whether the server is reachable
     # is answered by the server itself, not by an import.
-    if _version("math-verify") == "unknown":
+    if _version("latex2sympy2-extended") == "unknown":
         warnings.append(
-            "math-verify is not installed; maths tasks fall back to string "
-            "matching, which understates accuracy substantially"
+            "latex2sympy2-extended is not installed; maths tasks fall back to "
+            "string matching, which understates accuracy substantially"
         )
 
     export_errors, export_warnings = check_export_dir(settings["model_path"])
