@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import inspect
 import json
 from importlib import metadata
 from pathlib import Path
@@ -56,7 +57,12 @@ def registry_task_names() -> set[str] | None:
     "every task is missing", which would be a preflight that fails the moment
     LightEval is upgraded.
 
-    Multilingual tasks are left unloaded on purpose: that tree calls
+    The constructor's keywords move between releases: 0.11 took
+    `load_community` and `load_extended`, 0.13 takes neither. Only the ones
+    this installation accepts are passed, so the check survives the next
+    change rather than needing one of its own.
+
+    Multilingual tasks stay unloaded on purpose: that tree calls
     `langcodes.language_name()` at import, which needs an optional package we
     do not install, and no recipe uses the suite.
     """
@@ -64,20 +70,23 @@ def registry_task_names() -> set[str] | None:
         from lighteval.tasks.registry import Registry
     except ImportError:
         return None
-    for load_community in (True, False):
-        try:
-            registry = Registry(
-                custom_tasks=None,
-                load_community=load_community,
-                load_extended=True,
-                load_multilingual=False,
-            )
-        except Exception:  # noqa: BLE001 - any import in any task tree
-            continue
-        names = getattr(registry, "_task_registry", None)
-        if isinstance(names, dict) and names:
-            return set(names)
-    return None
+
+    wanted = {
+        "custom_tasks": None,
+        "load_multilingual": False,
+        "load_community": False,
+        "load_extended": True,
+    }
+    try:
+        accepted = inspect.signature(Registry).parameters
+        registry = Registry(**{k: v for k, v in wanted.items() if k in accepted})
+    except Exception:  # noqa: BLE001 - any import in any task tree
+        return None
+
+    names = getattr(registry, "_task_registry", None)
+    if not isinstance(names, dict) or not names:
+        return None
+    return set(names)
 
 
 def check_task_names(

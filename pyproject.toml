@@ -32,16 +32,20 @@ dependencies = [
 # summary, which is what the first successful run should pin from.
 eval = [
   # Three LightEval extras, all load-bearing:
-  #   extended_tasks - IFEval and friends live under lighteval/tasks/extended,
-  #     and the task registry imports that whole tree unconditionally, so
-  #     without it even `lighteval tasks list` fails on a missing emoji import.
+  #   extended_tasks - IFEval and friends live under lighteval/tasks/extended.
+  #     The task registry imports that tree whether or not a recipe uses it, so
+  #     without this even listing tasks fails on a missing emoji import.
   #   litellm - the backend LightEval reaches the local vLLM server through.
   #     Prefer the extra to a bare litellm: it adds the caching support
   #     LightEval expects.
   #   math - LaTeX parsing for symbolic answer equivalence. Without it maths
   #     accuracy falls back to string equality, which understates it
   #     substantially.
-  "lighteval[extended_tasks,litellm,math]",
+  # Floor at 0.13. 0.11 shipped `hf_repo="lighteval/openai/gsm8k"` in its task
+  # table -- a repo id with two slashes, which no Hub lookup can resolve, so
+  # GSM8K could not load at all. 0.13 is also the release whose CLI options and
+  # ModelConfig fields this package is written against.
+  "lighteval[extended_tasks,litellm,math]>=0.13",
   # Reading LightEval's Parquet detail shards.
   "pyarrow>=15.0",
 ]
