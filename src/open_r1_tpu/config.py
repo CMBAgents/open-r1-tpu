@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -36,8 +37,18 @@ def parse_override(raw: str) -> tuple[str, Any]:
     return key, yaml.safe_load(raw_value)
 
 
-def load_config(path: str | Path, overrides: list[str] | None = None) -> dict[str, Any]:
-    """Load a YAML recipe and apply dotted command-line overrides."""
+def load_config(
+    path: str | Path,
+    overrides: list[str] | None = None,
+    validator: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Load a YAML recipe and apply dotted command-line overrides.
+
+    `validator` defaults to `validate_config`, which checks a training recipe.
+    Evaluation recipes are a different shape entirely -- no optimizer, no
+    dataset -- so they pass their own validator rather than being forced into
+    the training schema.
+    """
     with Path(path).open(encoding="utf-8") as config_file:
         loaded = yaml.safe_load(config_file)
     if not isinstance(loaded, dict):
@@ -47,7 +58,7 @@ def load_config(path: str | Path, overrides: list[str] | None = None) -> dict[st
     for raw_override in overrides or []:
         key, value = parse_override(raw_override)
         _set_dotted(config, key, value)
-    validate_config(config)
+    (validator or validate_config)(config)
     return config
 
 
