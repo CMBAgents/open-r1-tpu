@@ -13,7 +13,8 @@
 #
 # TASK NAMES MOVE BETWEEN RELEASES. LightEval renames tasks, shifts them
 # between suites, and has changed the name syntax itself once already.
-# `check_eval_env` resolves every name here against the installed registry, so
+# `open_r1_tpu.evaluation.preflight` resolves every name here against the
+# installed registry, so
 # run the preflight rather than trusting this file.
 eval:
   tier: tier0-smoke

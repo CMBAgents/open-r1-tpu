@@ -4,7 +4,7 @@ set -euo pipefail
 # Benchmark a fine-tuned checkpoint on the TPU.
 #
 # Owns the vLLM server's lifecycle and nothing else: the recipe decides what to
-# serve and how, `open_r1_tpu.evaluate` decides what to run against it. Both halves
+# serve and how, `open_r1_tpu.evaluation.run` decides what to run against it. Both halves
 # read the same recipe and the same dotted overrides, so the port and the served
 # model name cannot drift apart.
 #
@@ -45,7 +45,7 @@ if [[ "$SKIP_SERVER" != "1" ]]; then
   mkdir -p "$(dirname "$SERVER_LOG")"
   # Built from the recipe so there is one source of truth for the port, the
   # served name, and the context window.
-  SERVER_CMD="$(python3 -m open_r1_tpu.evaluate --config "$RECIPE" \
+  SERVER_CMD="$(python3 -m open_r1_tpu.evaluation.run --config "$RECIPE" \
     --print-server-command "$@")"
   echo "Starting: $SERVER_CMD" >&2
   echo "Server log: $SERVER_LOG" >&2
@@ -65,4 +65,4 @@ if [[ "$SKIP_SERVER" != "1" ]]; then
   fi
 fi
 
-python3 -m open_r1_tpu.evaluate --config "$RECIPE" "$@"
+python3 -m open_r1_tpu.evaluation.run --config "$RECIPE" "$@"

@@ -1,8 +1,8 @@
-"""TPU-native supervised reasoning distillation with Tunix.
+"""TPU-native supervised reasoning distillation orchestration with Tunix.
 
 Run with::
 
-  python -m open_r1_tpu.sft --config \
+  python -m open_r1_tpu.training.run --config \
     recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml
 """
 
@@ -15,10 +15,10 @@ import math
 from pathlib import Path
 from typing import Any
 
-from open_r1_tpu import transcripts
-from open_r1_tpu.config import load_config
-from open_r1_tpu.data import load_reasoning_datasets
-from open_r1_tpu.logging import LOG_LEVELS, configure_logging
+from open_r1_tpu.core.config import load_config
+from open_r1_tpu.core.logging import LOG_LEVELS, configure_logging
+from open_r1_tpu.training import transcripts
+from open_r1_tpu.training.data import load_reasoning_datasets
 
 LOGGER = logging.getLogger(__name__)
 
@@ -318,7 +318,7 @@ def _export_model(
                 "Full-model safetensors export is only implemented for Qwen3. "
                 "Disable export.enabled for other models."
             )
-        from open_r1_tpu.safetensors_export import export_full_model
+        from open_r1_tpu.training.export import export_full_model
 
         LOGGER.info("Exporting full fine-tuned model to %s", output_dir)
         export_full_model(

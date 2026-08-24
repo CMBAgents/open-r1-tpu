@@ -6,6 +6,6 @@ set -euo pipefail
 #   RECIPE=recipes/Qwen3-1.7B-Instruct/sft/config_instruct.yaml ./scripts/run_sft_tpu.sh
 RECIPE="${RECIPE:-recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml}"
 
-python3 -m open_r1_tpu.sft \
+python3 -m open_r1_tpu.training.run \
   --config "$RECIPE" \
   "$@"

@@ -1,6 +1,6 @@
 import logging
 
-from open_r1_tpu.logging import (
+from open_r1_tpu.core.logging import (
     LOG_LEVELS,
     NOISY_PACKAGES,
     _DemoteNoisyPackages,

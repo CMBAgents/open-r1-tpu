@@ -1,4 +1,4 @@
-"""Stderr logging for training runs.
+"""Stderr logging shared by training and evaluation workflows.
 
 Tunix, Orbax and JAX all log through absl, which routes every one of them
 through a single logger named "absl" at INFO. Neither the level nor the logger

@@ -50,7 +50,7 @@ stop_server() {
 trap stop_server EXIT INT TERM
 mkdir -p "$OUTPUT_DIR"
 
-SERVER_CMD="$(python3 -m open_r1_tpu.evaluate \
+SERVER_CMD="$(python3 -m open_r1_tpu.evaluation.run \
   --config "$EVAL_RECIPE" \
   --print-server-command \
   "server.model_path=$MODEL_PATH" \
@@ -73,11 +73,11 @@ if ! kill -0 "$SERVER_PID" 2>/dev/null; then
 fi
 
 python3 -c \
-  "from open_r1_tpu.evaluate import wait_for_server; wait_for_server('http://127.0.0.1:8000/v1')"
+  "from open_r1_tpu.evaluation.run import wait_for_server; wait_for_server('http://127.0.0.1:8000/v1')"
 VLLM_STARTUP_SECONDS="$SECONDS"
 
 # shellcheck disable=SC2086 # BATCH_SIZES is intentionally a whitespace list.
-python3 -m open_r1_tpu.benchmark_generation run \
+python3 -m open_r1_tpu.evaluation.benchmark run \
   --backend vllm \
   --eval-config "$EVAL_RECIPE" \
   --model-path "$MODEL_PATH" \
@@ -92,7 +92,7 @@ python3 -m open_r1_tpu.benchmark_generation run \
 stop_server
 
 # shellcheck disable=SC2086 # BATCH_SIZES is intentionally a whitespace list.
-python3 -m open_r1_tpu.benchmark_generation run \
+python3 -m open_r1_tpu.evaluation.benchmark run \
   --backend tunix \
   --eval-config "$EVAL_RECIPE" \
   --sft-config "$SFT_RECIPE" \
@@ -104,7 +104,7 @@ python3 -m open_r1_tpu.benchmark_generation run \
   --max-new-tokens "$MAX_NEW_TOKENS" \
   --max-prompt-length "$MAX_PROMPT_LENGTH"
 
-python3 -m open_r1_tpu.benchmark_generation compare \
+python3 -m open_r1_tpu.evaluation.benchmark compare \
   --vllm "$OUTPUT_DIR/vllm.json" \
   --tunix "$OUTPUT_DIR/tunix.json" \
   --output-json "$OUTPUT_DIR/comparison.json" \

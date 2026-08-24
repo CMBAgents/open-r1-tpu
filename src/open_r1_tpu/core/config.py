@@ -1,4 +1,4 @@
-"""Configuration loading for the TPU training recipes."""
+"""Shared configuration loading and validation."""
 
 from __future__ import annotations
 
@@ -109,7 +109,10 @@ def validate_config(config: dict[str, Any]) -> None:
     # Imported here so the data module stays out of this module's import
     # graph; both checks are cheap and catch a recipe that would otherwise
     # filter every example and train on an empty dataset.
-    from open_r1_tpu.data import OVERLENGTH_POLICIES, message_schema_from_config
+    from open_r1_tpu.training.data import (
+        OVERLENGTH_POLICIES,
+        message_schema_from_config,
+    )
 
     overlength_policy = config["dataset"].get("overlength_policy", "drop")
     if overlength_policy not in OVERLENGTH_POLICIES:

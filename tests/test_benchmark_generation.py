@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from open_r1_tpu import benchmark_generation as benchmark
+from open_r1_tpu.evaluation import benchmark
 
 
 class FakeTokenizer:

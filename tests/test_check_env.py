@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from open_r1_tpu.check_env import _preflight_example
-from open_r1_tpu.config import load_config
-from open_r1_tpu.data import encode_reasoning_example
+from open_r1_tpu.core.config import load_config
+from open_r1_tpu.training.data import encode_reasoning_example
+from open_r1_tpu.training.preflight import _preflight_example
 
 OT3_RECIPE = (
     Path(__file__).parents[1] / "recipes/Qwen3-1.7B-OT3/sft/config_distill.yaml"

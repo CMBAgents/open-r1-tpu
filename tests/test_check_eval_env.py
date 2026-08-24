@@ -3,15 +3,15 @@ from pathlib import Path
 
 import pytest
 
-from open_r1_tpu import check_eval_env
-from open_r1_tpu.check_eval_env import (
+from open_r1_tpu.evaluation import preflight as check_eval_env
+from open_r1_tpu.evaluation.preflight import (
     check_dependency_versions,
     check_export_dir,
     check_server_runtime,
     check_task_names,
 )
-from open_r1_tpu.evaluate import load_eval_config, resolve_settings
-from open_r1_tpu.evaluation_stack import (
+from open_r1_tpu.evaluation.run import load_eval_config, resolve_settings
+from open_r1_tpu.evaluation.stack import (
     EVALUATION_PACKAGE_VERSIONS,
     EVALUATION_PYTHON_VERSION,
     VLLM_TPU_IMAGE,

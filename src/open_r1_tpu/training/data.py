@@ -1,4 +1,4 @@
-"""Reasoning-trace preprocessing and Grain input pipelines."""
+"""Reasoning-trace normalization, tokenization, packing, and loading."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Benchmark evaluation for a fine-tuned checkpoint.
+"""LightEval orchestration and result reduction for a fine-tuned checkpoint.
 
 Held-out loss is teacher-forced: every scored token is conditioned on ground
 truth, so it cannot say whether the model closes its reasoning trace, stops,
@@ -57,12 +57,12 @@ from typing import Any
 
 import yaml
 
-from open_r1_tpu.config import load_config
-from open_r1_tpu.evaluation_stack import (
+from open_r1_tpu.core.config import load_config
+from open_r1_tpu.core.logging import LOG_LEVELS, configure_logging
+from open_r1_tpu.evaluation.stack import (
     EVALUATION_PACKAGE_VERSIONS,
     VLLM_TPU_IMAGE,
 )
-from open_r1_tpu.logging import LOG_LEVELS, configure_logging
 
 LOGGER = logging.getLogger(__name__)
 

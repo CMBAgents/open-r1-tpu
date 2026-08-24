@@ -53,7 +53,7 @@ model:
   # Inherited from the 1024-token recipe and the first thing to revisit at
   # 16384: stored activations grow with the sequence and attention grows with
   # its square. Valid names are the attributes of the model module's
-  # RematConfig, resolved by _create_model in src/open_r1_tpu/sft.py. Choose by
+  # RematConfig, resolved by _create_model in src/open_r1_tpu/training/run.py. Choose by
   # measuring peak HBM in a short run; this value is inherited, not validated.
   remat_config: DECODER
   use_flash_attention: true

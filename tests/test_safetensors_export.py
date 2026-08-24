@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from open_r1_tpu.safetensors_export import (
+from open_r1_tpu.training.export import (
     collect_safetensors_state,
     qwen3_safetensors_entry,
 )

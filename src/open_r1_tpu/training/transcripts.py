@@ -1,4 +1,4 @@
-"""Periodic free-running transcripts for qualitative inspection during SFT.
+"""Optional free-running transcripts for qualitative inspection during SFT.
 
 Teacher-forced loss cannot show whether the trained model closes its reasoning
 trace, stops at EOS, or degenerates into repetition, because every scored token

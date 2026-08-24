@@ -6,8 +6,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from open_r1_tpu import evaluate
-from open_r1_tpu.evaluation_stack import VLLM_TPU_IMAGE
+from open_r1_tpu.evaluation import run as evaluate
+from open_r1_tpu.evaluation.stack import VLLM_TPU_IMAGE
 
 RECIPE_DIR = Path(__file__).parents[1] / "recipes/Qwen3-1.7B-Math/eval"
 TIER0 = RECIPE_DIR / "tier0_smoke.yaml"
@@ -649,7 +649,7 @@ def test_run_seed_drives_lighteval_against_the_live_server(live_settings, tmp_pa
 
 @pytest.mark.integration
 def test_the_base_model_export_passes_preflight():
-    from open_r1_tpu.check_eval_env import check_export_dir
+    from open_r1_tpu.evaluation.preflight import check_export_dir
 
     errors, _ = check_export_dir("models/Qwen3-1.7B-Base")
 

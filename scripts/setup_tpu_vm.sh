@@ -112,7 +112,7 @@ fi
 # --- Run-time environment file -------------------------------------------
 # Kept outside the repository so entity/project names and tokens never land in
 # git. W&B reads WANDB_ENTITY directly; the project name has to be passed to
-# the launcher as an override because sft.py sets it explicitly.
+# the launcher as an override because the training runner sets it explicitly.
 if [[ -f "${ENV_FILE}" ]]; then
   log "Leaving existing ${ENV_FILE} untouched"
 else
@@ -161,7 +161,7 @@ cat <<NEXT
 
   # 3. Preflight, then launch. See "Quick start on a TPU VM" in README.md for
   #    the local-input overrides both commands need after step 2.
-  python -m open_r1_tpu.check_env
+  python -m open_r1_tpu.training.preflight
   scripts/run_sft_tpu.sh training.project_name="\${WANDB_PROJECT}"
 NEXT
 
@@ -170,7 +170,7 @@ if [[ ${WITH_EVAL} -eq 1 ]]; then
 
   # Evaluation is installed and the immutable service image is cached. Once a
   # merged export exists, preflight and run the smoke tier:
-  python -m open_r1_tpu.check_eval_env \
+  python -m open_r1_tpu.evaluation.preflight \
     --config recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml
   RECIPE=recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml scripts/run_eval_tpu.sh
 NEXT_EVAL

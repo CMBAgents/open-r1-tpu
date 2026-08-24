@@ -198,7 +198,7 @@ def model_config(
 
 def recipe_restore_settings(recipe_path: str) -> tuple[dict[str, Any] | None, str]:
     """Read the LoRA geometry (None for a full fine-tune) and checkpoint root."""
-    from open_r1_tpu.config import load_config
+    from open_r1_tpu.core.config import load_config
 
     config = load_config(recipe_path)
     return config["model"].get("lora_config"), config["training"]["checkpoint_dir"]
@@ -243,7 +243,7 @@ def restore_checkpoint(
     """Restore checkpoint parameters into `model`, returning the step restored."""
     from tunix.sft import checkpoint_manager as checkpoint_manager_lib
 
-    from open_r1_tpu.sft import _absolute_checkpoint_dir
+    from open_r1_tpu.training.run import _absolute_checkpoint_dir
 
     root = _absolute_checkpoint_dir(checkpoint_dir)
     step = resolve_step(root, step)
@@ -420,7 +420,7 @@ def load_runtime(
     mesh = mesh_utils.create_mesh((1, 1), ("fsdp", "tp"))
     # Reuse the application's local safetensors loader so the inference clients
     # and SFT use the same Qwen architecture and dtype.
-    from open_r1_tpu.sft import _create_model
+    from open_r1_tpu.training.run import _create_model
 
     lora_config = None
     checkpoint_dir = args.checkpoint_dir

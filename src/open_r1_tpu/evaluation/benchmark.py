@@ -38,11 +38,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from open_r1_tpu.evaluate import (
+from open_r1_tpu.evaluation.run import (
     load_eval_config,
     wait_for_server,
 )
-from open_r1_tpu.evaluate import (
+from open_r1_tpu.evaluation.run import (
     resolve_settings as resolve_eval_settings,
 )
 
@@ -382,8 +382,8 @@ def _run_tunix(
     from tunix.generate import sampler as sampler_lib
     from tunix.utils import mesh as mesh_utils
 
-    from open_r1_tpu.config import load_config
-    from open_r1_tpu.sft import _create_model
+    from open_r1_tpu.core.config import load_config
+    from open_r1_tpu.training.run import _create_model
 
     config = copy.deepcopy(load_config(sft_config_path))
     model_config = config["model"]

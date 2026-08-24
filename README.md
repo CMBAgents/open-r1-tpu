@@ -12,6 +12,20 @@ assistant tokens only, filters incomplete reasoning traces and by default
 overlength ones, writes resumable Orbax checkpoints, and exports a merged Hugging Face-style
 safetensors directory.
 
+## Package layout
+
+The Python package is grouped by workflow rather than kept as one flat module
+directory:
+
+- `open_r1_tpu.core` contains configuration parsing and shared logging;
+- `open_r1_tpu.training` contains data preparation, SFT orchestration,
+  transcripts, export, and the training preflight;
+- `open_r1_tpu.evaluation` contains LightEval orchestration, evaluation
+  preflight, immutable stack pins, and the vLLM/Tunix speed benchmark.
+
+Shell scripts remain the supported operator-facing launchers and invoke the
+corresponding modules inside those subpackages.
+
 ## Quick start on a TPU VM
 
 Run every step on the TPU VM itself, over SSH. Both scripts are re-runnable, so
@@ -71,7 +85,7 @@ expects.
 **5. Run preflight.**
 
 ```bash
-python -m open_r1_tpu.check_env \
+python -m open_r1_tpu.training.preflight \
   model.model_source=local \
   model.model_path=models/Qwen3-1.7B-Base \
   tokenizer.tokenizer_path=models/Qwen3-1.7B-Base
@@ -127,7 +141,7 @@ Validate the environment on the TPU VM itself before downloading the full model
 or starting a training job:
 
 ```bash
-python -m open_r1_tpu.check_env
+python -m open_r1_tpu.training.preflight
 ```
 
 This initializes JAX and requires the configured mesh device count to consist
@@ -565,7 +579,8 @@ level.
 ./scripts/run_sft_tpu.sh --log-level warning  # problems only
 ```
 
-This lives in [`src/open_r1_tpu/logging.py`](src/open_r1_tpu/logging.py).
+This lives in
+[`src/open_r1_tpu/core/logging.py`](src/open_r1_tpu/core/logging.py).
 Quietening another package that hides behind absl is one entry in
 `NOISY_PACKAGES`; a library with a logger of its own needs no help, since its
 level can simply be set.
@@ -735,7 +750,8 @@ The stack is three decoupled layers. Generation is vLLM on the TPU, serving the
 merged export behind an OpenAI-compatible endpoint. The harness is LightEval,
 reached over HTTP through its litellm backend. Scoring is whatever metric the
 LightEval task declares, which for maths is symbolic equivalence via
-latex2sympy2-extended rather than string equality. `src/open_r1_tpu/evaluate.py` owns the layers either
+latex2sympy2-extended rather than string equality.
+`src/open_r1_tpu/evaluation/run.py` owns the layers either
 side of the harness — it validates the recipe, runs the harness once per seed,
 and reduces what the harness wrote into a single summary — and imports neither
 JAX, Tunix, nor vLLM.
@@ -799,7 +815,7 @@ hold the TPU chip, so stop the training job before starting the server.
 ### Preflight, then the smoke tier
 
 ```bash
-python -m open_r1_tpu.check_eval_env \
+python -m open_r1_tpu.evaluation.preflight \
   --config recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml
 ```
 
@@ -832,7 +848,7 @@ complete constructed server command. Set `SKIP_SERVER=1` to reuse a server that
 is already up.
 
 To update the evaluation environment intentionally, change the exact versions
-in `pyproject.toml` and `src/open_r1_tpu/evaluation_stack.py`, run `uv lock`,
+in `pyproject.toml` and `src/open_r1_tpu/evaluation/stack.py`, run `uv lock`,
 then repeat the unit suite and TPU smoke evaluation. Updating vLLM likewise
 requires a new release tag and registry digest plus a real TPU smoke run; never
 replace either pin with `latest`.

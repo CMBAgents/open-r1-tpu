@@ -1,6 +1,7 @@
 """Preflight the evaluation stack before committing TPU time to a benchmark.
 
-The training preflight in `check_env.py` validates the Tunix/JAX stack. This
+The training preflight in `open_r1_tpu.training.preflight` validates the
+Tunix/JAX stack. This
 validates the serving side: the exact LightEval dependency stack, the pinned
 vLLM container image, the exported checkpoint it will be pointed at, and the
 recipe's task names. The TPU itself is deliberately not initialized. vLLM
@@ -21,7 +22,7 @@ knowing before the server spends fifteen minutes loading weights.
 
 Run from the repository root::
 
-    python -m open_r1_tpu.check_eval_env \
+    python -m open_r1_tpu.evaluation.preflight \
       --config recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml
 """
 
@@ -37,8 +38,8 @@ from collections.abc import Mapping, Sequence
 from importlib import metadata
 from pathlib import Path
 
-from open_r1_tpu.evaluate import load_eval_config, resolve_settings
-from open_r1_tpu.evaluation_stack import (
+from open_r1_tpu.evaluation.run import load_eval_config, resolve_settings
+from open_r1_tpu.evaluation.stack import (
     EVALUATION_PACKAGE_VERSIONS,
     EVALUATION_PYTHON_VERSION,
 )

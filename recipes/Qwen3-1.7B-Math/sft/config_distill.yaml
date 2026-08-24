@@ -59,7 +59,7 @@ model:
   # Inherited from the recipes validated at shorter sequences, and the first
   # thing to revisit if step 1 OOMs: stored activations grow with the sequence
   # and attention with its square. Valid names are the attributes of the model
-  # module's RematConfig, resolved by _create_model in src/open_r1_tpu/sft.py.
+  # module's RematConfig, resolved by _create_model in src/open_r1_tpu/training/run.py.
   remat_config: DECODER
   use_flash_attention: true
   # The splash kernel needs its block size to divide the sequence length.

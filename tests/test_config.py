@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from open_r1_tpu.config import load_config, parse_override
-from open_r1_tpu.sft import (
+from open_r1_tpu.core.config import load_config, parse_override
+from open_r1_tpu.training.run import (
     _absolute_checkpoint_dir,
     _metrics_logger_options,
     _SteppedTrainingMetricsBackend,

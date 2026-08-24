@@ -5,7 +5,7 @@ from pathlib import Path
 
 from packaging.requirements import Requirement
 
-from open_r1_tpu.evaluation_stack import (
+from open_r1_tpu.evaluation.stack import (
     EVALUATION_PACKAGE_VERSIONS,
     EVALUATION_PYTHON_VERSION,
     VLLM_TPU_IMAGE,

@@ -6,8 +6,8 @@ from typing import Any
 import numpy as np
 import pytest
 
-from open_r1_tpu import data as data_module
-from open_r1_tpu.data import encode_reasoning_example, normalize_messages
+from open_r1_tpu.training import data as data_module
+from open_r1_tpu.training.data import encode_reasoning_example, normalize_messages
 
 
 class FakeTokenizer:

@@ -23,19 +23,11 @@ The default path is:
 
 ## Repository map
 
-- `src/open_r1_tpu/config.py`: YAML loading, dotted overrides, and validation.
-- `src/open_r1_tpu/data.py`: message normalization, chat templating, token
-  masking, and Grain datasets.
-- `src/open_r1_tpu/sft.py`: model creation, LoRA SFT, optimizer, checkpointing,
-  and merged export.
-- `src/open_r1_tpu/check_env.py`: target-TPU environment preflight.
-- `src/open_r1_tpu/transcripts.py`: periodic free-running sample transcripts.
-- `src/open_r1_tpu/evaluate.py`: benchmark evaluation -- recipe validation, the
-  LightEval harness run, and reduction of its output to a summary.
-- `src/open_r1_tpu/benchmark_generation.py`: controlled, fixed-token throughput
-  comparison between the vLLM service and Tunix's direct sampler.
-- `src/open_r1_tpu/check_eval_env.py`: inference-environment, export, and
-  task-name preflight.
+- `src/open_r1_tpu/core/`: configuration parsing and shared logging.
+- `src/open_r1_tpu/training/`: dataset preparation, model creation, LoRA SFT,
+  transcripts, checkpoint/export handling, and the training preflight.
+- `src/open_r1_tpu/evaluation/`: LightEval orchestration and reduction, the
+  evaluation preflight, immutable stack pins, and generation benchmarking.
 - `recipes/`: versioned model, training, and evaluation configurations.
 - `scripts/setup_tpu_vm.sh`: uv-based TPU VM environment provisioning.
 - `scripts/copy_gcs_bucket_data.sh`: copy GCS bucket data to local disk.
@@ -85,7 +77,7 @@ The default path is:
   large. Keep `artifacts/`, `data/`, and `models/` untracked.
 - Maintain the export-path safety checks. Merged export must never replace the
   repository, home directory, base-model cache, or checkpoint directory.
-- Keep `open_r1_tpu.evaluate` free of JAX, Tunix, and vLLM imports. It drives
+- Keep `open_r1_tpu.evaluation.run` free of JAX, Tunix, and vLLM imports. It drives
   LightEval as a subprocess and the server over a socket, so it stays coupled
   to their command line and wire format rather than to their Python API, both
   of which move faster. Only one process can hold the chip, so evaluation runs
@@ -97,7 +89,7 @@ The default path is:
   set `server.image=null` and is reported as reproducibility-unchecked.
 - Treat the evaluation environment as a protocol. Keep `.python-version`, the
   exact direct pins in the `eval` extra, `uv.lock`,
-  `open_r1_tpu.evaluation_stack`, and the recipe's vLLM image digest in sync.
+  `open_r1_tpu.evaluation.stack`, and the recipe's vLLM image digest in sync.
   Never use a mutable container tag for a reported result.
 - Never report a benchmark number from a single seed. Seed variance alone moves
   small reasoning benchmarks by 5-15 points, so results carry a mean and a
@@ -115,7 +107,7 @@ Tunix is pinned to an exact Git commit in `pyproject.toml`. The pin is a Git
 commit rather than a PyPI release for two reasons:
 
 - The code relies on APIs that exist only on `main`. Concretely,
-  `WeightedMetric` — which the custom loss in `src/open_r1_tpu/sft.py` returns
+  `WeightedMetric` — which the custom loss in `src/open_r1_tpu/training/run.py` returns
   so that loss sums and denominators aggregate correctly across gradient
   accumulation — is absent from the newest release (`v0.1.7`, checked
   2026-08-18), so installing any released version breaks training at the first
@@ -128,11 +120,11 @@ commit rather than a PyPI release for two reasons:
 
 Do not move the pin casually; nothing currently upstream earns it. The two
 upstream changes that would are a native full-model (non-LoRA) safetensors
-saver, which would replace `src/open_r1_tpu/safetensors_export.py`, and the
+saver, which would replace `src/open_r1_tpu/training/export.py`, and the
 sampler passing `segment_ids` into Qwen splash attention, which would fix
 padded splash inference. (The pinned model itself already accepts
 `segment_ids`; training-side packing uses that directly through the custom
-`gen_model_input`/loss in `src/open_r1_tpu/sft.py` — the gap is only that the
+`gen_model_input`/loss in `src/open_r1_tpu/training/run.py` — the gap is only that the
 sampler never supplies them.) Any pin update requires a fresh review of:
 
 - `PeftTrainer`, `TrainingConfig`, and `with_loss_fn`;
@@ -141,7 +133,7 @@ sampler never supplies them.) Any pin update requires a fresh review of:
 - Qwen3 internal LoRA module paths;
 - Qwen3 merged-LoRA safetensors export;
 - the Qwen3 loader key/transform mapping in `tunix/models/qwen3/params.py`,
-  which `src/open_r1_tpu/safetensors_export.py` inverts; and
+  which `src/open_r1_tpu/training/export.py` inverts; and
 - checkpoint option construction.
 
 Do not claim that training is TPU-compatible merely because the unit suite
@@ -207,7 +199,7 @@ unresolved-import warning is a real finding.
 Target-TPU preflight:
 
 ```bash
-python -m open_r1_tpu.check_env
+python -m open_r1_tpu.training.preflight
 ```
 
 Short TPU smoke run:
@@ -230,7 +222,7 @@ Evaluation preflight and smoke tier, with the `eval` extra installed:
 
 ```bash
 ./scripts/setup_tpu_vm.sh --with-eval
-python -m open_r1_tpu.check_eval_env \
+python -m open_r1_tpu.evaluation.preflight \
   --config recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml
 RECIPE=recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml ./scripts/run_eval_tpu.sh
 ```

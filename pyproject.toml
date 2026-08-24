@@ -28,7 +28,7 @@ dependencies = [
 #
 # Direct dependencies are exact versions from the first successful v6e run;
 # uv.lock freezes their transitive closure. Keep these declarations synchronized
-# with open_r1_tpu.evaluation_stack -- a unit test enforces the relationship.
+# with open_r1_tpu.evaluation.stack -- a unit test enforces the relationship.
 eval = [
   # Three LightEval extras, all load-bearing:
   #   extended_tasks - IFEval and friends live under lighteval/tasks/extended.
@@ -65,7 +65,7 @@ eval = [
   # because LightEval cannot pin what it does not declare.
   "xxhash==3.8.1",
 ]
-# vLLM is deliberately absent. Nothing here imports it -- open_r1_tpu.evaluate
+# vLLM is deliberately absent. Nothing here imports it -- open_r1_tpu.evaluation.run
 # starts an external inference service and talks to it over HTTP -- so declaring
 # it would buy nothing and cost the install: tpu-inference classifies as Python
 # 3.10-3.12 and this project is on 3.13, which makes the extra unresolvable.

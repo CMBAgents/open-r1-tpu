@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from open_r1_tpu import transcripts
-from open_r1_tpu.config import load_config
+from open_r1_tpu.core.config import load_config
+from open_r1_tpu.training import transcripts
 
 RECIPE = (
     Path(__file__).parents[1]

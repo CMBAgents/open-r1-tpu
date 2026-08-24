@@ -13,7 +13,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEFAULT_IMAGE="$(
   PYTHONPATH="${REPO_ROOT}/src" python3 -c \
-    'from open_r1_tpu.evaluation_stack import VLLM_TPU_IMAGE; print(VLLM_TPU_IMAGE)'
+    'from open_r1_tpu.evaluation.stack import VLLM_TPU_IMAGE; print(VLLM_TPU_IMAGE)'
 )"
 
 IMAGE="${VLLM_TPU_IMAGE:-${DEFAULT_IMAGE}}"

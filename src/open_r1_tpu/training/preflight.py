@@ -1,4 +1,4 @@
-"""Preflight the installed Tunix/JAX stack before consuming TPU time."""
+"""Preflight the installed training stack before consuming TPU time."""
 
 from __future__ import annotations
 
@@ -8,8 +8,11 @@ import os
 from importlib import metadata
 from typing import Any
 
-from open_r1_tpu.config import load_config
-from open_r1_tpu.data import encode_reasoning_example, message_schema_from_config
+from open_r1_tpu.core.config import load_config
+from open_r1_tpu.training.data import (
+    encode_reasoning_example,
+    message_schema_from_config,
+)
 
 DEFAULT_CONFIG = "recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml"
 
