@@ -42,6 +42,8 @@ The default path is:
 - `scripts/run_sft_tpu.sh`: standard SFT launcher.
 - `scripts/run_eval_tpu.sh`: evaluation launcher; owns the vLLM server's
   lifecycle.
+- `scripts/run_vllm_tpu_container.sh`: pinned vLLM TPU container boundary;
+  owns device/cache mounts and Docker-level cleanup.
 - `scripts/benchmark_generation_tpu.sh`: runs vLLM and Tunix sequentially on
   one TPU and writes their speed comparison.
 - `tests/`: unit and integration tests. They run on the TPU VM.
@@ -89,9 +91,14 @@ The default path is:
   of which move faster. Only one process can hold the chip, so evaluation runs
   after training, not beside it.
 - Keep vLLM out of the project's dependencies. It is a service this package
-  invokes, not a library it imports, and `tpu-inference` supports Python
-  3.10-3.12 while this project is on 3.13, so declaring it makes the `eval`
-  extra unresolvable. Reach it through `server.serve_command`.
+  invokes, not a library it imports, and its inference stack does not belong in
+  the Python 3.13 LightEval/training environment. Use the immutable official TPU
+  image through `server.serve_command` by default; an external environment must
+  set `server.image=null` and is reported as reproducibility-unchecked.
+- Treat the evaluation environment as a protocol. Keep `.python-version`, the
+  exact direct pins in the `eval` extra, `uv.lock`,
+  `open_r1_tpu.evaluation_stack`, and the recipe's vLLM image digest in sync.
+  Never use a mutable container tag for a reported result.
 - Never report a benchmark number from a single seed. Seed variance alone moves
   small reasoning benchmarks by 5-15 points, so results carry a mean and a
   standard deviation, and one seed reports a null spread rather than `0.0`.
@@ -222,6 +229,7 @@ Full run:
 Evaluation preflight and smoke tier, with the `eval` extra installed:
 
 ```bash
+./scripts/setup_tpu_vm.sh --with-eval
 python -m open_r1_tpu.check_eval_env \
   --config recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml
 RECIPE=recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml ./scripts/run_eval_tpu.sh

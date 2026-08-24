@@ -1,12 +1,11 @@
 """Preflight the evaluation stack before committing TPU time to a benchmark.
 
 The training preflight in `check_env.py` validates the Tunix/JAX stack. This
-validates the serving side: the LightEval harness, the exported checkpoint it
-will be pointed at, and the recipe's task names. Neither vLLM nor the TPU is
-checked for here. Both live on the other side of the HTTP boundary -- vLLM runs
-in its own environment because tpu-inference does not support this project's
-Python, and it holds the chip while it serves, so a preflight that called
-`jax.devices()` would fail precisely when the server was up and working.
+validates the serving side: the exact LightEval dependency stack, the pinned
+vLLM container image, the exported checkpoint it will be pointed at, and the
+recipe's task names. The TPU itself is deliberately not initialized. vLLM
+holds the chip while it serves, so a preflight that called `jax.devices()`
+would fail precisely when the server was up and working.
 
 It exists because the failures worth catching here are silent, expensive, or
 both. A merged export missing its tokenizer files or its chat
@@ -32,10 +31,17 @@ import argparse
 import difflib
 import inspect
 import json
+import platform
+import subprocess
+from collections.abc import Mapping, Sequence
 from importlib import metadata
 from pathlib import Path
 
 from open_r1_tpu.evaluate import load_eval_config, resolve_settings
+from open_r1_tpu.evaluation_stack import (
+    EVALUATION_PACKAGE_VERSIONS,
+    EVALUATION_PYTHON_VERSION,
+)
 
 DEFAULT_CONFIG = "recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml"
 
@@ -149,6 +155,81 @@ def _version(distribution: str) -> str:
         return "unknown"
 
 
+def check_dependency_versions(
+    installed: Mapping[str, str] | None = None,
+    *,
+    python_version: str | None = None,
+) -> list[str]:
+    """Reject an evaluation stack that differs from the validated lock."""
+    actual = (
+        dict(installed)
+        if installed is not None
+        else {name: _version(name) for name in EVALUATION_PACKAGE_VERSIONS}
+    )
+    actual_python = python_version or platform.python_version()
+    errors: list[str] = []
+    if actual_python != EVALUATION_PYTHON_VERSION:
+        errors.append(
+            f"Python is {actual_python}, expected {EVALUATION_PYTHON_VERSION}; "
+            "run `uv sync --frozen --extra eval --extra test`"
+        )
+    for name, expected in EVALUATION_PACKAGE_VERSIONS.items():
+        found = actual.get(name, "unknown")
+        if found != expected:
+            errors.append(
+                f"{name} is {found}, expected {expected}; run "
+                "`uv sync --frozen --extra eval --extra test`"
+            )
+    return errors
+
+
+def check_server_runtime(settings: Mapping[str, object]) -> tuple[list[str], list[str]]:
+    """Verify the supported container wrapper and immutable image are ready."""
+    image = settings.get("server_image")
+    raw_serve_command = settings.get("serve_command", [])
+    serve_command = (
+        [str(part) for part in raw_serve_command]
+        if isinstance(raw_serve_command, Sequence)
+        and not isinstance(raw_serve_command, str)
+        else []
+    )
+    if image is None:
+        return (
+            [],
+            [
+                "server.image is null; the external inference environment is "
+                "not reproducibility-checked"
+            ],
+        )
+    if not serve_command or not serve_command[0].endswith("run_vllm_tpu_container.sh"):
+        return (
+            [],
+            [
+                "custom server command is not the supported container wrapper; "
+                "its runtime was not checked"
+            ],
+        )
+
+    command = [*serve_command, "--image", str(image), "--check"]
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return ([f"could not check vLLM container runtime: {error}"], [])
+    if completed.returncode:
+        detail = (completed.stderr or completed.stdout).strip()
+        return (
+            ["vLLM container preflight failed" + (f": {detail}" if detail else "")],
+            [],
+        )
+    return ([], [])
+
+
 def check_export_dir(model_path: str) -> tuple[list[str], list[str]]:
     """Check an exported checkpoint for what vLLM needs to serve it as chat.
 
@@ -210,19 +291,7 @@ def main() -> None:
     errors: list[str] = []
     warnings: list[str] = []
 
-    if _version("lighteval") == "unknown":
-        errors.append(
-            "lighteval is not installed; install the evaluation extra with "
-            "`pip install -e '.[eval]'`"
-        )
-    # vLLM is not expected in this environment -- it cannot be, on this Python
-    # -- so its absence here is not an error. Whether the server is reachable
-    # is answered by the server itself, not by an import.
-    if _version("latex2sympy2-extended") == "unknown":
-        warnings.append(
-            "latex2sympy2-extended is not installed; maths tasks fall back to "
-            "string matching, which understates accuracy substantially"
-        )
+    errors.extend(check_dependency_versions())
 
     export_errors, export_warnings = check_export_dir(settings["model_path"])
     errors.extend(export_errors)
@@ -232,13 +301,22 @@ def main() -> None:
     errors.extend(task_errors)
     warnings.extend(task_warnings)
 
+    runtime_errors, runtime_warnings = check_server_runtime(settings)
+    errors.extend(runtime_errors)
+    warnings.extend(runtime_warnings)
+
     if str(settings["summary_path"]).startswith("gs://"):
         try:
             import gcsfs  # noqa: F401
         except ImportError:
             errors.append("writing the summary to GCS requires the gcsfs package")
 
-    print(f"LightEval {_version('lighteval')}")
+    print(
+        f"Evaluation stack: Python {platform.python_version()}, "
+        f"LightEval {_version('lighteval')}"
+    )
+    if settings.get("server_image"):
+        print(f"vLLM image: {settings['server_image']}")
     print(f"Export: {settings['model_path']}")
     print(
         f"Tier {settings['tier']}: {len(settings['tasks'])} tasks x "

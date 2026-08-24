@@ -11,8 +11,8 @@ The stack is three decoupled layers:
 - generation is vLLM on the TPU, serving the merged export behind an
   OpenAI-compatible endpoint;
 - the harness is LightEval, reached over HTTP through its litellm backend;
-- scoring is whatever metric the LightEval task declares, which for maths is
-  Math-Verify's symbolic equivalence rather than string equality.
+- scoring is whatever metric the LightEval task declares, which for maths uses
+  latex2sympy2-extended symbolic equivalence rather than string equality.
 
 This module owns the layers either side of LightEval: it validates the recipe,
 runs the harness once per seed, and then reduces what the harness wrote into a
@@ -20,7 +20,8 @@ single summary. Nothing here imports JAX, Tunix, or vLLM -- LightEval is reached
 as a subprocess and the server over a socket -- which is what keeps the reducing
 and command-building logic testable on a laptop with no TPU stack installed.
 
-Install the harness with the `eval` extra: `pip install -e '.[eval]'`.
+Install the frozen host stack and pinned inference image with
+`scripts/setup_tpu_vm.sh --with-eval`.
 
 Evaluation runs after training rather than beside it. Only one process can hold
 the TPU chip, so the training job must have exited before the server starts.
@@ -43,6 +44,7 @@ import argparse
 import json
 import logging
 import os
+import platform
 import shlex
 import statistics
 import subprocess
@@ -56,6 +58,10 @@ from typing import Any
 import yaml
 
 from open_r1_tpu.config import load_config
+from open_r1_tpu.evaluation_stack import (
+    EVALUATION_PACKAGE_VERSIONS,
+    VLLM_TPU_IMAGE,
+)
 from open_r1_tpu.logging import LOG_LEVELS, configure_logging
 
 LOGGER = logging.getLogger(__name__)
@@ -87,10 +93,11 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
 DEFAULT_LIGHTEVAL_BINARY = "lighteval"
 # vLLM is an external service, not a dependency: nothing here imports it, and
-# it cannot share this environment anyway because tpu-inference classifies as
-# Python 3.10-3.12 while this project is on 3.13. Override this to reach it
-# wherever it does live -- a 3.12 virtualenv's binary, or a container.
-DEFAULT_SERVE_COMMAND = ("vllm", "serve")
+# it cannot share this environment anyway because its Python/JAX/PyTorch stack
+# differs from the host's. The default wrapper runs the immutable TPU image and
+# owns model/cache mounts plus container cleanup. Set server.image to null when
+# overriding this with an external non-container command.
+DEFAULT_SERVE_COMMAND = ("scripts/run_vllm_tpu_container.sh",)
 
 # LightEval writes one Parquet row per evaluated document, with the model's
 # generations nested under this column. Its inner field names have moved
@@ -103,15 +110,6 @@ RESPONSE_COLUMNS = ("model_response", "__model_response__")
 _TEXT_KEYS = ("text", "final_text", "generated_text", "predictions", "result")
 _TOKEN_KEYS = ("output_tokens", "generated_tokens", "num_generated_tokens")
 
-# Distributions whose versions pin the meaning of a number. Recorded with every
-# summary because a result that does not name its stack cannot be compared with
-# one produced months later. vLLM is absent because it runs outside this
-# environment and would always read back as "unknown"; the summary records the
-# serve command instead, which is the honest record of what served the model.
-# latex2sympy2-extended rather than math-verify: LightEval 0.13 dropped the
-# latter and parses LaTeX through the former directly.
-_STACK_DISTRIBUTIONS = ("lighteval", "litellm", "latex2sympy2-extended")
-
 
 def _version(distribution: str) -> str:
     try:
@@ -122,7 +120,10 @@ def _version(distribution: str) -> str:
 
 def stack_versions() -> dict[str, str]:
     """Record the versions that give the numbers their meaning."""
-    return {name: _version(name) for name in _STACK_DISTRIBUTIONS}
+    return {
+        "python": platform.python_version(),
+        **{name: _version(name) for name in EVALUATION_PACKAGE_VERSIONS},
+    }
 
 
 def validate_eval_config(config: dict[str, Any]) -> None:
@@ -167,6 +168,22 @@ def validate_eval_config(config: dict[str, Any]) -> None:
         raise ValueError(
             "server.serve_command must be a non-empty list of strings or null"
         )
+    server_image = config["server"].get("image")
+    if server_image is not None and (
+        not isinstance(server_image, str) or not server_image
+    ):
+        raise ValueError("server.image must be an immutable image string or null")
+    if server_image is not None:
+        prefix, marker, digest = server_image.rpartition("@sha256:")
+        if (
+            not marker
+            or not prefix
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise ValueError(
+                "server.image must include an immutable @sha256:<64 hex> digest"
+            )
 
     port = config["server"].get("port", DEFAULT_PORT)
     if not isinstance(port, int) or not 1 <= port <= 65535:
@@ -227,6 +244,13 @@ def resolve_settings(config: dict[str, Any]) -> dict[str, Any]:
     # one, so it is derived once here rather than being set twice in the recipe.
     served_model_name = str(server.get("served_model_name") or Path(model_path).name)
     output_dir = str(reporting.get("output_dir") or Path(model_path).parent / "eval")
+    serve_command = server.get("serve_command")
+    # An omitted command selects the supported container default. Supplying a
+    # command selects an external service unless its recipe also names an image;
+    # this keeps the Python 3.12 virtualenv escape hatch straightforward.
+    server_image = server.get(
+        "image", VLLM_TPU_IMAGE if serve_command is None else None
+    )
 
     return {
         "tier": str(evaluation.get("tier", "unnamed")),
@@ -246,8 +270,9 @@ def resolve_settings(config: dict[str, Any]) -> dict[str, Any]:
         "base_url": str(server.get("base_url") or f"http://{host}:{port}/v1"),
         "max_model_len": server.get("max_model_len"),
         "serve_command": [
-            str(part) for part in (server.get("serve_command") or DEFAULT_SERVE_COMMAND)
+            str(part) for part in (serve_command or DEFAULT_SERVE_COMMAND)
         ],
+        "server_image": server_image,
         "temperature": float(sampling.get("temperature", DEFAULT_TEMPERATURE)),
         "top_p": float(sampling.get("top_p", DEFAULT_TOP_P)),
         "max_new_tokens": int(sampling.get("max_new_tokens", DEFAULT_MAX_NEW_TOKENS)),
@@ -324,8 +349,13 @@ def vllm_serve_command(settings: Mapping[str, Any]) -> list[str]:
     server can live outside this environment -- which it must, since
     tpu-inference does not support the Python this project runs on.
     """
-    command = [
-        *settings.get("serve_command", DEFAULT_SERVE_COMMAND),
+    command = [*settings.get("serve_command", DEFAULT_SERVE_COMMAND)]
+    if settings.get("server_image"):
+        # The supported container wrapper owns all Docker-specific arguments.
+        # `--` leaves every following option to vLLM, while the immutable image
+        # remains visible in the durable summary rather than hidden in a script.
+        command += ["--image", str(settings["server_image"]), "--"]
+    command += [
         str(settings["model_path"]),
         "--served-model-name",
         str(settings["served_model_name"]),
@@ -743,6 +773,8 @@ def build_summary(
         "max_samples": settings.get("max_samples"),
         "stack": stack_versions(),
         "serve_command": list(settings.get("serve_command", DEFAULT_SERVE_COMMAND)),
+        "server_image": settings.get("server_image"),
+        "server_command": vllm_serve_command(settings),
         "tasks_metrics": aggregate_across_seeds(per_seed_metrics),
         "generation": generation,
         "per_seed_generation": {str(k): v for k, v in per_seed_stats.items()},
@@ -869,7 +901,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--print-server-command",
         action="store_true",
-        help="Print the vllm serve command for this recipe and exit",
+        help="Print the configured vLLM server command for this recipe and exit",
     )
     parser.add_argument(
         "--log-level",

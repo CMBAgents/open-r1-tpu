@@ -7,6 +7,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from open_r1_tpu import evaluate
+from open_r1_tpu.evaluation_stack import VLLM_TPU_IMAGE
 
 RECIPE_DIR = Path(__file__).parents[1] / "recipes/Qwen3-1.7B-Math/eval"
 TIER0 = RECIPE_DIR / "tier0_smoke.yaml"
@@ -38,6 +39,8 @@ def test_every_tier_recipe_loads(recipe):
     assert settings["tasks"]
     assert settings["seeds"]
     assert settings["max_new_tokens"] > 0
+    assert settings["serve_command"] == ["scripts/run_vllm_tpu_container.sh"]
+    assert settings["server_image"] == VLLM_TPU_IMAGE
 
 
 def test_tier_recipes_keep_deployment_values_neutral():
@@ -138,6 +141,19 @@ def test_invalid_wandb_mode_is_rejected():
         )
 
 
+@pytest.mark.parametrize(
+    "image",
+    ["vllm/vllm-tpu:latest", "vllm/vllm-tpu:v0.27.0", "image@sha256:short"],
+)
+def test_server_image_must_be_an_immutable_digest(image):
+    with pytest.raises(ValueError, match="immutable"):
+        evaluate.validate_eval_config(minimal_config(server={"image": image}))
+
+
+def test_an_external_server_can_explicitly_disable_the_image():
+    evaluate.validate_eval_config(minimal_config(server={"image": None}))
+
+
 # --- resolved settings and command construction ----------------------------
 
 
@@ -208,6 +224,20 @@ def test_the_server_binary_can_live_outside_this_environment():
 
     assert command[:2] == ["/opt/vllm-venv/bin/vllm", "serve"]
     assert command[2] == "artifacts/model"
+
+
+def test_the_default_server_is_the_pinned_tpu_container():
+    settings = evaluate.resolve_settings(minimal_config())
+
+    command = evaluate.vllm_serve_command(settings)
+
+    assert command[:4] == [
+        "scripts/run_vllm_tpu_container.sh",
+        "--image",
+        VLLM_TPU_IMAGE,
+        "--",
+    ]
+    assert command[4] == "artifacts/model"
 
 
 def test_a_containerised_server_command_is_accepted():
@@ -433,10 +463,21 @@ def test_build_summary_records_the_stack_and_the_sampling_parameters():
     )
 
     assert summary["sampling"]["temperature"] == evaluate.DEFAULT_TEMPERATURE
-    assert set(summary["stack"]) >= {"lighteval", "latex2sympy2-extended"}
-    # vLLM runs outside this environment, so what served the model is
-    # recorded as the command rather than as an importable version.
-    assert summary["serve_command"] == ["vllm", "serve"]
+    assert set(summary["stack"]) >= {
+        "python",
+        "lighteval",
+        "litellm",
+        "latex2sympy2-extended",
+    }
+    # vLLM runs outside this environment, so the immutable image and complete
+    # command are recorded rather than an importable package version.
+    assert summary["serve_command"] == ["scripts/run_vllm_tpu_container.sh"]
+    assert summary["server_image"] == VLLM_TPU_IMAGE
+    assert summary["server_command"][:3] == [
+        "scripts/run_vllm_tpu_container.sh",
+        "--image",
+        VLLM_TPU_IMAGE,
+    ]
     assert summary["tasks_metrics"]["t"]["acc"]["mean"] == pytest.approx(0.4)
     assert summary["generation"]["format_rate"]["mean"] == pytest.approx(1.0)
     # Absent in every seed, so it stays absent rather than becoming 0.0.

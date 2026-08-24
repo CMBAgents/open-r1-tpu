@@ -2,7 +2,9 @@
 # Provision the open-r1-tpu Python environment on a TPU VM.
 #
 # Installs uv, the pinned CPython build from .python-version, a project
-# virtualenv, and the project itself (which pulls in Tunix and jax[tpu]).
+# virtualenv, and the project itself (which pulls in Tunix and jax[tpu]). With
+# --with-eval it also installs the locked LightEval stack and pulls the pinned
+# vLLM TPU service image.
 # Safe to re-run: existing components are reused unless --recreate is passed.
 set -euo pipefail
 
@@ -10,15 +12,18 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${REPO_ROOT}/.venv"
 ENV_FILE="${HOME}/.open-r1-tpu.env"
 UV_BIN_DIR="${HOME}/.local/bin"
+UV_VERSION="0.12.5"
 RECREATE=0
 VERIFY=1
+WITH_EVAL=0
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/setup_tpu_vm.sh [--recreate] [--skip-verify]
+Usage: scripts/setup_tpu_vm.sh [--recreate] [--skip-verify] [--with-eval]
 
   --recreate      Delete and rebuild .venv from scratch.
   --skip-verify   Skip the JAX device check and unit tests.
+  --with-eval     Install the locked evaluation stack and pull vLLM TPU.
 USAGE
 }
 
@@ -26,6 +31,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --recreate) RECREATE=1 ;;
     --skip-verify) VERIFY=0 ;;
+    --with-eval) WITH_EVAL=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -48,11 +54,13 @@ fi
 
 # --- uv ------------------------------------------------------------------
 export PATH="${UV_BIN_DIR}:${PATH}"
-if command -v uv >/dev/null 2>&1; then
+if command -v uv >/dev/null 2>&1 \
+  && [[ "$(uv --version)" == "uv ${UV_VERSION}"* ]]; then
   log "uv already installed: $(uv --version)"
 else
-  log "Installing uv"
-  curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="${UV_BIN_DIR}" sh
+  log "Installing pinned uv ${UV_VERSION}"
+  curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" \
+    | env UV_INSTALL_DIR="${UV_BIN_DIR}" sh
   hash -r
   log "Installed $(uv --version)"
 fi
@@ -85,10 +93,21 @@ fi
 
 # --- Project dependencies ------------------------------------------------
 # jax[tpu] and libtpu arrive transitively through the pinned google-tunix
-# revision in pyproject.toml; no CUDA or PyTorch wheels are installed.
-log "Installing open-r1-tpu and test extras (this pulls jax[tpu] and libtpu)"
+# revision in pyproject.toml; no CUDA or PyTorch wheels are installed on the
+# host. --frozen makes the checked-in uv.lock authoritative.
+SYNC_ARGS=(--frozen --extra test)
+if [[ ${WITH_EVAL} -eq 1 ]]; then
+  SYNC_ARGS+=(--extra eval)
+fi
+log "Installing the locked open-r1-tpu environment"
 cd "${REPO_ROOT}"
-uv pip install --python "${VENV_DIR}/bin/python" -e '.[test]'
+uv sync "${SYNC_ARGS[@]}"
+
+# --- Containerised inference service ------------------------------------
+if [[ ${WITH_EVAL} -eq 1 ]]; then
+  log "Pulling the immutable vLLM TPU service image"
+  scripts/run_vllm_tpu_container.sh --pull-only
+fi
 
 # --- Run-time environment file -------------------------------------------
 # Kept outside the repository so entity/project names and tokens never land in
@@ -145,3 +164,14 @@ cat <<NEXT
   python -m open_r1_tpu.check_env
   scripts/run_sft_tpu.sh training.project_name="\${WANDB_PROJECT}"
 NEXT
+
+if [[ ${WITH_EVAL} -eq 1 ]]; then
+  cat <<'NEXT_EVAL'
+
+  # Evaluation is installed and the immutable service image is cached. Once a
+  # merged export exists, preflight and run the smoke tier:
+  python -m open_r1_tpu.check_eval_env \
+    --config recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml
+  RECIPE=recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml scripts/run_eval_tpu.sh
+NEXT_EVAL
+fi

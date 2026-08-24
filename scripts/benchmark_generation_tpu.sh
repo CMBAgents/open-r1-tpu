@@ -16,7 +16,8 @@ set -euo pipefail
 #
 #   MODEL_PATH=models/Qwen3-1.7B-Base \
 #     ./scripts/benchmark_generation_tpu.sh \
-#       server.serve_command='["/home/me/.venv-vllm/bin/vllm", "serve"]'
+#       server.serve_command='["/home/me/.venv-vllm/bin/vllm", "serve"]' \
+#       server.image=null
 
 EVAL_RECIPE="${EVAL_RECIPE:-recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml}"
 SFT_RECIPE="${SFT_RECIPE:-recipes/Qwen3-1.7B-Math/sft/config_distill.yaml}"

@@ -4,8 +4,18 @@ from pathlib import Path
 import pytest
 
 from open_r1_tpu import check_eval_env
-from open_r1_tpu.check_eval_env import check_export_dir, check_task_names
+from open_r1_tpu.check_eval_env import (
+    check_dependency_versions,
+    check_export_dir,
+    check_server_runtime,
+    check_task_names,
+)
 from open_r1_tpu.evaluate import load_eval_config, resolve_settings
+from open_r1_tpu.evaluation_stack import (
+    EVALUATION_PACKAGE_VERSIONS,
+    EVALUATION_PYTHON_VERSION,
+    VLLM_TPU_IMAGE,
+)
 
 
 def write_export(tmp_path, *, tokenizer_config=None, weights="model.safetensors"):
@@ -17,6 +27,72 @@ def write_export(tmp_path, *, tokenizer_config=None, weights="model.safetensors"
     if tokenizer_config is not None:
         (directory / "tokenizer_config.json").write_text(json.dumps(tokenizer_config))
     return directory
+
+
+def test_the_validated_dependency_stack_passes():
+    assert (
+        check_dependency_versions(
+            EVALUATION_PACKAGE_VERSIONS,
+            python_version=EVALUATION_PYTHON_VERSION,
+        )
+        == []
+    )
+
+
+def test_dependency_drift_is_an_error():
+    installed = dict(EVALUATION_PACKAGE_VERSIONS)
+    installed["lighteval"] = "99.0.0"
+
+    errors = check_dependency_versions(
+        installed,
+        python_version=EVALUATION_PYTHON_VERSION,
+    )
+
+    assert any("lighteval is 99.0.0, expected 0.13.0" in error for error in errors)
+
+
+def test_python_drift_is_an_error():
+    errors = check_dependency_versions(
+        EVALUATION_PACKAGE_VERSIONS,
+        python_version="3.13.13",
+    )
+
+    assert any("Python is 3.13.13" in error for error in errors)
+
+
+def test_external_server_runtime_is_reported_as_unchecked():
+    settings = resolve_settings(
+        {
+            "eval": {"tasks": ["gsm8k|0"], "seeds": [0]},
+            "server": {
+                "model_path": "models/example",
+                "serve_command": ["vllm", "serve"],
+                "image": None,
+            },
+            "sampling": {},
+            "reporting": {},
+        }
+    )
+
+    errors, warnings = check_server_runtime(settings)
+
+    assert errors == []
+    assert any("not reproducibility-checked" in warning for warning in warnings)
+
+
+def test_container_runtime_check_uses_the_pinned_image(tmp_path):
+    checker = tmp_path / "run_vllm_tpu_container.sh"
+    checker.write_text(
+        "#!/usr/bin/env bash\n"
+        f"[[ $1 == --image && $2 == '{VLLM_TPU_IMAGE}' && $3 == --check ]]\n"
+    )
+    checker.chmod(0o755)
+    settings = {
+        "serve_command": [str(checker)],
+        "server_image": VLLM_TPU_IMAGE,
+    }
+
+    assert check_server_runtime(settings) == ([], [])
 
 
 def test_a_complete_export_passes(tmp_path):

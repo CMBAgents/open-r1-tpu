@@ -15,9 +15,10 @@ set -euo pipefail
 #
 #   ./scripts/run_eval_tpu.sh server.model_path=models/Qwen3-1.7B-Base
 #
-# Needs the `eval` extra: pip install -e '.[eval]'. Only one process can hold the
-# TPU chip, so the training job must have exited before this starts. Set
-# SKIP_SERVER=1 to reuse a server that is already up.
+# Needs the locked host stack and pinned service image:
+# `scripts/setup_tpu_vm.sh --with-eval`. Only one process can hold the TPU chip,
+# so the training job must have exited before this starts. Set SKIP_SERVER=1 to
+# reuse a server that is already up.
 
 RECIPE="${RECIPE:-recipes/Qwen3-1.7B-Math/eval/tier1_core.yaml}"
 SERVER_LOG="${SERVER_LOG:-artifacts/vllm-serve.log}"

@@ -26,10 +26,9 @@ dependencies = [
 # Benchmark evaluation: the LightEval harness and what it needs to score this
 # project's tasks. Optional because a training-only install has no use for it.
 #
-# Nothing here is pinned yet. The evaluation protocol wants a frozen, recorded
-# stack, but pinning versions that have never run on this hardware would be
-# false precision; open_r1_tpu.evaluate records the installed versions in every
-# summary, which is what the first successful run should pin from.
+# Direct dependencies are exact versions from the first successful v6e run;
+# uv.lock freezes their transitive closure. Keep these declarations synchronized
+# with open_r1_tpu.evaluation_stack -- a unit test enforces the relationship.
 eval = [
   # Three LightEval extras, all load-bearing:
   #   extended_tasks - IFEval and friends live under lighteval/tasks/extended.
@@ -46,21 +45,32 @@ eval = [
   # table -- a repo id with two slashes, which no Hub lookup can resolve, so
   # GSM8K could not load at all. 0.13 is also the release whose CLI options and
   # ModelConfig fields this package is written against.
-  "lighteval[extended_tasks,litellm,math]>=0.13",
+  "lighteval[extended_tasks,litellm,math]==0.13.0",
+  # LightEval reaches the OpenAI-compatible service through LiteLLM. Declaring
+  # it directly prevents the backend protocol from drifting under an unchanged
+  # LightEval release.
+  "litellm==1.97.0",
+  # Symbolic maths scoring moved here in LightEval 0.13.
+  "latex2sympy2-extended==1.0.6",
+  # Dataset/Hub versions affect task revisions, cache behavior, and therefore
+  # which examples are evaluated. They are part of the protocol, not tooling.
+  "datasets==5.0.1",
+  "huggingface-hub==1.28.0",
   # Reading LightEval's Parquet detail shards.
-  "pyarrow>=15.0",
+  "pyarrow==25.0.1",
   # LightEval imports xxhash without declaring it, so the version is whatever
   # `datasets` happens to drag in. 4.0.0 (2026-08-12) stopped accepting str,
   # and LightEval hashes `doc.query` -- a str -- for every sample, so metric
   # computation dies after generation has already been paid for. Pinned here
   # because LightEval cannot pin what it does not declare.
-  "xxhash<4",
+  "xxhash==3.8.1",
 ]
 # vLLM is deliberately absent. Nothing here imports it -- open_r1_tpu.evaluate
-# starts `vllm serve` as a subprocess and talks to it over HTTP -- so declaring
+# starts an external inference service and talks to it over HTTP -- so declaring
 # it would buy nothing and cost the install: tpu-inference classifies as Python
 # 3.10-3.12 and this project is on 3.13, which makes the extra unresolvable.
-# Treat vLLM as an external service and point server.serve_command at it.
+# The supported service is the pinned container; custom services can be selected
+# with server.serve_command and server.image=null.
 test = ["pytest>=8.0"]
 # Linters, type checker, and the pre-commit hook. Kept free of the TPU stack
 # because none of them need it, not because anything runs off-target.
