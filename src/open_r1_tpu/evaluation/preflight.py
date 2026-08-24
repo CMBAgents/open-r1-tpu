@@ -38,10 +38,15 @@ from collections.abc import Mapping, Sequence
 from importlib import metadata
 from pathlib import Path
 
-from open_r1_tpu.evaluation.run import load_eval_config, resolve_settings
+from open_r1_tpu.evaluation.run import (
+    container_image_provenance,
+    load_eval_config,
+    resolve_settings,
+)
 from open_r1_tpu.evaluation.stack import (
     EVALUATION_PACKAGE_VERSIONS,
     EVALUATION_PYTHON_VERSION,
+    VLLM_TPU_SERVICE_VERSIONS,
 )
 
 DEFAULT_CONFIG = "recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml"
@@ -185,7 +190,7 @@ def check_dependency_versions(
 
 
 def check_server_runtime(settings: Mapping[str, object]) -> tuple[list[str], list[str]]:
-    """Verify the supported container wrapper and immutable image are ready."""
+    """Verify the supported wrapper, local image, and service versions."""
     image = settings.get("server_image")
     raw_serve_command = settings.get("serve_command", [])
     serve_command = (
@@ -228,6 +233,24 @@ def check_server_runtime(settings: Mapping[str, object]) -> tuple[list[str], lis
             ["vLLM container preflight failed" + (f": {detail}" if detail else "")],
             [],
         )
+
+    try:
+        provenance = container_image_provenance(settings)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+        return ([f"could not read vLLM container provenance: {error}"], [])
+    if provenance is None:
+        return (["vLLM container preflight returned no provenance"], [])
+    versions = provenance.get("service_versions")
+    if not isinstance(versions, Mapping):
+        return (["vLLM container provenance omitted service_versions"], [])
+    errors = [
+        f"vLLM container has {name} {versions.get(name, 'unknown')}, "
+        f"expected {expected}"
+        for name, expected in VLLM_TPU_SERVICE_VERSIONS.items()
+        if versions.get(name) != expected
+    ]
+    if errors:
+        return (errors, [])
     return ([], [])
 
 

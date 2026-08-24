@@ -14,7 +14,8 @@ from open_r1_tpu.evaluation.run import load_eval_config, resolve_settings
 from open_r1_tpu.evaluation.stack import (
     EVALUATION_PACKAGE_VERSIONS,
     EVALUATION_PYTHON_VERSION,
-    VLLM_TPU_IMAGE,
+    VLLM_TPU_SERVICE_VERSIONS,
+    vllm_tpu_image_tag,
 )
 
 
@@ -80,19 +81,67 @@ def test_external_server_runtime_is_reported_as_unchecked():
     assert any("not reproducibility-checked" in warning for warning in warnings)
 
 
-def test_container_runtime_check_uses_the_pinned_image(tmp_path):
+def test_container_runtime_check_uses_the_derived_image_and_versions(tmp_path):
     checker = tmp_path / "run_vllm_tpu_container.sh"
     checker.write_text(
         "#!/usr/bin/env bash\n"
-        f"[[ $1 == --image && $2 == '{VLLM_TPU_IMAGE}' && $3 == --check ]]\n"
+        f"[[ $1 == --image && $2 == '{vllm_tpu_image_tag()}' ]] || exit 1\n"
+        "if [[ $3 == --check ]]; then exit 0; fi\n"
+        "if [[ $3 == --provenance ]]; then\n"
+        "  printf '%s' "
+        '\'{"image_id":"sha256:local","service_versions":\'\n'
+        "  printf '%s\\n' "
+        '\'{"vllm-tpu":"0.27.0","tpu-inference":"0.27.0"}}\'\n'
+        "  exit 0\n"
+        "fi\n"
+        "exit 1\n"
     )
     checker.chmod(0o755)
     settings = {
         "serve_command": [str(checker)],
-        "server_image": VLLM_TPU_IMAGE,
+        "server_image": vllm_tpu_image_tag(),
     }
 
     assert check_server_runtime(settings) == ([], [])
+
+
+def test_container_runtime_check_names_the_build_command_when_image_is_absent(tmp_path):
+    checker = tmp_path / "run_vllm_tpu_container.sh"
+    checker.write_text(
+        "#!/usr/bin/env bash\n"
+        "echo 'Run scripts/run_vllm_tpu_container.sh --build first.' >&2\n"
+        "exit 1\n"
+    )
+    checker.chmod(0o755)
+
+    errors, warnings = check_server_runtime(
+        {"serve_command": [str(checker)], "server_image": vllm_tpu_image_tag()}
+    )
+
+    assert warnings == []
+    assert "scripts/run_vllm_tpu_container.sh --build" in errors[0]
+
+
+def test_container_runtime_check_rejects_wrong_service_versions(tmp_path):
+    checker = tmp_path / "run_vllm_tpu_container.sh"
+    checker.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ $3 == --check ]]; then exit 0; fi\n"
+        "printf '%s' "
+        '\'{"image_id":"sha256:local","service_versions":\'\n'
+        "printf '%s\\n' "
+        '\'{"vllm-tpu":"0.26.0","tpu-inference":"0.27.0"}}\'\n'
+    )
+    checker.chmod(0o755)
+
+    errors, _ = check_server_runtime(
+        {"serve_command": [str(checker)], "server_image": vllm_tpu_image_tag()}
+    )
+
+    assert any(
+        f"vllm-tpu 0.26.0, expected {VLLM_TPU_SERVICE_VERSIONS['vllm-tpu']}" in error
+        for error in errors
+    )
 
 
 def test_a_complete_export_passes(tmp_path):

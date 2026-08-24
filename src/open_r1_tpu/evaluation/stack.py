@@ -1,4 +1,4 @@
-"""Immutable versions that define the supported evaluation environment.
+"""Versions and build inputs that define the supported evaluation environment.
 
 Keep this module dependency-free: the container and setup shell scripts import
 it through ``PYTHONPATH=src`` before the project environment necessarily
@@ -6,6 +6,9 @@ exists. Direct Python requirements are repeated in ``pyproject.toml`` and the
 unit suite checks that the two declarations cannot drift apart; ``uv.lock``
 then freezes the complete transitive environment.
 """
+
+from hashlib import sha256
+from pathlib import Path
 
 EVALUATION_PYTHON_VERSION = "3.13.14"
 
@@ -19,10 +22,31 @@ EVALUATION_PACKAGE_VERSIONS = {
     "xxhash": "3.8.1",
 }
 
-# Tag plus registry digest: the readable tag identifies the published TPU
-# image release, while the digest prevents the tag from resolving to different
-# bytes later. The digest, not internal package metadata, is authoritative.
-VLLM_TPU_IMAGE = (
-    "docker.io/vllm/vllm-tpu:v0.27.0@"
-    "sha256:d6748bc7b1b020ab6411506d4bf30f8bfabb5db2b8505328f26d1a545b479df8"
+# The only remote image reference: the digest pins the Debian 12/Python 3.12
+# base that the local service image is built from.
+VLLM_TPU_BASE_IMAGE = (
+    "python:3.12-slim-bookworm@"
+    "sha256:a116514e19457bcb7af7efe9c3dd0b9b71e85b317694e7882a1c52aa15a78134"
 )
+VLLM_TPU_IMAGE_NAME = "open-r1-tpu-vllm"
+VLLM_TPU_SERVICE_VERSIONS = {
+    "vllm-tpu": "0.27.0",
+    "tpu-inference": "0.27.0",
+}
+
+
+def vllm_tpu_image_tag(
+    dockerfile: str | Path | None = None,
+    lockfile: str | Path | None = None,
+) -> str:
+    """Derive the local image tag from the committed build inputs.
+
+    The raw Dockerfile bytes precede the raw lockfile bytes without a separator,
+    matching ``sha256(Dockerfile || vllm-tpu.lock)``. Optional paths keep this
+    function easy to exercise without Docker or the project environment.
+    """
+    repository_root = Path(__file__).resolve().parents[3]
+    dockerfile_path = Path(dockerfile or repository_root / "docker/vllm-tpu/Dockerfile")
+    lockfile_path = Path(lockfile or repository_root / "docker/vllm-tpu/vllm-tpu.lock")
+    digest = sha256(dockerfile_path.read_bytes() + lockfile_path.read_bytes())
+    return f"{VLLM_TPU_IMAGE_NAME}:{digest.hexdigest()[:12]}"

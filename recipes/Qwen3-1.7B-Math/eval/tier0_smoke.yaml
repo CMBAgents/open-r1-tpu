@@ -34,10 +34,11 @@ server:
   model_path: artifacts/Qwen3-1.7B-Math/merged
   served_model_name: null
   # The host stays on the locked Python 3.13 LightEval stack; this wrapper runs
-  # vLLM in the official TPU image with persistent Hub/XLA cache volumes and
-  # explicit cleanup. The tag is readable and the digest makes it immutable.
+  # vLLM in the local image derived from docker/vllm-tpu's committed build
+  # inputs, with persistent Hub/XLA cache volumes and explicit cleanup.
+  # Omit image to select that derived tag; set a digest-pinned remote image only
+  # for an externally managed rollback or escape hatch.
   serve_command: ["scripts/run_vllm_tpu_container.sh"]
-  image: "docker.io/vllm/vllm-tpu:v0.27.0@sha256:d6748bc7b1b020ab6411506d4bf30f8bfabb5db2b8505328f26d1a545b479df8"
   host: 127.0.0.1
   port: 8000
   # Prompt plus completion. Must exceed sampling.max_new_tokens with room for

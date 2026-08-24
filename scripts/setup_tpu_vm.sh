@@ -3,7 +3,7 @@
 #
 # Installs uv, the pinned CPython build from .python-version, a project
 # virtualenv, and the project itself (which pulls in Tunix and jax[tpu]). With
-# --with-eval it also installs the locked LightEval stack and pulls the pinned
+# --with-eval it also installs the locked LightEval stack and builds the local
 # vLLM TPU service image.
 # Safe to re-run: existing components are reused unless --recreate is passed.
 set -euo pipefail
@@ -23,7 +23,7 @@ Usage: scripts/setup_tpu_vm.sh [--recreate] [--skip-verify] [--with-eval]
 
   --recreate      Delete and rebuild .venv from scratch.
   --skip-verify   Skip the JAX device check and unit tests.
-  --with-eval     Install the locked evaluation stack and pull vLLM TPU.
+  --with-eval     Install the locked evaluation stack and build vLLM TPU.
 USAGE
 }
 
@@ -105,8 +105,8 @@ uv sync "${SYNC_ARGS[@]}"
 
 # --- Containerised inference service ------------------------------------
 if [[ ${WITH_EVAL} -eq 1 ]]; then
-  log "Pulling the immutable vLLM TPU service image"
-  scripts/run_vllm_tpu_container.sh --pull-only
+  log "Building the local vLLM TPU service image"
+  scripts/run_vllm_tpu_container.sh --build
 fi
 
 # --- Run-time environment file -------------------------------------------
@@ -168,7 +168,7 @@ NEXT
 if [[ ${WITH_EVAL} -eq 1 ]]; then
   cat <<'NEXT_EVAL'
 
-  # Evaluation is installed and the immutable service image is cached. Once a
+  # Evaluation is installed and the local service image is built. Once a
   # merged export exists, preflight and run the smoke tier:
   python -m open_r1_tpu.evaluation.preflight \
     --config recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml

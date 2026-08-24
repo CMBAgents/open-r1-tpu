@@ -61,7 +61,8 @@ from open_r1_tpu.core.config import load_config
 from open_r1_tpu.core.logging import LOG_LEVELS, configure_logging
 from open_r1_tpu.evaluation.stack import (
     EVALUATION_PACKAGE_VERSIONS,
-    VLLM_TPU_IMAGE,
+    VLLM_TPU_BASE_IMAGE,
+    vllm_tpu_image_tag,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -94,9 +95,9 @@ DEFAULT_PORT = 8000
 DEFAULT_LIGHTEVAL_BINARY = "lighteval"
 # vLLM is an external service, not a dependency: nothing here imports it, and
 # it cannot share this environment anyway because its Python/JAX/PyTorch stack
-# differs from the host's. The default wrapper runs the immutable TPU image and
-# owns model/cache mounts plus container cleanup. Set server.image to null when
-# overriding this with an external non-container command.
+# differs from the host's. The default wrapper runs the locally built TPU image
+# and owns model/cache mounts plus container cleanup. Set server.image to null
+# when overriding this with an external non-container command.
 DEFAULT_SERVE_COMMAND = ("scripts/run_vllm_tpu_container.sh",)
 
 # LightEval writes one Parquet row per evaluated document, with the model's
@@ -172,17 +173,20 @@ def validate_eval_config(config: dict[str, Any]) -> None:
     if server_image is not None and (
         not isinstance(server_image, str) or not server_image
     ):
-        raise ValueError("server.image must be an immutable image string or null")
+        raise ValueError("server.image must be a non-empty image string or null")
     if server_image is not None:
+        local_tag = vllm_tpu_image_tag()
         prefix, marker, digest = server_image.rpartition("@sha256:")
-        if (
-            not marker
-            or not prefix
-            or len(digest) != 64
-            or any(character not in "0123456789abcdef" for character in digest)
-        ):
+        has_digest = (
+            bool(marker)
+            and bool(prefix)
+            and len(digest) == 64
+            and all(character in "0123456789abcdef" for character in digest)
+        )
+        if server_image != local_tag and not has_digest:
             raise ValueError(
-                "server.image must include an immutable @sha256:<64 hex> digest"
+                "server.image must be the derived local image tag or include an "
+                "immutable @sha256:<64 hex> digest"
             )
 
     port = config["server"].get("port", DEFAULT_PORT)
@@ -245,11 +249,16 @@ def resolve_settings(config: dict[str, Any]) -> dict[str, Any]:
     served_model_name = str(server.get("served_model_name") or Path(model_path).name)
     output_dir = str(reporting.get("output_dir") or Path(model_path).parent / "eval")
     serve_command = server.get("serve_command")
-    # An omitted command selects the supported container default. Supplying a
-    # command selects an external service unless its recipe also names an image;
-    # this keeps the Python 3.12 virtualenv escape hatch straightforward.
+    # The supported wrapper selects the local build spec whether it is implicit
+    # or written explicitly in a recipe. Any other command remains the external
+    # Python 3.12 escape hatch unless it explicitly supplies an image.
+    uses_supported_wrapper = serve_command is None or (
+        isinstance(serve_command, list)
+        and bool(serve_command)
+        and str(serve_command[0]).endswith("run_vllm_tpu_container.sh")
+    )
     server_image = server.get(
-        "image", VLLM_TPU_IMAGE if serve_command is None else None
+        "image", vllm_tpu_image_tag() if uses_supported_wrapper else None
     )
 
     return {
@@ -352,7 +361,7 @@ def vllm_serve_command(settings: Mapping[str, Any]) -> list[str]:
     command = [*settings.get("serve_command", DEFAULT_SERVE_COMMAND)]
     if settings.get("server_image"):
         # The supported container wrapper owns all Docker-specific arguments.
-        # `--` leaves every following option to vLLM, while the immutable image
+        # `--` leaves every following option to vLLM, while the selected image
         # remains visible in the durable summary rather than hidden in a script.
         command += ["--image", str(settings["server_image"]), "--"]
     command += [
@@ -370,6 +379,48 @@ def vllm_serve_command(settings: Mapping[str, Any]) -> list[str]:
         command += ["--max-model-len", str(settings["max_model_len"])]
     command += list(settings.get("server_extra_args", []))
     return command
+
+
+def container_image_provenance(settings: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Read image ID and service versions through the supported wrapper.
+
+    The wrapper supplies its own Docker/sudo detection, so this works on a
+    freshly provisioned TPU VM where Docker is intentionally not in the login
+    user's group. The command runs Python in the already-built image only; it
+    does not initialize vLLM or reserve the TPU.
+    """
+    image = settings.get("server_image")
+    raw_command = settings.get("serve_command", DEFAULT_SERVE_COMMAND)
+    command = [str(part) for part in raw_command]
+    if (
+        image is None
+        or not command
+        or not command[0].endswith("run_vllm_tpu_container.sh")
+    ):
+        return None
+
+    completed = subprocess.run(
+        [*command, "--image", str(image), "--provenance"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if completed.returncode:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise RuntimeError(
+            "could not read vLLM container provenance"
+            + (f": {detail}" if detail else "")
+        )
+    try:
+        provenance = json.loads(completed.stdout)
+    except ValueError as error:
+        raise RuntimeError(
+            f"vLLM container provenance was not valid JSON: {completed.stdout.strip()}"
+        ) from error
+    if not isinstance(provenance, dict):
+        raise RuntimeError("vLLM container provenance was not a JSON object")
+    return provenance
 
 
 def lighteval_command(
@@ -737,6 +788,7 @@ def build_summary(
     settings: Mapping[str, Any],
     per_seed_metrics: Mapping[int, Mapping[str, Mapping[str, float]]],
     per_seed_stats: Mapping[int, Mapping[str, Any]],
+    server_provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Assemble the durable record of one evaluation."""
     generation: dict[str, Any] = {}
@@ -759,6 +811,23 @@ def build_summary(
             "n": len(values),
         }
 
+    local_image = vllm_tpu_image_tag()
+    server_image = settings.get("server_image")
+    image_provenance = (
+        {
+            "spec_tag": local_image,
+            "image_id": (
+                server_provenance.get("image_id") if server_provenance else None
+            ),
+            "base_image": VLLM_TPU_BASE_IMAGE,
+            "service_versions": (
+                server_provenance.get("service_versions") if server_provenance else None
+            ),
+        }
+        if server_image == local_image
+        else None
+    )
+
     return {
         "tier": settings["tier"],
         "model_path": settings["model_path"],
@@ -773,7 +842,8 @@ def build_summary(
         "max_samples": settings.get("max_samples"),
         "stack": stack_versions(),
         "serve_command": list(settings.get("serve_command", DEFAULT_SERVE_COMMAND)),
-        "server_image": settings.get("server_image"),
+        "server_image": server_image,
+        "server_image_provenance": image_provenance,
         "server_command": vllm_serve_command(settings),
         "tasks_metrics": aggregate_across_seeds(per_seed_metrics),
         "generation": generation,
@@ -869,6 +939,7 @@ def log_summary_to_wandb(
 
 def run(settings: dict[str, Any]) -> dict[str, Any]:
     """Evaluate every seed, then reduce, persist, and report."""
+    server_provenance = container_image_provenance(settings)
     wait_for_server(settings["base_url"], int(settings["startup_timeout_secs"]))
 
     work_dir = Path(settings["output_dir"]).expanduser()
@@ -881,7 +952,9 @@ def run(settings: dict[str, Any]) -> dict[str, Any]:
         per_seed_metrics[seed] = metrics
         per_seed_stats[seed] = stats
 
-    summary = build_summary(settings, per_seed_metrics, per_seed_stats)
+    summary = build_summary(
+        settings, per_seed_metrics, per_seed_stats, server_provenance
+    )
     write_summary(settings["summary_path"], summary)
     LOGGER.info("Wrote evaluation summary to %s", settings["summary_path"])
 

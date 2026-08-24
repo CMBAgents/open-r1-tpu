@@ -7,7 +7,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from open_r1_tpu.evaluation import run as evaluate
-from open_r1_tpu.evaluation.stack import VLLM_TPU_IMAGE
+from open_r1_tpu.evaluation.stack import VLLM_TPU_BASE_IMAGE, vllm_tpu_image_tag
 
 RECIPE_DIR = Path(__file__).parents[1] / "recipes/Qwen3-1.7B-Math/eval"
 TIER0 = RECIPE_DIR / "tier0_smoke.yaml"
@@ -40,7 +40,7 @@ def test_every_tier_recipe_loads(recipe):
     assert settings["seeds"]
     assert settings["max_new_tokens"] > 0
     assert settings["serve_command"] == ["scripts/run_vllm_tpu_container.sh"]
-    assert settings["server_image"] == VLLM_TPU_IMAGE
+    assert settings["server_image"] == vllm_tpu_image_tag()
 
 
 def test_tier_recipes_keep_deployment_values_neutral():
@@ -145,8 +145,8 @@ def test_invalid_wandb_mode_is_rejected():
     "image",
     ["vllm/vllm-tpu:latest", "vllm/vllm-tpu:v0.27.0", "image@sha256:short"],
 )
-def test_server_image_must_be_an_immutable_digest(image):
-    with pytest.raises(ValueError, match="immutable"):
+def test_server_image_must_be_the_derived_tag_or_an_immutable_digest(image):
+    with pytest.raises(ValueError, match="derived local"):
         evaluate.validate_eval_config(minimal_config(server={"image": image}))
 
 
@@ -226,7 +226,7 @@ def test_the_server_binary_can_live_outside_this_environment():
     assert command[2] == "artifacts/model"
 
 
-def test_the_default_server_is_the_pinned_tpu_container():
+def test_the_default_server_is_the_derived_local_tpu_container():
     settings = evaluate.resolve_settings(minimal_config())
 
     command = evaluate.vllm_serve_command(settings)
@@ -234,7 +234,7 @@ def test_the_default_server_is_the_pinned_tpu_container():
     assert command[:4] == [
         "scripts/run_vllm_tpu_container.sh",
         "--image",
-        VLLM_TPU_IMAGE,
+        vllm_tpu_image_tag(),
         "--",
     ]
     assert command[4] == "artifacts/model"
@@ -460,6 +460,13 @@ def test_build_summary_records_the_stack_and_the_sampling_parameters():
         settings,
         {0: {"t": {"acc": 0.4}}},
         {0: {"format_rate": 1.0, "truncation_rate": None}},
+        {
+            "image_id": "sha256:local-image",
+            "service_versions": {
+                "vllm-tpu": "0.27.0",
+                "tpu-inference": "0.27.0",
+            },
+        },
     )
 
     assert summary["sampling"]["temperature"] == evaluate.DEFAULT_TEMPERATURE
@@ -469,15 +476,24 @@ def test_build_summary_records_the_stack_and_the_sampling_parameters():
         "litellm",
         "latex2sympy2-extended",
     }
-    # vLLM runs outside this environment, so the immutable image and complete
-    # command are recorded rather than an importable package version.
+    # vLLM runs outside this environment, so the derived service-image contract
+    # and complete command are recorded rather than an importable package version.
     assert summary["serve_command"] == ["scripts/run_vllm_tpu_container.sh"]
-    assert summary["server_image"] == VLLM_TPU_IMAGE
+    assert summary["server_image"] == vllm_tpu_image_tag()
     assert summary["server_command"][:3] == [
         "scripts/run_vllm_tpu_container.sh",
         "--image",
-        VLLM_TPU_IMAGE,
+        vllm_tpu_image_tag(),
     ]
+    assert summary["server_image_provenance"] == {
+        "spec_tag": vllm_tpu_image_tag(),
+        "image_id": "sha256:local-image",
+        "base_image": VLLM_TPU_BASE_IMAGE,
+        "service_versions": {
+            "vllm-tpu": "0.27.0",
+            "tpu-inference": "0.27.0",
+        },
+    }
     assert summary["tasks_metrics"]["t"]["acc"]["mean"] == pytest.approx(0.4)
     assert summary["generation"]["format_rate"]["mean"] == pytest.approx(1.0)
     # Absent in every seed, so it stays absent rather than becoming 0.0.

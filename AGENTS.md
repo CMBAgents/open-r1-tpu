@@ -84,13 +84,13 @@ The default path is:
   after training, not beside it.
 - Keep vLLM out of the project's dependencies. It is a service this package
   invokes, not a library it imports, and its inference stack does not belong in
-  the Python 3.13 LightEval/training environment. Use the immutable official TPU
-  image through `server.serve_command` by default; an external environment must
-  set `server.image=null` and is reported as reproducibility-unchecked.
+  the Python 3.13 LightEval/training environment. Use the local image derived
+  from `docker/vllm-tpu` through `server.serve_command` by default; an external
+  environment must set `server.image=null` and is reported as reproducibility-unchecked.
 - Treat the evaluation environment as a protocol. Keep `.python-version`, the
   exact direct pins in the `eval` extra, `uv.lock`,
-  `open_r1_tpu.evaluation.stack`, and the recipe's vLLM image digest in sync.
-  Never use a mutable container tag for a reported result.
+  `open_r1_tpu.evaluation.stack`, and `docker/vllm-tpu`'s base digest and lock
+  in sync. Never use a mutable remote container tag for a reported result.
 - Never report a benchmark number from a single seed. Seed variance alone moves
   small reasoning benchmarks by 5-15 points, so results carry a mean and a
   standard deviation, and one seed reports a null spread rather than `0.0`.

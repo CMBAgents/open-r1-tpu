@@ -34,9 +34,9 @@ eval:
 server:
   model_path: artifacts/Qwen3-1.7B-Math/merged
   served_model_name: null
-  # Keep inference out of the host environment and pin the exact image bytes.
+  # Keep inference out of the host environment. With image omitted, the wrapper
+  # selects the local tag derived from docker/vllm-tpu's committed build inputs.
   serve_command: ["scripts/run_vllm_tpu_container.sh"]
-  image: "docker.io/vllm/vllm-tpu:v0.27.0@sha256:d6748bc7b1b020ab6411506d4bf30f8bfabb5db2b8505328f26d1a545b479df8"
   host: 127.0.0.1
   port: 8000
   # Olympiad-level problems produce the longest traces in the suite.

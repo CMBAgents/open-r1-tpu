@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Run the pinned vLLM TPU OpenAI server without installing its Python 3.12
+# Run the locally built vLLM TPU OpenAI server without installing its Python 3.12
 # dependency tree into the host's Python 3.13 evaluation environment.
 #
 # The model export is mounted read-only at the same absolute path. Hugging Face
@@ -13,7 +13,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEFAULT_IMAGE="$(
   PYTHONPATH="${REPO_ROOT}/src" python3 -c \
-    'from open_r1_tpu.evaluation.stack import VLLM_TPU_IMAGE; print(VLLM_TPU_IMAGE)'
+    'from open_r1_tpu.evaluation.stack import vllm_tpu_image_tag; print(vllm_tpu_image_tag())'
 )"
 
 IMAGE="${VLLM_TPU_IMAGE:-${DEFAULT_IMAGE}}"
@@ -24,10 +24,12 @@ usage() {
 Usage: scripts/run_vllm_tpu_container.sh [OPTIONS] -- MODEL_PATH [VLLM_ARGS...]
 
 Options:
-  --image IMAGE  Use an immutable tag@sha256 image reference.
-  --check        Verify Docker access and that the pinned image is present.
-  --pull-only    Pull the pinned image and verify it is present, then exit.
-  --print-image  Print the default immutable image reference, then exit.
+  --image IMAGE  Use the derived local image tag or a digest-pinned remote image.
+  --build        Build the derived local service image, then exit.
+  --check        Verify Docker access and that the selected image is present.
+  --provenance   Print the selected image ID and service versions as JSON, then exit.
+  --pull-only    Pull a digest-pinned remote image, verify it, then exit.
+  --print-image  Print the derived local image tag, then exit.
   -h, --help     Show this help.
 
 Environment:
@@ -47,6 +49,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --check)
       ACTION=check
+      shift
+      ;;
+    --build)
+      ACTION=build
+      shift
+      ;;
+    --provenance)
+      ACTION=provenance
       shift
       ;;
     --pull-only)
@@ -71,9 +81,23 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ ! "${IMAGE}" =~ @sha256:[0-9a-f]{64}$ ]]; then
-  echo "Refusing mutable vLLM image reference: ${IMAGE}" >&2
-  echo "Use a release tag followed by its immutable @sha256 digest." >&2
+is_remote_image() {
+  local reference="$1"
+  local repository="${reference%%@sha256:*}"
+  [[ "${repository}" == */* ]] || return 1
+  local first_component="${repository%%/*}"
+  [[ "${first_component}" == "localhost" || "${first_component}" == *.* || "${first_component}" == *:* ]]
+}
+
+if is_remote_image "${IMAGE}"; then
+  if [[ ! "${IMAGE}" =~ @sha256:[0-9a-f]{64}$ ]]; then
+    echo "Refusing mutable remote vLLM image reference: ${IMAGE}" >&2
+    echo "Use a remote release tag followed by its immutable @sha256 digest." >&2
+    exit 2
+  fi
+elif [[ "${IMAGE}" != "${DEFAULT_IMAGE}" ]]; then
+  echo "Refusing local vLLM image tag that does not match this build spec: ${IMAGE}" >&2
+  echo "Expected the derived tag: ${DEFAULT_IMAGE}" >&2
   exit 2
 fi
 
@@ -90,19 +114,55 @@ else
   exit 1
 fi
 
+if [[ "${ACTION}" == pull ]] && ! is_remote_image "${IMAGE}"; then
+  echo "--pull-only is only for a digest-pinned remote image." >&2
+  echo "Build the local service image with: scripts/run_vllm_tpu_container.sh --build" >&2
+  exit 2
+fi
+
+if [[ "${ACTION}" == build ]]; then
+  "${DOCKER[@]}" build --tag "${IMAGE}" "${REPO_ROOT}/docker/vllm-tpu"
+  printf 'Built vLLM TPU image: %s\n' "${IMAGE}"
+  exit 0
+fi
+
 if [[ "${ACTION}" == pull ]]; then
   "${DOCKER[@]}" pull "${IMAGE}"
 fi
 
-if [[ "${ACTION}" == check || "${ACTION}" == pull ]]; then
+if [[ "${ACTION}" == check || "${ACTION}" == pull || "${ACTION}" == provenance ]]; then
   if ! "${DOCKER[@]}" image inspect "${IMAGE}" >/dev/null 2>&1; then
-    echo "Pinned vLLM TPU image is not present: ${IMAGE}" >&2
-    echo "Run scripts/run_vllm_tpu_container.sh --pull-only first." >&2
+    echo "vLLM TPU image is not present: ${IMAGE}" >&2
+    if is_remote_image "${IMAGE}"; then
+      echo "Run scripts/run_vllm_tpu_container.sh --image '${IMAGE}' --pull-only first." >&2
+    else
+      echo "Run scripts/run_vllm_tpu_container.sh --build first." >&2
+    fi
     exit 1
   fi
-  printf 'Docker server: %s\n' "$("${DOCKER[@]}" version --format '{{.Server.Version}}')"
-  printf 'vLLM TPU image: %s\n' "${IMAGE}"
+  if [[ "${ACTION}" == provenance ]]; then
+    IMAGE_ID="$("${DOCKER[@]}" image inspect --format '{{.Id}}' "${IMAGE}")"
+    SERVICE_VERSIONS="$("${DOCKER[@]}" run --rm --entrypoint python3 "${IMAGE}" -c \
+      "import importlib.metadata as m; print(m.version('vllm-tpu'), m.version('tpu-inference'))")"
+    read -r VLLM_TPU_VERSION TPU_INFERENCE_VERSION <<< "${SERVICE_VERSIONS}"
+    if [[ -z "${VLLM_TPU_VERSION}" || -z "${TPU_INFERENCE_VERSION}" ]]; then
+      echo "Could not read vLLM TPU service versions from ${IMAGE}." >&2
+      exit 1
+    fi
+    printf '{"image_id":"%s","service_versions":{"vllm-tpu":"%s","tpu-inference":"%s"}}\n' \
+      "${IMAGE_ID}" "${VLLM_TPU_VERSION}" "${TPU_INFERENCE_VERSION}"
+  else
+    printf 'Docker server: %s\n' "$("${DOCKER[@]}" version --format '{{.Server.Version}}')"
+    printf 'vLLM TPU image: %s\n' "${IMAGE}"
+  fi
   exit 0
+fi
+
+if ! is_remote_image "${IMAGE}" \
+  && ! "${DOCKER[@]}" image inspect "${IMAGE}" >/dev/null 2>&1; then
+  echo "Derived local vLLM TPU image is not present: ${IMAGE}" >&2
+  echo "Run scripts/run_vllm_tpu_container.sh --build first." >&2
+  exit 1
 fi
 
 if [[ $# -lt 1 ]]; then

@@ -758,7 +758,7 @@ JAX, Tunix, nor vLLM.
 
 ### Installing and running
 
-Install the host harness and pull the inference service in one re-runnable
+Install the host harness and build the inference service in one re-runnable
 step:
 
 ```bash
@@ -768,10 +768,11 @@ step:
 This uses the tested uv 0.12.5 installer and
 `uv sync --frozen --extra eval --extra test`, so the Python version, direct
 evaluation dependencies, and complete transitive environment come from
-`.python-version`, `pyproject.toml`, and the committed `uv.lock`. It then pulls
-the official vLLM TPU 0.27.0 image by immutable registry digest. A missing or
-mismatched host dependency is an evaluation preflight error rather than a
-warning recorded after an expensive run.
+`.python-version`, `pyproject.toml`, and the committed `uv.lock`. It then builds
+the local vLLM TPU 0.27.0 service image from the digest-pinned Python base and
+the hash-pinned lock in `docker/vllm-tpu/`. A missing or mismatched host
+dependency is an evaluation preflight error rather than a warning recorded
+after an expensive run.
 
 **vLLM is not installed on the host.** Nothing in this package imports it: the
 launcher starts the pinned container and everything after that is HTTP. The
@@ -782,13 +783,28 @@ and persists Hugging Face and vLLM/XLA caches in the
 It forwards `HF_TOKEN` by environment-variable name only when present; token
 values never enter recipes, printed commands, or summaries.
 
-The recipes record both the readable vLLM release tag and its immutable digest:
+The recipes omit `server.image`, which selects the local tag derived from the
+committed `docker/vllm-tpu/Dockerfile` and `docker/vllm-tpu/vllm-tpu.lock`:
 
 ```yaml
 server:
   serve_command: ["scripts/run_vllm_tpu_container.sh"]
-  image: "docker.io/vllm/vllm-tpu:v0.27.0@sha256:d6748bc7b1b020ab6411506d4bf30f8bfabb5db2b8505328f26d1a545b479df8"
 ```
+
+Changing either build input changes the tag, so a stale local image cannot be
+silently reused. The lock's hashes pin package contents; a local image ID is
+recorded for inspection but is not a cross-machine identity. Build it explicitly
+before a preflight or evaluation — the runner never surprises a benchmark with a
+multi-minute build:
+
+```bash
+scripts/run_vllm_tpu_container.sh --build
+scripts/run_vllm_tpu_container.sh --check
+```
+
+`docker/vllm-tpu/README.md` documents regenerating the lock. Do that only in
+`python:3.12-slim-bookworm`, because `libtpu` has a `manylinux_2_31` wheel and
+host-side resolution can select an unusable platform.
 
 `scripts/run_vllm_tpu_container.sh` automatically uses direct Docker access or
 passwordless `sudo docker`. The latter is the default on fresh TPU VMs where
@@ -806,8 +822,7 @@ server:
 ```
 
 That environment is deliberately reported as unchecked by preflight, because
-its transitive packages are no longer governed by this repository's lock or
-the recorded image digest.
+its transitive packages are no longer governed by this repository's lock.
 
 Evaluation runs *after* training rather than beside it. Only one process can
 hold the TPU chip, so stop the training job before starting the server.
@@ -819,9 +834,11 @@ python -m open_r1_tpu.evaluation.preflight \
   --config recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml
 ```
 
-This checks the exact host dependency versions, Docker access and the pinned
-local image, the export it is pointed at, and the recipe's task names. Failures
-are caught before vLLM claims the TPU. A merged
+This checks the exact host dependency versions, Docker access, that the derived
+local image exists, and the service versions installed in it, plus the export it
+is pointed at and the recipe's task names. If the image is absent, preflight
+names `scripts/run_vllm_tpu_container.sh --build`; it never builds implicitly.
+Failures are caught before vLLM claims the TPU. A merged
 export missing its tokenizer files or its chat template loads far enough to
 serve requests and then answers off-distribution, producing a number that
 measures the wrong thing. And Qwen3-Base names `<|endoftext|>` as its EOS while
@@ -843,15 +860,16 @@ the container command from the recipe, waits for the server to answer, runs the
 evaluation, and terminates its process group on the way out. The container
 wrapper owns the Docker-level stop/removal. Both halves read the same recipe
 and dotted overrides, so the image, port, model name, and context window cannot
-drift apart. Evaluation summaries record the host stack, immutable image, and
-complete constructed server command. Set `SKIP_SERVER=1` to reuse a server that
-is already up.
+drift apart. Evaluation summaries record the host stack, derived spec tag,
+local image ID, digest-pinned base image, service package versions, and complete
+constructed server command. Set `SKIP_SERVER=1` to reuse a server that is
+already up.
 
 To update the evaluation environment intentionally, change the exact versions
 in `pyproject.toml` and `src/open_r1_tpu/evaluation/stack.py`, run `uv lock`,
-then repeat the unit suite and TPU smoke evaluation. Updating vLLM likewise
-requires a new release tag and registry digest plus a real TPU smoke run; never
-replace either pin with `latest`.
+then repeat the unit suite and TPU smoke evaluation. Updating vLLM requires a
+new hash-pinned service lock, which produces a new derived local tag, plus a
+real TPU smoke run; never replace the digest-pinned Python base with `latest`.
 
 ### vLLM versus Tunix generation speed
 
