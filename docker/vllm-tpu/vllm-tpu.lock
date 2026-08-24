@@ -4955,7 +4955,7 @@ virtualenv==21.7.4 \
 vllm-tpu==0.27.0 \
     --hash=sha256:d10f02f247984fcc195f5567dddd4b3cc7c3658b3fa60d0a9c1c924265c4e13e \
     --hash=sha256:e58f12e153cdc500fa7de8e5fb3a2a8214abb35b9b638d5869104c0d58f733eb
-    # via -r /tmp/vllm-lock-platform.CcSbNY/requirements.in
+    # via -r vllm-tpu.in
 wadler-lindig==0.1.7 \
     --hash=sha256:81d14d3fe77d441acf3ebd7f4aefac20c74128bf460e84b512806dccf7b2cd55 \
     --hash=sha256:e3ec83835570fd0a9509f969162aeb9c65618f998b1f42918cfc8d45122fe953
