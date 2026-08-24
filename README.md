@@ -810,6 +810,33 @@ runs the evaluation, and stops the server on the way out. Both halves read the
 same recipe and the same dotted overrides, so the port and the served model name
 cannot drift apart. Set `SKIP_SERVER=1` to reuse a server that is already up.
 
+### vLLM versus Tunix generation speed
+
+An evaluation's seconds per sample do not establish which inference engine is
+faster. LightEval currently submits one request at a time, leaving vLLM's
+continuous batching idle, while Tunix compiles a static batch shape and samples
+it directly in-process. Run the controlled comparison on the TPU instead:
+
+```bash
+./scripts/benchmark_generation_tpu.sh
+```
+
+The launcher serves the merged export with vLLM, measures it, releases the TPU,
+then loads the same export into Tunix's direct `Sampler` and measures that. The
+default workload covers batch/concurrency 1 (the current LightEval path) and 8,
+using the same 16 distinct, pre-rendered prompts, two measured repetitions,
+greedy decoding, and 128 forced output tokens. One warm-up batch per shape is
+excluded from steady-state throughput; server/model startup and warm-up times
+are retained separately. Tunix flash attention is disabled for this short-prompt
+inference workload, avoiding its 1024-token splash block padding requirement.
+
+Raw results land in `artifacts/Qwen3-1.7B-Math/generation-speed/{vllm,tunix}.json`.
+`comparison.json` and `comparison.md` report output tokens per second, samples
+per second, and the Tunix/vLLM ratio at each matching batch size. This is a speed
+test only: EOS is deliberately ignored so both engines execute exactly the same
+number of decode steps. Keep the ordinary evaluation path for termination and
+accuracy.
+
 ### The tiers
 
 | Recipe | Cost | When |

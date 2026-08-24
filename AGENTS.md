@@ -32,6 +32,8 @@ The default path is:
 - `src/open_r1_tpu/transcripts.py`: periodic free-running sample transcripts.
 - `src/open_r1_tpu/evaluate.py`: benchmark evaluation -- recipe validation, the
   LightEval harness run, and reduction of its output to a summary.
+- `src/open_r1_tpu/benchmark_generation.py`: controlled, fixed-token throughput
+  comparison between the vLLM service and Tunix's direct sampler.
 - `src/open_r1_tpu/check_eval_env.py`: inference-environment, export, and
   task-name preflight.
 - `recipes/`: versioned model, training, and evaluation configurations.
@@ -40,6 +42,8 @@ The default path is:
 - `scripts/run_sft_tpu.sh`: standard SFT launcher.
 - `scripts/run_eval_tpu.sh`: evaluation launcher; owns the vLLM server's
   lifecycle.
+- `scripts/benchmark_generation_tpu.sh`: runs vLLM and Tunix sequentially on
+  one TPU and writes their speed comparison.
 - `tests/`: unit and integration tests. They run on the TPU VM.
 
 ## Architectural invariants
