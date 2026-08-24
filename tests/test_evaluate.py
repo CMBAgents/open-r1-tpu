@@ -648,10 +648,10 @@ def test_run_seed_drives_lighteval_against_the_live_server(live_settings, tmp_pa
 
 
 @pytest.mark.integration
-def test_the_base_model_export_passes_preflight():
+def test_the_configured_model_export_passes_preflight(live_settings):
     from open_r1_tpu.evaluation.preflight import check_export_dir
 
-    errors, _ = check_export_dir("models/Qwen3-1.7B-Base")
+    errors, _ = check_export_dir(live_settings["model_path"])
 
     assert errors == []
 
