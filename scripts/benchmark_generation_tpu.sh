@@ -33,14 +33,14 @@ MAX_MODEL_LEN=$((MAX_PROMPT_LENGTH + MAX_NEW_TOKENS))
 SERVER_PID=""
 
 stop_server() {
-  if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
-    echo "Stopping vLLM server (pid $SERVER_PID)" >&2
-    kill -TERM "$SERVER_PID" 2>/dev/null || true
+  if [[ -n "$SERVER_PID" ]] && kill -0 -- "-$SERVER_PID" 2>/dev/null; then
+    echo "Stopping vLLM server (process group $SERVER_PID)" >&2
+    kill -TERM -- "-$SERVER_PID" 2>/dev/null || true
     for _ in $(seq 1 30); do
-      kill -0 "$SERVER_PID" 2>/dev/null || break
+      kill -0 -- "-$SERVER_PID" 2>/dev/null || break
       sleep 1
     done
-    kill -KILL "$SERVER_PID" 2>/dev/null || true
+    kill -KILL -- "-$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
   fi
   SERVER_PID=""
@@ -59,7 +59,9 @@ SERVER_CMD="$(python3 -m open_r1_tpu.evaluate \
 echo "Starting: $SERVER_CMD" >&2
 echo "Server log: $SERVER_LOG" >&2
 SECONDS=0
-eval "$SERVER_CMD" >"$SERVER_LOG" 2>&1 &
+# vLLM starts a separate EngineCore process. Give the service its own process
+# group so cleanup releases the TPU rather than stopping only the CLI parent.
+setsid bash -c "exec $SERVER_CMD" >"$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 
 sleep 5

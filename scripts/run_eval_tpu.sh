@@ -26,16 +26,16 @@ SKIP_SERVER="${SKIP_SERVER:-0}"
 SERVER_PID=""
 
 cleanup() {
-  if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
-    echo "Stopping vLLM server (pid $SERVER_PID)" >&2
+  if [[ -n "$SERVER_PID" ]] && kill -0 -- "-$SERVER_PID" 2>/dev/null; then
+    echo "Stopping vLLM server (process group $SERVER_PID)" >&2
     # TERM first so vLLM releases the TPU cleanly; a chip still held by a dead
     # process is the next run's problem, not this one's.
-    kill -TERM "$SERVER_PID" 2>/dev/null || true
+    kill -TERM -- "-$SERVER_PID" 2>/dev/null || true
     for _ in $(seq 1 30); do
-      kill -0 "$SERVER_PID" 2>/dev/null || break
+      kill -0 -- "-$SERVER_PID" 2>/dev/null || break
       sleep 1
     done
-    kill -KILL "$SERVER_PID" 2>/dev/null || true
+    kill -KILL -- "-$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
   fi
 }
@@ -48,7 +48,9 @@ if [[ "$SKIP_SERVER" != "1" ]]; then
     --print-server-command "$@")"
   echo "Starting: $SERVER_CMD" >&2
   echo "Server log: $SERVER_LOG" >&2
-  eval "$SERVER_CMD" >"$SERVER_LOG" 2>&1 &
+  # vLLM starts a separate EngineCore process. Give the service its own process
+  # group so cleanup releases the TPU rather than stopping only the CLI parent.
+  setsid bash -c "exec $SERVER_CMD" >"$SERVER_LOG" 2>&1 &
   SERVER_PID=$!
   trap cleanup EXIT INT TERM
 
