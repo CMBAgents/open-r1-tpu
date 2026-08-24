@@ -222,3 +222,4 @@ artifacts/
 data/
 models/
 wandb/
+.litellm_cache/
