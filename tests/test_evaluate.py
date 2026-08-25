@@ -263,6 +263,14 @@ def test_an_invalid_serve_command_is_rejected(serve_command):
         )
 
 
+def test_the_server_disables_prefix_caching():
+    # A prefix-cache hit changes the prefill's kernel shape and therefore the
+    # bf16 logits, so greedy completions would depend on server cache state.
+    settings = evaluate.resolve_settings(minimal_config())
+
+    assert "--no-enable-prefix-caching" in evaluate.vllm_serve_command(settings)
+
+
 def test_serve_command_carries_the_recipe_port_and_window():
     settings = evaluate.resolve_settings(
         minimal_config(server={"port": 9001, "max_model_len": 20480})

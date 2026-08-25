@@ -374,6 +374,10 @@ def vllm_serve_command(settings: Mapping[str, Any]) -> list[str]:
         str(settings["port"]),
         "--tensor-parallel-size",
         str(settings.get("tensor_parallel_size", 1)),
+        # Greedy output must not depend on server cache state: a prefix-cache
+        # hit shortens the prefill, changing the attention kernel's shape and
+        # its bf16 accumulation order, which flips argmax at near-tied logits.
+        "--no-enable-prefix-caching",
     ]
     if settings.get("max_model_len"):
         command += ["--max-model-len", str(settings["max_model_len"])]
