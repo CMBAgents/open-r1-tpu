@@ -200,6 +200,17 @@ def _assistant_closing_ids(tokenizer: Any) -> list[int]:
     return closing
 
 
+def assistant_turn_end_id(tokenizer: Any) -> int:
+    """The first token of the sequence that closes every assistant turn.
+
+    This is the token a chat model must emit for generation to stop (Qwen's
+    ``<|im_end|>``). Base-model generation configs name a different EOS, and a
+    stop *string* for it never matches under serving defaults that strip
+    special tokens from decoded text, so servers need it as a token-level EOS.
+    """
+    return _assistant_closing_ids(tokenizer)[0]
+
+
 def _find_subsequence(haystack: list[int], needle: list[int], start: int) -> int | None:
     for position in range(start, len(haystack) - len(needle) + 1):
         if haystack[position : position + len(needle)] == needle:

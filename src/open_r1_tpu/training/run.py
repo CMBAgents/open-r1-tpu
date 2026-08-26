@@ -264,6 +264,7 @@ def _export_model(
     *,
     config: dict[str, Any],
     model: Any,
+    tokenizer: Any,
     local_model_path: str,
 ) -> None:
     export = config.get("export", {})
@@ -326,6 +327,10 @@ def _export_model(
             local_model_path=local_model_path,
             output_dir=output_dir,
         )
+
+    from open_r1_tpu.training.export import write_turn_end_generation_config
+
+    write_turn_end_generation_config(output_dir=output_dir, tokenizer=tokenizer)
 
 
 def run(config: dict[str, Any]) -> None:
@@ -486,6 +491,7 @@ def run(config: dict[str, Any]) -> None:
     _export_model(
         config=config,
         model=model,
+        tokenizer=tokenizer,
         local_model_path=local_model_path,
     )
 

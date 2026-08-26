@@ -56,8 +56,10 @@ sampling:
   temperature: 0.0
   top_p: 1.0
   max_new_tokens: 8192
-  # Qwen3-Base names <|endoftext|> as EOS while the chat template closes turns
-  # with <|im_end|>. Without this the model writes the next turn as well.
+  # Belt and braces only. vLLM matches stop strings against decoded text with
+  # special tokens stripped, so this never fires on a real <|im_end|> token;
+  # turn termination comes from the export's generation_config.json, which
+  # names <|im_end|> as an EOS (Qwen3-Base's names only <|endoftext|>).
   stop: ["<|im_end|>"]
   # Must match the training recipe's dataset.system_prompt verbatim.
   system_prompt: >-

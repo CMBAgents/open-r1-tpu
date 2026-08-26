@@ -1,9 +1,12 @@
+import json
+
 import numpy as np
 import pytest
 
 from open_r1_tpu.training.export import (
     collect_safetensors_state,
     qwen3_safetensors_entry,
+    write_turn_end_generation_config,
 )
 
 EMBED, HEADS, KV_HEADS, HEAD_DIM, INTER, VOCAB = 8, 4, 2, 3, 10, 16
@@ -119,3 +122,48 @@ def test_collected_state_uses_hf_names():
         ]
     )
     assert set(state) == {"model.embed_tokens.weight", "model.norm.weight"}
+
+
+class ChatTokenizer:
+    """Renders <role>content</role> turns; every assistant turn ends </assistant>."""
+
+    def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
+        assert tokenize
+        rendered = "".join(
+            f"<{message['role']}>{message['content']}</{message['role']}>"
+            for message in messages
+        )
+        if add_generation_prompt:
+            rendered += "<assistant>"
+        return [ord(character) for character in rendered]
+
+
+TURN_END = ord("<")  # first token of this template's closing sequence "</assistant>"
+
+
+def test_turn_end_token_is_prepended_to_copied_eos(tmp_path):
+    path = tmp_path / "generation_config.json"
+    path.write_text(json.dumps({"eos_token_id": 3, "do_sample": False}))
+    write_turn_end_generation_config(
+        output_dir=str(tmp_path), tokenizer=ChatTokenizer()
+    )
+    written = json.loads(path.read_text())
+    assert written["eos_token_id"] == [TURN_END, 3]
+    assert written["do_sample"] is False
+
+
+def test_turn_end_token_is_not_duplicated(tmp_path):
+    path = tmp_path / "generation_config.json"
+    path.write_text(json.dumps({"eos_token_id": [TURN_END, 3]}))
+    write_turn_end_generation_config(
+        output_dir=str(tmp_path), tokenizer=ChatTokenizer()
+    )
+    assert json.loads(path.read_text())["eos_token_id"] == [TURN_END, 3]
+
+
+def test_missing_generation_config_is_created(tmp_path):
+    write_turn_end_generation_config(
+        output_dir=str(tmp_path), tokenizer=ChatTokenizer()
+    )
+    written = json.loads((tmp_path / "generation_config.json").read_text())
+    assert written == {"eos_token_id": [TURN_END]}

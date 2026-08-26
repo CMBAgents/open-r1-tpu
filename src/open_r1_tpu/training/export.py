@@ -11,6 +11,7 @@ dropping a trained tensor.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -133,3 +134,34 @@ def export_full_model(*, model: Any, local_model_path: str, output_dir: str) -> 
             source = os.path.join(local_model_path, filename)
             if os.path.isfile(source):
                 shutil.copy(source, os.path.join(output_dir, filename))
+
+
+def write_turn_end_generation_config(*, output_dir: str, tokenizer: Any) -> None:
+    """Name the chat template's turn-end token as an EOS of the export.
+
+    The config files copied from the base model carry the base EOS only
+    (Qwen3-Base: ``<|endoftext|>``), while the chat template closes every turn
+    with a different token (``<|im_end|>``) that the fine-tune learns to emit.
+    A server reading the copied ``generation_config.json`` therefore never
+    stops at the end of a turn, and a stop *string* cannot compensate: vLLM
+    matches stop strings against decoded text with special tokens stripped, so
+    the turn end must be a token-level EOS. Chat-tuned releases (Qwen3
+    instruct) ship exactly this list, turn-end token first.
+    """
+    from open_r1_tpu.training.data import assistant_turn_end_id
+
+    turn_end = assistant_turn_end_id(tokenizer)
+    path = os.path.join(output_dir, "generation_config.json")
+    generation_config: dict[str, Any] = {}
+    if os.path.exists(path):
+        with open(path) as handle:
+            generation_config = json.load(handle)
+    existing = generation_config.get("eos_token_id", [])
+    if isinstance(existing, int):
+        existing = [existing]
+    generation_config["eos_token_id"] = [turn_end] + [
+        token for token in existing if token != turn_end
+    ]
+    with open(path, "w") as handle:
+        json.dump(generation_config, handle, indent=2, sort_keys=True)
+        handle.write("\n")
