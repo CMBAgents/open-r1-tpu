@@ -48,11 +48,6 @@ from open_r1_tpu.evaluation.run import (
 
 DEFAULT_EVAL_CONFIG = "recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml"
 DEFAULT_SFT_CONFIG = "recipes/Qwen3-1.7B-Math/sft/config_distill.yaml"
-DEFAULT_SYSTEM_PROMPT = (
-    "You are an assistant that solves problems by reasoning carefully before "
-    "giving the final answer. Put your detailed reasoning between <think> and "
-    "</think>, then give the concise final solution after </think>."
-)
 
 
 @dataclass(frozen=True)
@@ -703,8 +698,10 @@ def _run_command(args: argparse.Namespace) -> None:
     model_path = str(args.model_path or eval_settings["model_path"])
     tokenizer = _load_tokenizer(model_path)
     questions = benchmark_questions(args.prompt_count)
-    system_prompt = eval_settings.get("system_prompt") or DEFAULT_SYSTEM_PROMPT
-    prompts = render_prompts(tokenizer, questions, system_prompt)
+    # The recipe's own prompt, verbatim -- None renders with no system message.
+    # A recipe that deliberately sets no prompt must be benchmarked that way;
+    # substituting one here would benchmark a prompt the recipe never asked for.
+    prompts = render_prompts(tokenizer, questions, eval_settings["system_prompt"])
     prompt_tokens = [len(tokenizer.encode(prompt)) for prompt in prompts]
     longest = max(prompt_tokens)
     if longest > args.max_prompt_length:

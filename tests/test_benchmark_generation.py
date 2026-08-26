@@ -1,3 +1,4 @@
+import argparse
 import json
 
 import pytest
@@ -12,6 +13,10 @@ class FakeTokenizer:
         return "|".join(
             f"{message['role']}:{message['content']}" for message in messages
         )
+
+    def encode(self, text):
+        del text
+        return [0, 1, 2]
 
 
 def test_prompts_are_deterministic_distinct_and_include_the_system_prompt():
@@ -134,3 +139,51 @@ def test_write_json_is_stable_and_readable(tmp_path):
 
     assert benchmark.read_json(output) == {"a": 1, "b": 2}
     assert json.loads(output.read_text()) == {"a": 1, "b": 2}
+
+
+@pytest.mark.parametrize("system_prompt", [None, "Recipe prompt, verbatim."])
+def test_run_command_uses_the_recipes_system_prompt_verbatim(
+    tmp_path, monkeypatch, system_prompt
+):
+    # No fallback: a recipe that deliberately sets no prompt (None) must be
+    # benchmarked that way, and one that sets a prompt is benchmarked with
+    # exactly that text -- neither gets substituted here.
+    captured = {}
+
+    monkeypatch.setattr(benchmark, "load_eval_config", lambda path: {})
+    monkeypatch.setattr(
+        benchmark,
+        "resolve_eval_settings",
+        lambda config: {
+            "model_path": "m",
+            "served_model_name": "m",
+            "base_url": "http://x",
+            "system_prompt": system_prompt,
+        },
+    )
+    monkeypatch.setattr(benchmark, "_load_tokenizer", lambda path: FakeTokenizer())
+
+    def fake_render_prompts(tokenizer, questions, prompt):
+        captured["system_prompt"] = prompt
+        return list(questions)
+
+    monkeypatch.setattr(benchmark, "render_prompts", fake_render_prompts)
+    monkeypatch.setattr(benchmark, "_run_vllm", lambda **kwargs: ([], {"vllm": None}))
+
+    args = argparse.Namespace(
+        prompt_count=1,
+        max_new_tokens=8,
+        max_prompt_length=64,
+        batch_sizes=[1],
+        eval_config="unused.yaml",
+        model_path=None,
+        backend="vllm",
+        repeats=1,
+        seed=0,
+        startup_seconds=None,
+        output=str(tmp_path / "out.json"),
+    )
+
+    benchmark._run_command(args)
+
+    assert captured["system_prompt"] == system_prompt
