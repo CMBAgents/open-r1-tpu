@@ -187,3 +187,12 @@ def test_run_command_uses_the_recipes_system_prompt_verbatim(
     benchmark._run_command(args)
 
     assert captured["system_prompt"] == system_prompt
+
+
+def test_eval_config_and_sft_config_are_required():
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    benchmark._add_run_parser(subparsers)
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["run", "--backend", "vllm"])

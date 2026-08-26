@@ -57,8 +57,6 @@ from open_r1_tpu.evaluation.stack import (
     VLLM_TPU_SERVICE_VERSIONS,
 )
 
-DEFAULT_CONFIG = "recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml"
-
 # Files a merged export needs before vLLM can serve it as a chat model.
 REQUIRED_FILES = ("config.json", "tokenizer_config.json")
 # Any one of these carries the weights.
@@ -379,7 +377,7 @@ def check_export_dir(model_path: str) -> tuple[list[str], list[str]]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default=DEFAULT_CONFIG)
+    parser.add_argument("--config", required=True, help="YAML evaluation recipe")
     parser.add_argument("overrides", nargs="*")
     args = parser.parse_args()
     settings = resolve_settings(load_eval_config(args.config, args.overrides))

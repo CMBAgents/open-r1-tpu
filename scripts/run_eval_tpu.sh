@@ -10,19 +10,29 @@ set -euo pipefail
 #
 #   RECIPE=recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml ./scripts/run_eval_tpu.sh
 #
+# RECIPE is required and has no default: an expensive run must name its tier
+# on purpose rather than falling into whichever one happened to be the
+# default.
+#
 # Overrides pass straight through, which is how the base model gets measured on
 # the identical stack -- the only baseline worth comparing against:
 #
-#   ./scripts/run_eval_tpu.sh server.model_path=models/Qwen3-1.7B-Base
+#   RECIPE=recipes/Qwen3-1.7B-Math/eval/tier1_core.yaml ./scripts/run_eval_tpu.sh \
+#     server.model_path=models/Qwen3-1.7B-Base
 #
 # Needs the locked host stack and pinned service image:
 # `scripts/setup_tpu_vm.sh --with-eval`. Only one process can hold the TPU chip,
 # so the training job must have exited before this starts. Set SKIP_SERVER=1 to
 # reuse a server that is already up.
 
-RECIPE="${RECIPE:-recipes/Qwen3-1.7B-Math/eval/tier1_core.yaml}"
+RECIPE="${RECIPE:-}"
 SERVER_LOG="${SERVER_LOG:-artifacts/vllm-serve.log}"
 SKIP_SERVER="${SKIP_SERVER:-0}"
+
+if [[ -z "$RECIPE" ]]; then
+  echo "Usage: RECIPE=recipes/<model>/eval/<tier>.yaml ./scripts/run_eval_tpu.sh [overrides...]" >&2
+  exit 1
+fi
 
 SERVER_PID=""
 

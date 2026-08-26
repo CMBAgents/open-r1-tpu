@@ -46,9 +46,6 @@ from open_r1_tpu.evaluation.run import (
     resolve_settings as resolve_eval_settings,
 )
 
-DEFAULT_EVAL_CONFIG = "recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml"
-DEFAULT_SFT_CONFIG = "recipes/Qwen3-1.7B-Math/sft/config_distill.yaml"
-
 
 @dataclass(frozen=True)
 class BatchOutput:
@@ -647,8 +644,8 @@ def _parse_batch_sizes(values: Sequence[int]) -> list[int]:
 def _add_run_parser(subparsers: Any) -> None:
     parser = subparsers.add_parser("run", help="run one generation backend")
     parser.add_argument("--backend", choices=("vllm", "tunix"), required=True)
-    parser.add_argument("--eval-config", default=DEFAULT_EVAL_CONFIG)
-    parser.add_argument("--sft-config", default=DEFAULT_SFT_CONFIG)
+    parser.add_argument("--eval-config", required=True, help="YAML evaluation recipe")
+    parser.add_argument("--sft-config", required=True, help="YAML SFT recipe")
     parser.add_argument("--model-path")
     parser.add_argument("--output", required=True)
     parser.add_argument("--batch-sizes", nargs="+", type=int, default=[1, 8])

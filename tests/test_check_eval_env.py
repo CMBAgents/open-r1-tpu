@@ -1,4 +1,5 @@
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,16 @@ from open_r1_tpu.evaluation.stack import (
     VLLM_TPU_SERVICE_VERSIONS,
     vllm_tpu_image_tag,
 )
+
+
+def test_config_is_required(monkeypatch):
+    # No default recipe for an expensive run: a missing --config must fail
+    # argument parsing rather than silently picking one.
+    monkeypatch.setattr(sys, "argv", ["preflight"])
+
+    with pytest.raises(SystemExit):
+        check_eval_env.main()
+
 
 # Qwen3's own id for <|im_end|>; the value only has to be internally
 # consistent within a fixture, since `check_export_dir` reads it from the
