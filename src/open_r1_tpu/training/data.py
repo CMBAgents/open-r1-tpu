@@ -10,6 +10,8 @@ from typing import Any
 
 import numpy as np
 
+from open_r1_tpu.core.config import read_prompt_file
+
 
 @dataclass(frozen=True)
 class EncodedExample:
@@ -582,7 +584,11 @@ def load_reasoning_datasets(config: dict[str, Any], tokenizer: Any) -> tuple[Any
     encode_kwargs = {
         "max_length": int(config["max_length"]),
         "messages_column": config.get("messages_column", "messages"),
-        "system_prompt": config.get("system_prompt"),
+        "system_prompt": (
+            read_prompt_file(config["system_prompt_file"])
+            if config.get("system_prompt_file") is not None
+            else None
+        ),
         "assistant_only_loss": bool(config.get("assistant_only_loss", True)),
         "require_reasoning_tags": bool(config.get("require_reasoning_tags", True)),
         "reasoning_start": config.get("reasoning_start", "<think>"),

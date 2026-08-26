@@ -109,5 +109,35 @@ def test_read_prompt_file_missing_file_is_a_clear_error(tmp_path):
         read_prompt_file(tmp_path / "absent.txt")
 
 
-# A test proving training and eval resolve a shared prompt file to identical
-# text lives in test_config.py, once both sides read system_prompt_file.
+def test_training_and_eval_resolve_the_same_file_to_identical_text(tmp_path):
+    # Both sides funnel through read_prompt_file, but this exercises each
+    # caller's own resolution path end to end rather than trusting the
+    # shared helper alone -- a recipe that names the same file for both
+    # stages must not drift even if one caller's plumbing changes.
+    from open_r1_tpu.evaluation.run import resolve_settings as eval_resolve_settings
+    from open_r1_tpu.training.preflight import _preflight_example
+
+    prompt_path = tmp_path / "prompt.txt"
+    prompt_path.write_text("Shared prompt text.\n", encoding="utf-8")
+
+    _, encode_kwargs = _preflight_example({"system_prompt_file": str(prompt_path)})
+    eval_settings = eval_resolve_settings(
+        {
+            "eval": {"tasks": ["gsm8k|0"], "seeds": [0]},
+            "server": {"model_path": "artifacts/model"},
+            "sampling": {
+                "temperature": 0.6,
+                "top_p": 0.95,
+                "max_new_tokens": 128,
+                "system_prompt_file": str(prompt_path),
+            },
+            "reporting": {
+                "reasoning_start": "<think>",
+                "reasoning_end": "</think>",
+                "answer_marker": "\\boxed{",
+            },
+        }
+    )
+
+    assert encode_kwargs["system_prompt"] == "Shared prompt text."
+    assert eval_settings["system_prompt"] == encode_kwargs["system_prompt"]

@@ -113,7 +113,7 @@ dataset:
   # that lacks one, so a reasoning instruction here would appear in front of
   # every response that does not follow it, training the model to ignore its
   # system prompt.
-  system_prompt: null
+  system_prompt_file: null
 
 optimizer:
   # Full-fine-tune rate, roughly an order of magnitude below the 1.0e-4 the

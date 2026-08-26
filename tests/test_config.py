@@ -79,7 +79,7 @@ def test_instruct_recipe_does_not_filter_on_reasoning_tags():
     assert config["dataset"]["require_reasoning_tags"] is False
     # prepare_messages injects a system prompt wherever an example lacks one, so
     # a reasoning instruction here would precede every response that ignores it.
-    assert config["dataset"]["system_prompt"] is None
+    assert config["dataset"]["system_prompt_file"] is None
     assert config["dataset"]["assistant_only_loss"] is True
 
 

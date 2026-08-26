@@ -36,8 +36,9 @@ from typing import Any
 
 DEFAULT_MODEL_PATH = "models/Qwen3-1.7B-Base"
 # Empty by default because SFT trains on conversations as they come, and the
-# recipes leave dataset.system_prompt null. Injecting a system prompt here
-# would put the model in front of a message type it rarely saw in training.
+# recipes leave dataset.system_prompt_file null. Injecting a system prompt
+# here would put the model in front of a message type it rarely saw in
+# training.
 DEFAULT_SYSTEM_PROMPT = ""
 FLASH_ATTENTION_BLOCK_SIZE = 1024
 

@@ -18,6 +18,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from open_r1_tpu.core.config import read_prompt_file
+
 LOGGER = logging.getLogger(__name__)
 
 # Short, verifiable prompts. The point is comparability across steps, not
@@ -79,7 +81,11 @@ def resolve_settings(config: dict[str, Any]) -> dict[str, Any]:
         "log_to_wandb": bool(raw.get("log_to_wandb", True)),
         "prompts": prompts,
         "output_path": output_path,
-        "system_prompt": dataset.get("system_prompt"),
+        "system_prompt": (
+            read_prompt_file(dataset["system_prompt_file"])
+            if dataset.get("system_prompt_file") is not None
+            else None
+        ),
         "reasoning_start": dataset.get("reasoning_start", "<think>"),
         "reasoning_end": dataset.get("reasoning_end", "</think>"),
     }

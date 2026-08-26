@@ -8,7 +8,7 @@ import os
 from importlib import metadata
 from typing import Any
 
-from open_r1_tpu.core.config import load_config
+from open_r1_tpu.core.config import load_config, read_prompt_file
 from open_r1_tpu.training.data import (
     encode_reasoning_example,
     message_schema_from_config,
@@ -49,7 +49,11 @@ def _preflight_example(
     }
     encode_kwargs = {
         "messages_column": column,
-        "system_prompt": dataset.get("system_prompt"),
+        "system_prompt": (
+            read_prompt_file(dataset["system_prompt_file"])
+            if dataset.get("system_prompt_file") is not None
+            else None
+        ),
         "message_schema": schema,
     }
     return record, encode_kwargs

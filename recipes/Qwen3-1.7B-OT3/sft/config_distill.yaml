@@ -130,10 +130,7 @@ dataset:
   assistant_only_loss: true
   reasoning_start: <think>
   reasoning_end: </think>
-  system_prompt: >-
-    You are an assistant that solves problems by reasoning carefully before
-    giving the final answer. Put your detailed reasoning between <think> and
-    </think>, then give the concise final solution after </think>.
+  system_prompt_file: recipes/Qwen3-1.7B-OT3/system_prompt.txt
 
 optimizer:
   # Unchanged from the source recipe, so this run differs from it in data and

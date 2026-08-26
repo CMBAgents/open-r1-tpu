@@ -52,10 +52,7 @@ dataset:
   require_reasoning_tags: true
   reasoning_start: <think>
   reasoning_end: </think>
-  system_prompt: >-
-    You are an assistant that solves problems by reasoning carefully before
-    giving the final answer. Put your detailed reasoning between <think> and
-    </think>, then give the concise final solution after </think>.
+  system_prompt_file: recipes/OpenR1-Distill-Qwen3-1.7B/system_prompt.txt
 
 optimizer:
   learning_rate: 4.0e-5

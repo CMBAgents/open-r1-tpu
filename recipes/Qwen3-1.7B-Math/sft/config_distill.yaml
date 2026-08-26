@@ -137,11 +137,10 @@ dataset:
   reasoning_end: </think>
   # Rows carry no system message, so prepare_messages injects this in front of
   # every example. It describes what the traces actually do, which is why it is
-  # safe here and is not in the instruct recipe.
-  system_prompt: >-
-    You are an assistant that solves problems by reasoning carefully before
-    giving the final answer. Put your detailed reasoning between <think> and
-    </think>, then give the concise final solution after </think>.
+  # safe here and is not in the instruct recipe. The same file backs
+  # evaluation's sampling.system_prompt_file, so the two stages cannot drift
+  # apart without a diff showing it.
+  system_prompt_file: recipes/Qwen3-1.7B-Math/system_prompt.txt
 
 optimizer:
   # The instruct stage's full-fine-tune rate, not the distill recipe's 4.0e-5,
