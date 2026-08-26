@@ -38,15 +38,23 @@ VLLM_TPU_SERVICE_VERSIONS = {
 def vllm_tpu_image_tag(
     dockerfile: str | Path | None = None,
     lockfile: str | Path | None = None,
+    patches: str | Path | None = None,
 ) -> str:
     """Derive the local image tag from the committed build inputs.
 
     The raw Dockerfile bytes precede the raw lockfile bytes without a separator,
-    matching ``sha256(Dockerfile || vllm-tpu.lock)``. Optional paths keep this
-    function easy to exercise without Docker or the project environment.
+    matching ``sha256(Dockerfile || vllm-tpu.lock)``. The build-time patches
+    follow, each contributing its file name and then its bytes, in name order,
+    so that editing, adding, removing, or renaming a patch yields a new tag and
+    the wrapper refuses the image built before the change. Optional paths keep
+    this function easy to exercise without Docker or the project environment.
     """
     repository_root = Path(__file__).resolve().parents[3]
     dockerfile_path = Path(dockerfile or repository_root / "docker/vllm-tpu/Dockerfile")
     lockfile_path = Path(lockfile or repository_root / "docker/vllm-tpu/vllm-tpu.lock")
+    patches_path = Path(patches or repository_root / "docker/vllm-tpu/patches")
     digest = sha256(dockerfile_path.read_bytes() + lockfile_path.read_bytes())
+    for patch in sorted(patches_path.glob("*.py")):
+        digest.update(patch.name.encode())
+        digest.update(patch.read_bytes())
     return f"{VLLM_TPU_IMAGE_NAME}:{digest.hexdigest()[:12]}"

@@ -18,4 +18,23 @@ assert m.version('vllm-tpu') == '0.27.0', m.version('vllm-tpu'); \
 assert m.version('tpu-inference') == '0.27.0', m.version('tpu-inference'); \
 print('vllm-tpu', m.version('vllm-tpu'), '/ tpu-inference', m.version('tpu-inference'))"
 
+# Work around an upstream tpu-inference defect: its shape lookups dereference
+# hf_config.text_config eagerly as a getattr default, which only multimodal
+# configs have, so a flat text config crashes the engine core at startup. Each
+# patch documents its own defect and fails the build if the code it targets has
+# changed. Patch contents are part of the image tag, so a change forces a
+# rebuild rather than silently reusing an unpatched image.
+COPY patches /tmp/patches
+RUN for patch in /tmp/patches/*.py; do python "$patch"; done \
+ && rm -rf /tmp/patches
+
+# The rewritten expression must resolve on a flat text config under the pinned
+# transformers, not just parse.
+RUN python -c "\
+from transformers import Qwen2Config; \
+config = Qwen2Config(hidden_size=1536); \
+assert not hasattr(config, 'text_config'), 'flat config unexpectedly nested'; \
+assert config.get_text_config().hidden_size == 1536; \
+print('get_text_config resolves on a flat Qwen2Config')"
+
 ENTRYPOINT ["vllm"]

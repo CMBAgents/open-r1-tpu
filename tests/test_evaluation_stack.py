@@ -50,17 +50,50 @@ def test_vllm_image_tag_is_derived_and_the_base_keeps_its_digest():
 def test_vllm_image_tag_is_stable_and_changes_with_each_build_input(tmp_path):
     dockerfile = tmp_path / "Dockerfile"
     lockfile = tmp_path / "vllm-tpu.lock"
+    patches = tmp_path / "patches"
+    patches.mkdir()
     dockerfile.write_text("FROM python\n")
     lockfile.write_text("package==1 --hash=sha256:abc\n")
+    patch = patches / "fix.py"
+    patch.write_text("print('one')\n")
 
-    original = vllm_tpu_image_tag(dockerfile, lockfile)
-    assert vllm_tpu_image_tag(dockerfile, lockfile) == original
+    original = vllm_tpu_image_tag(dockerfile, lockfile, patches)
+    assert vllm_tpu_image_tag(dockerfile, lockfile, patches) == original
 
     dockerfile.write_text("FROM python:3.12\n")
-    assert vllm_tpu_image_tag(dockerfile, lockfile) != original
+    assert vllm_tpu_image_tag(dockerfile, lockfile, patches) != original
     dockerfile.write_text("FROM python\n")
     lockfile.write_text("package==2 --hash=sha256:def\n")
-    assert vllm_tpu_image_tag(dockerfile, lockfile) != original
+    assert vllm_tpu_image_tag(dockerfile, lockfile, patches) != original
+    lockfile.write_text("package==1 --hash=sha256:abc\n")
+    assert vllm_tpu_image_tag(dockerfile, lockfile, patches) == original
+
+
+def test_vllm_image_tag_tracks_the_build_time_patches(tmp_path):
+    dockerfile = tmp_path / "Dockerfile"
+    lockfile = tmp_path / "vllm-tpu.lock"
+    patches = tmp_path / "patches"
+    patches.mkdir()
+    dockerfile.write_text("FROM python\n")
+    lockfile.write_text("package==1 --hash=sha256:abc\n")
+    patch = patches / "fix.py"
+    patch.write_text("print('one')\n")
+
+    original = vllm_tpu_image_tag(dockerfile, lockfile, patches)
+
+    patch.write_text("print('two')\n")
+    edited = vllm_tpu_image_tag(dockerfile, lockfile, patches)
+    assert edited != original
+
+    patch.rename(patches / "renamed.py")
+    assert vllm_tpu_image_tag(dockerfile, lockfile, patches) != edited
+
+    (patches / "renamed.py").rename(patch)
+    patch.write_text("print('one')\n")
+    assert vllm_tpu_image_tag(dockerfile, lockfile, patches) == original
+
+    (patches / "extra.py").write_text("print('three')\n")
+    assert vllm_tpu_image_tag(dockerfile, lockfile, patches) != original
 
 
 def test_docker_build_spec_uses_the_pinned_base_and_complete_hash_lock():
