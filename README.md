@@ -284,8 +284,8 @@ and both would otherwise be silent:
   scaffold before every answer. It is stripped for display; a trace with actual
   content is left alone.
 
-The system prompt defaults to empty, matching `dataset.system_prompt: null` in
-the recipes. Pass `--system-prompt` to try one.
+The system prompt defaults to empty, matching `dataset.system_prompt_file: null`
+in the recipes. Pass `--system-prompt` to try one.
 
 ## Smoke test
 
@@ -466,10 +466,10 @@ config, and clear the glob:
 Two settings differ from the reasoning recipe for reasons that are easy to get
 wrong. `dataset.require_reasoning_tags` is `false`, because SmolTalk carries no
 `<think>`/`</think>` traces and requiring them filters every example into an
-empty dataset rather than raising. `dataset.system_prompt` is `null`, because
-`prepare_messages` injects a system prompt into any example that lacks one, and a
-reasoning instruction in front of responses that ignore it teaches the model to
-disregard its system prompt.
+empty dataset rather than raising. `dataset.system_prompt_file` is `null`,
+because `prepare_messages` injects a system prompt into any example that lacks
+one, and a reasoning instruction in front of responses that ignore it teaches
+the model to disregard its system prompt.
 
 The stage writes a merged export to `artifacts/Qwen3-1.7B-Instruct/merged`. Point
 the reasoning run at it to chain the two:
@@ -845,8 +845,13 @@ measures the wrong thing. And Qwen3-Base names `<|endoftext|>` as its EOS while
 the chat template closes turns with `<|im_end|>`, so a server left to the
 tokenizer's own EOS runs past the end of every reply and writes the user's next
 turn as well — which under a benchmark reads as a model that cannot stop
-reasoning. The recipes set `sampling.stop` to `<|im_end|>` for that reason.
-Third, LightEval moves tasks between suites and releases, so a recipe naming one
+reasoning. A stop string cannot fix this: vLLM matches stop strings against
+decoded text with special tokens stripped, so `<|im_end|>` as a stop string can
+never fire on the real token. Preflight instead checks the setting that
+actually governs it — the export's `generation_config.json` must name
+`<|im_end|>`'s token id as an `eos_token_id` — and fails rather than warns when
+it does not, since every benchmark number from such an export would be
+invalid. Third, LightEval moves tasks between suites and releases, so a recipe naming one
 that no longer exists is worth hearing about now rather than after the server has
 spent fifteen minutes loading weights. A name that exists in a different suite is
 reported with the suite it actually lives in.
@@ -914,6 +919,16 @@ problems can settle an argument — one extra correct answer there moves pass@1 
 3.3 points. Tier 3 answers what the math-only corpus cost, which is an open
 question for this project: `OpenR1-Math-220k` carries no instruction-following
 or chat data at all.
+
+Every tier `extends: base.yaml`, which holds what is genuinely identical across
+them: the whole `server:` block except `max_model_len`, and the reporting
+markers and shared W&B settings. A tier file overrides only what actually
+differs — its tasks, seeds, context window, output directory, and its whole
+`sampling:` block, which stays in every tier file even where two tiers happen
+to agree, because a measurement-affecting setting belongs where it is easy to
+see. `open_r1_tpu.core.config.load_config` resolves `extends` (one level only)
+before dotted overrides and validation run, so a base recipe is invisible to
+both.
 
 ### Seeds are not optional
 
