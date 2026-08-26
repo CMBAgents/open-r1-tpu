@@ -15,10 +15,17 @@ producing a benchmark number that measures the wrong thing. And Qwen3-Base
 names `<|endoftext|>` as its EOS while the chat template closes turns with
 `<|im_end|>`, so a server left to the tokenizer's own EOS runs past the end of
 every reply and writes the user's next turn as well -- which under a benchmark
-looks like a model that cannot stop reasoning. Task names are checked here
-too. That failure is loud rather than silent, but LightEval moves tasks between
-suites and releases and a recipe naming one that no longer exists is worth
-knowing before the server spends fifteen minutes loading weights.
+looks like a model that cannot stop reasoning. vLLM does not stop at
+`<|im_end|>` because a stop *string* names it -- vLLM matches stop strings
+against decoded text with special tokens stripped, so one can never fire on the
+real token -- it stops because the export's `generation_config.json` names the
+token's id as an `eos_token_id`. `check_export_dir` therefore verifies that
+setting directly and fails the preflight, rather than warning, when it is
+missing or wrong: every benchmark number from such an export would be invalid.
+Task names are checked here too. That failure is loud rather than silent, but
+LightEval moves tasks between suites and releases and a recipe naming one that
+no longer exists is worth knowing before the server spends fifteen minutes
+loading weights.
 
 Run from the repository root::
 
@@ -37,6 +44,7 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from importlib import metadata
 from pathlib import Path
+from typing import Any
 
 from open_r1_tpu.evaluation.run import (
     container_image_provenance,
@@ -254,12 +262,52 @@ def check_server_runtime(settings: Mapping[str, object]) -> tuple[list[str], lis
     return ([], [])
 
 
+def _turn_end_token_id(
+    tokenizer_config: Mapping[str, Any], directory: Path
+) -> int | None:
+    """Find the token id for `TURN_END_TOKEN` from the export's tokenizer files.
+
+    Checked in `tokenizer_config.json`'s `added_tokens_decoder` first, which is
+    where a merged Qwen3 export carries it. `tokenizer.json`'s `added_tokens`
+    is the fallback for an export that omits it there. Returns None -- rather
+    than guessing an id -- when neither file names the token.
+    """
+    added_tokens_decoder = tokenizer_config.get("added_tokens_decoder")
+    if isinstance(added_tokens_decoder, Mapping):
+        for token_id, spec in added_tokens_decoder.items():
+            if isinstance(spec, Mapping) and spec.get("content") == TURN_END_TOKEN:
+                try:
+                    return int(token_id)
+                except (TypeError, ValueError):
+                    continue
+
+    tokenizer_json_path = directory / "tokenizer.json"
+    if not tokenizer_json_path.is_file():
+        return None
+    try:
+        tokenizer_json = json.loads(tokenizer_json_path.read_text("utf-8"))
+    except ValueError:
+        return None
+    for spec in tokenizer_json.get("added_tokens") or []:
+        if isinstance(spec, Mapping) and spec.get("content") == TURN_END_TOKEN:
+            token_id = spec.get("id")
+            if isinstance(token_id, int):
+                return token_id
+    return None
+
+
 def check_export_dir(model_path: str) -> tuple[list[str], list[str]]:
     """Check an exported checkpoint for what vLLM needs to serve it as chat.
 
     Returns (errors, warnings). A missing chat template is an error rather than
     a warning: without it the server falls back to raw completion, and every
-    prompt then reaches the model in a format it was never trained on.
+    prompt then reaches the model in a format it was never trained on. Turn
+    termination is checked the same way: vLLM never stops on a stop *string*
+    matching `<|im_end|>` -- it matches decoded text with special tokens
+    stripped, so the string can never fire on the real token -- so the setting
+    that actually governs it, the export's `generation_config.json`, is
+    checked directly and any problem with it is an error rather than a
+    warning.
     """
     errors: list[str] = []
     warnings: list[str] = []
@@ -293,14 +341,38 @@ def check_export_dir(model_path: str) -> tuple[list[str], list[str]]:
             "match the format training used"
         )
 
-    eos_token = tokenizer_config.get("eos_token")
-    if isinstance(eos_token, dict):
-        eos_token = eos_token.get("content")
-    if eos_token and eos_token != TURN_END_TOKEN:
-        warnings.append(
-            f"tokenizer EOS is {eos_token!r}, not {TURN_END_TOKEN!r}: pass "
-            f"--generation-config or a stop token so generation ends at the "
-            "turn boundary rather than running into the next turn"
+    turn_end_id = _turn_end_token_id(tokenizer_config, directory)
+    if turn_end_id is None:
+        errors.append(
+            f"export's tokenizer files do not name a token id for "
+            f"{TURN_END_TOKEN!r} (checked tokenizer_config.json's "
+            "added_tokens_decoder and tokenizer.json's added_tokens); cannot "
+            "verify the export stops at turn boundaries"
+        )
+        return (errors, warnings)
+
+    generation_config_path = directory / "generation_config.json"
+    if not generation_config_path.is_file():
+        errors.append(
+            "export has no generation_config.json, so vLLM falls back to the "
+            f"tokenizer's own EOS rather than {TURN_END_TOKEN!r}; every "
+            "benchmark number from it would run past the turn boundary"
+        )
+        return (errors, warnings)
+    try:
+        generation_config = json.loads(generation_config_path.read_text("utf-8"))
+    except ValueError as error:
+        errors.append(f"generation_config.json is not valid JSON: {error}")
+        return (errors, warnings)
+
+    eos_token_id = generation_config.get("eos_token_id")
+    eos_ids = eos_token_id if isinstance(eos_token_id, list) else [eos_token_id]
+    if turn_end_id not in eos_ids:
+        errors.append(
+            f"generation_config.json's eos_token_id ({eos_token_id!r}) does "
+            f"not include {TURN_END_TOKEN!r}'s id ({turn_end_id}); the export "
+            "will not stop at turn boundaries and every benchmark number from "
+            "it would be invalid"
         )
     return (errors, warnings)
 

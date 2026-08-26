@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -18,15 +19,47 @@ from open_r1_tpu.evaluation.stack import (
     vllm_tpu_image_tag,
 )
 
+# Qwen3's own id for <|im_end|>; the value only has to be internally
+# consistent within a fixture, since `check_export_dir` reads it from the
+# files rather than hardcoding it.
+TURN_END_TOKEN_ID = 151645
 
-def write_export(tmp_path, *, tokenizer_config=None, weights="model.safetensors"):
+
+def write_export(
+    tmp_path,
+    *,
+    tokenizer_config: dict[str, Any] | None = None,
+    weights: str = "model.safetensors",
+    generation_config: Any = "default",
+):
+    """Write a merged-export fixture. Defaults to a complete, passing export.
+
+    `tokenizer_config`, when given, is merged onto a base that names
+    <|im_end|>'s token id via `added_tokens_decoder`, the shape a real Qwen3
+    export carries; pass `{"added_tokens_decoder": {}}` in it to simulate an
+    export whose tokenizer files do not name the id. `generation_config`
+    defaults to one whose `eos_token_id` includes that id; pass an explicit
+    mapping, or None, to test a mismatched or missing one.
+    """
     directory = tmp_path / "merged"
     directory.mkdir()
     (directory / "config.json").write_text("{}")
     if weights:
         (directory / weights).write_bytes(b"")
     if tokenizer_config is not None:
-        (directory / "tokenizer_config.json").write_text(json.dumps(tokenizer_config))
+        merged_tokenizer_config = {
+            "added_tokens_decoder": {
+                str(TURN_END_TOKEN_ID): {"content": "<|im_end|>", "special": True}
+            },
+            **tokenizer_config,
+        }
+        (directory / "tokenizer_config.json").write_text(
+            json.dumps(merged_tokenizer_config)
+        )
+    if generation_config == "default":
+        generation_config = {"eos_token_id": [151643, TURN_END_TOKEN_ID]}
+    if generation_config is not None:
+        (directory / "generation_config.json").write_text(json.dumps(generation_config))
     return directory
 
 
@@ -154,10 +187,7 @@ def test_container_runtime_check_rejects_wrong_service_versions(tmp_path):
 
 
 def test_a_complete_export_passes(tmp_path):
-    directory = write_export(
-        tmp_path,
-        tokenizer_config={"chat_template": "{{ x }}", "eos_token": "<|im_end|>"},
-    )
+    directory = write_export(tmp_path, tokenizer_config={"chat_template": "{{ x }}"})
 
     errors, warnings = check_export_dir(str(directory))
 
@@ -196,7 +226,7 @@ def test_a_sharded_export_is_accepted(tmp_path):
 def test_a_missing_chat_template_is_an_error(tmp_path):
     # Without it the server falls back to raw completion and every prompt
     # reaches the model in a format it was never trained on.
-    directory = write_export(tmp_path, tokenizer_config={"eos_token": "<|im_end|>"})
+    directory = write_export(tmp_path, tokenizer_config={})
 
     errors, _ = check_export_dir(str(directory))
 
@@ -204,40 +234,12 @@ def test_a_missing_chat_template_is_an_error(tmp_path):
 
 
 def test_a_sidecar_template_file_counts_as_a_template(tmp_path):
-    directory = write_export(tmp_path, tokenizer_config={"eos_token": "<|im_end|>"})
+    directory = write_export(tmp_path, tokenizer_config={})
     (directory / "chat_template.jinja").write_text("{{ x }}")
 
     errors, _ = check_export_dir(str(directory))
 
     assert errors == []
-
-
-def test_a_base_model_eos_warns_about_running_into_the_next_turn(tmp_path):
-    # Qwen3-Base names <|endoftext|> as EOS while the chat template closes a
-    # turn with <|im_end|>.
-    directory = write_export(
-        tmp_path,
-        tokenizer_config={"chat_template": "x", "eos_token": "<|endoftext|>"},
-    )
-
-    errors, warnings = check_export_dir(str(directory))
-
-    assert errors == []
-    assert any("<|im_end|>" in warning for warning in warnings)
-
-
-def test_a_structured_eos_token_is_understood(tmp_path):
-    directory = write_export(
-        tmp_path,
-        tokenizer_config={
-            "chat_template": "x",
-            "eos_token": {"content": "<|im_end|>"},
-        },
-    )
-
-    _, warnings = check_export_dir(str(directory))
-
-    assert warnings == []
 
 
 def test_unparseable_tokenizer_config_is_reported(tmp_path):
@@ -247,6 +249,81 @@ def test_unparseable_tokenizer_config_is_reported(tmp_path):
     errors, _ = check_export_dir(str(directory))
 
     assert any("valid JSON" in error for error in errors)
+
+
+# --- turn-end token id / generation_config.json (hard EOS check) -----------
+#
+# vLLM never stops on a stop *string* matching <|im_end|>: it matches decoded
+# text with special tokens stripped, so the string can never fire on the real
+# token. Termination is governed by the export's generation_config.json
+# instead, so that is what is checked, and any problem with it is an error
+# rather than a warning -- every benchmark number from a bad export would be
+# invalid.
+
+
+def test_missing_generation_config_is_a_hard_error(tmp_path):
+    directory = write_export(
+        tmp_path, tokenizer_config={"chat_template": "x"}, generation_config=None
+    )
+
+    errors, _ = check_export_dir(str(directory))
+
+    assert any("generation_config.json" in error for error in errors)
+
+
+def test_eos_token_id_missing_the_turn_end_id_is_a_hard_error(tmp_path):
+    directory = write_export(
+        tmp_path,
+        tokenizer_config={"chat_template": "x"},
+        # <|endoftext|>'s id only, the way Qwen3-Base's own generation config
+        # reads before it is corrected to include the chat turn-end token.
+        generation_config={"eos_token_id": [151643]},
+    )
+
+    errors, _ = check_export_dir(str(directory))
+
+    assert any("eos_token_id" in error and "<|im_end|>" in error for error in errors)
+
+
+def test_a_scalar_eos_token_id_is_accepted(tmp_path):
+    directory = write_export(
+        tmp_path,
+        tokenizer_config={"chat_template": "x"},
+        generation_config={"eos_token_id": TURN_END_TOKEN_ID},
+    )
+
+    errors, _ = check_export_dir(str(directory))
+
+    assert errors == []
+
+
+def test_unresolvable_turn_end_token_id_is_a_hard_error(tmp_path):
+    # Neither tokenizer_config.json nor tokenizer.json names the id, so there
+    # is nothing to check the generation config against.
+    directory = write_export(
+        tmp_path,
+        tokenizer_config={"chat_template": "x", "added_tokens_decoder": {}},
+    )
+
+    errors, _ = check_export_dir(str(directory))
+
+    assert any("cannot verify" in error for error in errors)
+
+
+def test_the_turn_end_token_id_falls_back_to_tokenizer_json(tmp_path):
+    directory = write_export(
+        tmp_path,
+        tokenizer_config={"chat_template": "x", "added_tokens_decoder": {}},
+    )
+    (directory / "tokenizer.json").write_text(
+        json.dumps(
+            {"added_tokens": [{"id": TURN_END_TOKEN_ID, "content": "<|im_end|>"}]}
+        )
+    )
+
+    errors, _ = check_export_dir(str(directory))
+
+    assert errors == []
 
 
 # A small stand-in for LightEval's registry. The real one is built by a
