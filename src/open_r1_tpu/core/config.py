@@ -37,6 +37,65 @@ def parse_override(raw: str) -> tuple[str, Any]:
     return key, yaml.safe_load(raw_value)
 
 
+def _deep_merge(base: dict[str, Any], child: dict[str, Any]) -> dict[str, Any]:
+    """Merge `child` onto `base`. Mappings merge recursively; everything else
+    -- lists and scalars alike -- is replaced wholesale by the child's value,
+    since there is no sound way to merge a list of tasks or seeds element-wise.
+    """
+    merged = dict(base)
+    for key, value in child.items():
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge(existing, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _load_yaml_mapping(path: Path) -> dict[str, Any]:
+    with path.open(encoding="utf-8") as config_file:
+        loaded = yaml.safe_load(config_file)
+    if not isinstance(loaded, dict):
+        raise ValueError(f"Configuration at {path} must contain a mapping")
+    return loaded
+
+
+def _resolve_extends(config: dict[str, Any], declaring_path: Path) -> dict[str, Any]:
+    """Resolve a top-level `extends: <path>` key into a merged mapping.
+
+    The base path is relative to the file that declares it, matching how a
+    recipe is normally read from the repository root regardless of which
+    directory `extends` it. One level only: a base recipe with its own
+    `extends` raises rather than chasing a chain, which keeps the merge order
+    obvious from reading a single file.
+    """
+    extends = config.pop("extends", None)
+    if extends is None:
+        return config
+    base_path = (declaring_path.parent / str(extends)).resolve()
+    base = _load_yaml_mapping(base_path)
+    if "extends" in base:
+        raise ValueError(
+            f"{base_path} is a base recipe and cannot itself set 'extends'"
+        )
+    return _deep_merge(base, config)
+
+
+def read_prompt_file(path: str | Path) -> str:
+    """Read a system-prompt text file shared between training and evaluation.
+
+    Strips a trailing newline (`.rstrip("\\n")`) so an editor-added final
+    newline cannot make two otherwise-identical prompt files diverge. Missing
+    files fail with the path named, rather than a bare `FileNotFoundError`
+    surfacing deep inside a recipe loader -- a recipe that wants no system
+    prompt spells that as an explicit `null` instead of a missing file.
+    """
+    file_path = Path(path)
+    if not file_path.is_file():
+        raise ValueError(f"system prompt file not found: {file_path}")
+    return file_path.read_text(encoding="utf-8").rstrip("\n")
+
+
 def load_config(
     path: str | Path,
     overrides: list[str] | None = None,
@@ -48,13 +107,15 @@ def load_config(
     Evaluation recipes are a different shape entirely -- no optimizer, no
     dataset -- so they pass their own validator rather than being forced into
     the training schema.
-    """
-    with Path(path).open(encoding="utf-8") as config_file:
-        loaded = yaml.safe_load(config_file)
-    if not isinstance(loaded, dict):
-        raise ValueError(f"Configuration at {path} must contain a mapping")
 
-    config = copy.deepcopy(loaded)
+    A top-level `extends: <path>` key merges onto a base recipe before
+    overrides and validation run, so the validator never sees the key itself.
+    """
+    recipe_path = Path(path)
+    loaded = _load_yaml_mapping(recipe_path)
+    merged = _resolve_extends(loaded, recipe_path)
+
+    config = copy.deepcopy(merged)
     for raw_override in overrides or []:
         key, value = parse_override(raw_override)
         _set_dotted(config, key, value)
