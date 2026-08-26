@@ -14,13 +14,17 @@ TIER0 = RECIPE_DIR / "tier0_smoke.yaml"
 TIER1 = RECIPE_DIR / "tier1_core.yaml"
 TIER2 = RECIPE_DIR / "tier2_headline.yaml"
 TIER3 = RECIPE_DIR / "tier3_regression.yaml"
-ALL_TIERS = [TIER0, TIER1, TIER2, TIER3]
+DISTILL_DIR = Path(__file__).parents[1] / "recipes/DeepSeek-R1-Distill-Qwen-1.5B/eval"
+ALL_TIERS = [TIER0, TIER1, TIER2, TIER3, *sorted(DISTILL_DIR.glob("tier*.yaml"))]
 
 
 def minimal_config(**overrides):
     config = {
         "eval": {"tier": "t", "tasks": ["suite|task|0"], "seeds": [0]},
-        "server": {"model_path": "artifacts/model"},
+        "server": {
+            "model_path": "artifacts/model",
+            "turn_end_token": "<|im_end|>",
+        },
         "sampling": {
             "temperature": 0.6,
             "top_p": 0.95,
@@ -218,6 +222,23 @@ def test_wandb_can_omit_project_name_and_mode_when_disabled():
     evaluate.validate_eval_config(
         minimal_config(reporting={"wandb": {"enabled": False}})
     )
+
+
+def test_a_missing_turn_end_token_names_itself():
+    config = minimal_config()
+    del config["server"]["turn_end_token"]
+
+    with pytest.raises(ValueError, match=r"server\.turn_end_token"):
+        evaluate.validate_eval_config(config)
+
+
+def test_reasoning_start_may_be_null_but_not_empty():
+    # Null means the serving chat template opens the reasoning block inside
+    # the prompt itself, so completions carry only the closing tag.
+    evaluate.validate_eval_config(minimal_config(reporting={"reasoning_start": None}))
+
+    with pytest.raises(ValueError, match=r"reporting\.reasoning_start"):
+        evaluate.validate_eval_config(minimal_config(reporting={"reasoning_start": ""}))
 
 
 @pytest.mark.parametrize("system_prompt_file", ["", 3, []])
@@ -451,6 +472,23 @@ def test_completions_survive_a_parquet_round_trip(tmp_path):
 
     assert evaluate.extract_completions(responses[0]) == ["a", "b"]
     assert evaluate.extract_token_counts(responses[0]) == [1, 2]
+
+
+def test_a_null_reasoning_start_counts_closure_on_the_closing_tag(tmp_path):
+    stats = read_stats(
+        tmp_path,
+        [
+            {
+                "text": ["deep thought</think>\\boxed{4}", "never closes"],
+                "output_tokens": [5, 5],
+            }
+        ],
+        max_new_tokens=128,
+        reasoning_start=None,
+    )
+
+    assert stats["reasoning_closed_rate"] == 0.5
+    assert stats["format_rate"] == 0.5
 
 
 def test_completions_are_read_from_a_json_string_column(tmp_path):
@@ -802,7 +840,9 @@ def test_run_seed_drives_lighteval_against_the_live_server(live_settings, tmp_pa
 def test_the_configured_model_export_passes_preflight(live_settings):
     from open_r1_tpu.evaluation.preflight import check_export_dir
 
-    errors, _ = check_export_dir(live_settings["model_path"])
+    errors, _ = check_export_dir(
+        live_settings["model_path"], live_settings["turn_end_token"]
+    )
 
     assert errors == []
 

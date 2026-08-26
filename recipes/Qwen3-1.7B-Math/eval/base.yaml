@@ -18,6 +18,10 @@ server:
   # this identical stack.
   model_path: artifacts/Qwen3-1.7B-Math/merged
   served_model_name: null
+  # The token the chat template closes each turn with. The preflight checks
+  # that the export's generation_config.json names this token's id as an
+  # EOS, which is the setting that actually stops vLLM at the turn boundary.
+  turn_end_token: <|im_end|>
   # The host stays on the locked Python 3.13 LightEval stack; this wrapper
   # runs vLLM in the local image derived from docker/vllm-tpu's committed
   # build inputs, with persistent Hub/XLA cache volumes and explicit cleanup.

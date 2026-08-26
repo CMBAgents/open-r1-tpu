@@ -1,0 +1,34 @@
+# Tier 1: the decision tier, on the reference model. Task-for-task and
+# seed-for-seed identical to the Qwen3-1.7B-Math tier 1 so the two are
+# directly comparable on this stack.
+extends: base.yaml
+
+eval:
+  tier: tier1-core
+  tasks:
+    - "math_500|0"
+    - "gsm8k|0"
+  seeds: [0, 1, 2]
+  max_samples: null
+
+server:
+  max_model_len: 20480
+
+sampling:
+  # The DeepSeek-recommended settings, which the model card's own numbers
+  # use; its generation_config.json carries the same values.
+  temperature: 0.6
+  top_p: 0.95
+  # Watch generation.truncation_rate in the summary: a trace cut off by the
+  # cap scores as wrong, and DeepSeek's published numbers were measured with
+  # a 32768-token generation budget.
+  max_new_tokens: 16384
+  # No system prompt, per DeepSeek's usage guidance for the distills.
+  system_prompt_file: null
+
+reporting:
+  output_dir: artifacts/DeepSeek-R1-Distill-Qwen-1.5B/eval/tier1
+  wandb:
+    enabled: true
+    run_name: deepseek-r1-distill-qwen-1.5b-tier1
+    tags: [tpu, eval, math, reference]

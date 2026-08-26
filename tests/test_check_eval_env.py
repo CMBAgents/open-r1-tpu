@@ -111,6 +111,7 @@ def test_external_server_runtime_is_reported_as_unchecked():
             "eval": {"tasks": ["gsm8k|0"], "seeds": [0]},
             "server": {
                 "model_path": "models/example",
+                "turn_end_token": "<|im_end|>",
                 "serve_command": ["vllm", "serve"],
                 "image": None,
             },
@@ -200,14 +201,14 @@ def test_container_runtime_check_rejects_wrong_service_versions(tmp_path):
 def test_a_complete_export_passes(tmp_path):
     directory = write_export(tmp_path, tokenizer_config={"chat_template": "{{ x }}"})
 
-    errors, warnings = check_export_dir(str(directory))
+    errors, warnings = check_export_dir(str(directory), "<|im_end|>")
 
     assert errors == []
     assert warnings == []
 
 
 def test_a_missing_directory_is_reported_rather_than_crashing(tmp_path):
-    errors, _ = check_export_dir(str(tmp_path / "absent"))
+    errors, _ = check_export_dir(str(tmp_path / "absent"), "<|im_end|>")
 
     assert any("not a directory" in error for error in errors)
 
@@ -217,7 +218,7 @@ def test_missing_weights_are_an_error(tmp_path):
         tmp_path, tokenizer_config={"chat_template": "x"}, weights=""
     )
 
-    errors, _ = check_export_dir(str(directory))
+    errors, _ = check_export_dir(str(directory), "<|im_end|>")
 
     assert any("safetensors" in error for error in errors)
 
@@ -229,7 +230,7 @@ def test_a_sharded_export_is_accepted(tmp_path):
         weights="model.safetensors.index.json",
     )
 
-    errors, _ = check_export_dir(str(directory))
+    errors, _ = check_export_dir(str(directory), "<|im_end|>")
 
     assert errors == []
 
@@ -239,7 +240,7 @@ def test_a_missing_chat_template_is_an_error(tmp_path):
     # reaches the model in a format it was never trained on.
     directory = write_export(tmp_path, tokenizer_config={})
 
-    errors, _ = check_export_dir(str(directory))
+    errors, _ = check_export_dir(str(directory), "<|im_end|>")
 
     assert any("chat template" in error for error in errors)
 
@@ -248,7 +249,7 @@ def test_a_sidecar_template_file_counts_as_a_template(tmp_path):
     directory = write_export(tmp_path, tokenizer_config={})
     (directory / "chat_template.jinja").write_text("{{ x }}")
 
-    errors, _ = check_export_dir(str(directory))
+    errors, _ = check_export_dir(str(directory), "<|im_end|>")
 
     assert errors == []
 
@@ -257,7 +258,7 @@ def test_unparseable_tokenizer_config_is_reported(tmp_path):
     directory = write_export(tmp_path, tokenizer_config={"chat_template": "x"})
     (directory / "tokenizer_config.json").write_text("{not json")
 
-    errors, _ = check_export_dir(str(directory))
+    errors, _ = check_export_dir(str(directory), "<|im_end|>")
 
     assert any("valid JSON" in error for error in errors)
 
@@ -277,7 +278,7 @@ def test_missing_generation_config_is_a_hard_error(tmp_path):
         tmp_path, tokenizer_config={"chat_template": "x"}, generation_config=None
     )
 
-    errors, _ = check_export_dir(str(directory))
+    errors, _ = check_export_dir(str(directory), "<|im_end|>")
 
     assert any("generation_config.json" in error for error in errors)
 
@@ -291,7 +292,7 @@ def test_eos_token_id_missing_the_turn_end_id_is_a_hard_error(tmp_path):
         generation_config={"eos_token_id": [151643]},
     )
 
-    errors, _ = check_export_dir(str(directory))
+    errors, _ = check_export_dir(str(directory), "<|im_end|>")
 
     assert any("eos_token_id" in error and "<|im_end|>" in error for error in errors)
 
@@ -303,7 +304,7 @@ def test_a_scalar_eos_token_id_is_accepted(tmp_path):
         generation_config={"eos_token_id": TURN_END_TOKEN_ID},
     )
 
-    errors, _ = check_export_dir(str(directory))
+    errors, _ = check_export_dir(str(directory), "<|im_end|>")
 
     assert errors == []
 
@@ -316,7 +317,7 @@ def test_unresolvable_turn_end_token_id_is_a_hard_error(tmp_path):
         tokenizer_config={"chat_template": "x", "added_tokens_decoder": {}},
     )
 
-    errors, _ = check_export_dir(str(directory))
+    errors, _ = check_export_dir(str(directory), "<|im_end|>")
 
     assert any("cannot verify" in error for error in errors)
 
@@ -332,7 +333,31 @@ def test_the_turn_end_token_id_falls_back_to_tokenizer_json(tmp_path):
         )
     )
 
-    errors, _ = check_export_dir(str(directory))
+    errors, _ = check_export_dir(str(directory), "<|im_end|>")
+
+    assert errors == []
+
+
+def test_a_model_with_its_own_turn_end_token_passes(tmp_path):
+    # DeepSeek's distills carry no <|im_end|> at all: the turn ends on the
+    # tokenizer's end-of-sentence token, which only tokenizer.json names, and
+    # generation_config.json holds its id as a bare scalar.
+    directory = write_export(
+        tmp_path,
+        tokenizer_config={"chat_template": "x", "added_tokens_decoder": {}},
+        generation_config={"eos_token_id": 151643},
+    )
+    (directory / "tokenizer.json").write_text(
+        json.dumps(
+            {
+                "added_tokens": [
+                    {"id": 151643, "content": "<｜end▁of▁sentence｜>"}  # noqa: RUF001
+                ]
+            }
+        )
+    )
+
+    errors, _ = check_export_dir(str(directory), "<｜end▁of▁sentence｜>")  # noqa: RUF001
 
     assert errors == []
 

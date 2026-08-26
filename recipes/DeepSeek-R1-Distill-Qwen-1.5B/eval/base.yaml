@@ -1,0 +1,48 @@
+# Shared across every DeepSeek-R1-Distill-Qwen-1.5B eval tier. This is the
+# released reference model -- SFT'd by DeepSeek from the base Qwen2.5-Math-1.5B
+# -- measured on this project's serving stack so its numbers are comparable
+# with models trained here, rather than with the different stack that produced
+# the published ones. A tier file `extends` this one and overrides only what
+# actually differs between tiers.
+#
+# `server.max_model_len` is deliberately absent here: it differs per tier
+# because it must exceed that tier's `sampling.max_new_tokens` with room left
+# for the prompt, which the recipe loader enforces.
+
+eval:
+  lighteval_binary: lighteval
+  extra_args: []
+
+server:
+  # The released Hugging Face weights, staged onto the VM's local disk from
+  # the bucket; vLLM reads the safetensors directly.
+  model_path: models/DeepSeek-R1-Distill-Qwen-1.5B
+  served_model_name: null
+  # DeepSeek's chat template closes each turn with the tokenizer's own
+  # end-of-sentence token, and its generation_config.json names that id
+  # (151643) as the EOS. The bars are full-width characters: this string
+  # must match the tokenizer's exactly.
+  turn_end_token: <｜end▁of▁sentence｜>
+  serve_command: ["scripts/run_vllm_tpu_container.sh"]
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 1
+  # ~15 minutes. TPU startup includes weight transfer and an XLA compilation,
+  # neither of which is fast the first time.
+  startup_timeout_secs: 900
+  extra_args: []
+
+reporting:
+  summary_path: null
+  # Null on purpose: the chat template appends `<think>\n` to the generation
+  # prompt, so a completion can never carry the opening tag and a trace
+  # counts as closed when the closing tag appears.
+  reasoning_start: null
+  reasoning_end: </think>
+  answer_marker: "\\boxed{"
+  wandb:
+    project_name: open-r1-tpu
+    entity: null
+    mode: online
+    job_type: eval
+    run_id: null

@@ -122,6 +122,7 @@ EVAL_KEYS = {"tier", "tasks", "seeds", "max_samples", "lighteval_binary", "extra
 SERVER_KEYS = {
     "model_path",
     "served_model_name",
+    "turn_end_token",
     "serve_command",
     "image",
     "host",
@@ -204,6 +205,12 @@ def validate_eval_config(config: dict[str, Any]) -> None:
     model_path = config["server"].get("model_path")
     if not isinstance(model_path, str) or not model_path:
         raise ValueError("server.model_path must be a non-empty string")
+    turn_end_token = config["server"].get("turn_end_token")
+    if not isinstance(turn_end_token, str) or not turn_end_token:
+        raise ValueError(
+            "server.turn_end_token must name the token the model's chat "
+            "template closes each turn with (<|im_end|> on Qwen3)"
+        )
     serve_command = config["server"].get("serve_command")
     if serve_command is not None and (
         not isinstance(serve_command, list)
@@ -284,6 +291,16 @@ def validate_eval_config(config: dict[str, Any]) -> None:
     for key in ("reasoning_start", "reasoning_end", "answer_marker"):
         if key not in reporting:
             raise ValueError(f"reporting.{key} is required")
+    # Null means the serving chat template opens the reasoning block inside
+    # the prompt itself -- DeepSeek's distills append `<think>` to the
+    # generation prompt -- so a completion can only ever carry the closing
+    # tag and closure is judged on that alone.
+    reasoning_start = reporting["reasoning_start"]
+    if reasoning_start is not None and (
+        not isinstance(reasoning_start, str) or not reasoning_start
+    ):
+        raise ValueError("reporting.reasoning_start must be a non-empty string or null")
+    for key in ("reasoning_end", "answer_marker"):
         if not isinstance(reporting[key], str) or not reporting[key]:
             raise ValueError(f"reporting.{key} must be a non-empty string")
 
@@ -356,6 +373,7 @@ def resolve_settings(config: dict[str, Any]) -> dict[str, Any]:
         "extra_args": [str(arg) for arg in (evaluation.get("extra_args") or [])],
         "model_path": model_path,
         "served_model_name": served_model_name,
+        "turn_end_token": str(server["turn_end_token"]),
         "host": host,
         "port": port,
         "base_url": str(server.get("base_url") or f"http://{host}:{port}/v1"),
@@ -383,7 +401,11 @@ def resolve_settings(config: dict[str, Any]) -> dict[str, Any]:
             reporting.get("summary_path")
             or Path(output_dir) / f"summary_{evaluation.get('tier', 'unnamed')}.json"
         ),
-        "reasoning_start": str(reporting["reasoning_start"]),
+        "reasoning_start": (
+            None
+            if reporting["reasoning_start"] is None
+            else str(reporting["reasoning_start"])
+        ),
         "reasoning_end": str(reporting["reasoning_end"]),
         "answer_marker": str(reporting["answer_marker"]),
         "wandb": dict(reporting.get("wandb", {})),
@@ -634,7 +656,7 @@ def completion_stats(
     responses: Iterable[Any],
     *,
     max_new_tokens: int,
-    reasoning_start: str,
+    reasoning_start: str | None,
     reasoning_end: str,
     answer_marker: str,
 ) -> dict[str, Any]:
@@ -672,11 +694,16 @@ def completion_stats(
         for text in texts:
             completions += 1
             chars += len(text)
-            start = text.find(reasoning_start)
             end = text.find(reasoning_end)
-            # An opening tag before a closing one. Order matters: a stray
-            # closing tag alone is not a completed trace.
-            is_closed = start != -1 and end != -1 and end > start
+            if reasoning_start is None:
+                # The chat template opened the block inside the prompt, so
+                # the completion can only ever carry the closing tag.
+                is_closed = end != -1
+            else:
+                start = text.find(reasoning_start)
+                # An opening tag before a closing one. Order matters: a
+                # stray closing tag alone is not a completed trace.
+                is_closed = start != -1 and end != -1 and end > start
             has_marker = answer_marker in text
             closed += int(is_closed)
             marked += int(has_marker)

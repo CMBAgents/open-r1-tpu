@@ -921,8 +921,13 @@ question for this project: `OpenR1-Math-220k` carries no instruction-following
 or chat data at all.
 
 Every tier `extends: base.yaml`, which holds what is genuinely identical across
-them: the whole `server:` block except `max_model_len`, and the reporting
-markers and shared W&B settings. A tier file overrides only what actually
+them: the whole `server:` block except `max_model_len` — including
+`server.turn_end_token`, the token the preflight verifies the export's
+`generation_config.json` stops on, which differs per model family — and the
+reporting markers and shared W&B settings. The same four tiers exist for the
+reference model under `recipes/DeepSeek-R1-Distill-Qwen-1.5B/eval/`, run the
+way DeepSeek's published numbers were measured: no system prompt, its own
+turn-end token, `reasoning_start: null`. A tier file overrides only what actually
 differs — its tasks, seeds, context window, output directory, and its whole
 `sampling:` block, which stays in every tier file even where two tiers happen
 to agree, because a measurement-affecting setting belongs where it is easy to
@@ -965,7 +970,11 @@ each diagnosing a failure accuracy alone cannot separate:
   then `sampling.max_new_tokens` is too low and the accuracy under it is not
   trustworthy.
 - `reasoning_closed_rate` and `answer_marker_rate` — whether the model produces
-  the shape SFT was teaching, independent of whether the answer is right.
+  the shape SFT was teaching, independent of whether the answer is right. A
+  recipe sets `reporting.reasoning_start: null` when the model's chat template
+  opens the reasoning block inside the prompt itself (DeepSeek's distills append
+  `<think>` to the generation prompt), so a completion can only ever carry the
+  closing tag and closure is judged on that alone.
 - `mean_completion_tokens` — the length-inflation signal.
 
 `truncation_rate` and `mean_completion_tokens` are `null` when the detail shards

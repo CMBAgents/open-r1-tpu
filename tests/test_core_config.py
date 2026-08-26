@@ -124,7 +124,10 @@ def test_training_and_eval_resolve_the_same_file_to_identical_text(tmp_path):
     eval_settings = eval_resolve_settings(
         {
             "eval": {"tasks": ["gsm8k|0"], "seeds": [0]},
-            "server": {"model_path": "artifacts/model"},
+            "server": {
+                "model_path": "artifacts/model",
+                "turn_end_token": "<|im_end|>",
+            },
             "sampling": {
                 "temperature": 0.6,
                 "top_p": 0.95,
