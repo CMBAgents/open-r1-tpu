@@ -15,6 +15,8 @@
 # AIME24 pass@1 and 82.9% MATH-500 pass@1.
 #
 # TASK NAMES ARE NOT VERIFIED. Confirm against `lighteval tasks list`.
+extends: base.yaml
+
 eval:
   tier: tier2-headline
   tasks:
@@ -28,45 +30,20 @@ eval:
   # from an anecdote.
   seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
   max_samples: null
-  lighteval_binary: lighteval
-  extra_args: []
 
 server:
-  model_path: artifacts/Qwen3-1.7B-Math/merged
-  served_model_name: null
-  # Keep inference out of the host environment. With image omitted, the wrapper
-  # selects the local tag derived from docker/vllm-tpu's committed build inputs.
-  serve_command: ["scripts/run_vllm_tpu_container.sh"]
-  host: 127.0.0.1
-  port: 8000
   # Olympiad-level problems produce the longest traces in the suite.
   max_model_len: 24576
-  tensor_parallel_size: 1
-  startup_timeout_secs: 900
-  extra_args: []
 
 sampling:
   temperature: 0.6
   top_p: 0.95
   max_new_tokens: 20480
-  stop: ["<|im_end|>"]
-  system_prompt: >-
-    You are an assistant that solves problems by reasoning carefully before
-    giving the final answer. Put your detailed reasoning between <think> and
-    </think>, then give the concise final solution after </think>.
+  system_prompt_file: recipes/Qwen3-1.7B-Math/system_prompt.txt
 
 reporting:
   output_dir: artifacts/Qwen3-1.7B-Math/eval/tier2
-  summary_path: null
-  reasoning_start: <think>
-  reasoning_end: </think>
-  answer_marker: "\\boxed{"
   wandb:
     enabled: true
-    project_name: open-r1-tpu
-    run_id: null
     run_name: qwen3-1.7b-math-tier2
-    entity: null
-    mode: online
-    job_type: eval
     tags: [tpu, eval, aime]

@@ -21,8 +21,17 @@ def minimal_config(**overrides):
     config = {
         "eval": {"tier": "t", "tasks": ["suite|task|0"], "seeds": [0]},
         "server": {"model_path": "artifacts/model"},
-        "sampling": {},
-        "reporting": {},
+        "sampling": {
+            "temperature": 0.6,
+            "top_p": 0.95,
+            "max_new_tokens": 128,
+            "system_prompt_file": None,
+        },
+        "reporting": {
+            "reasoning_start": "<think>",
+            "reasoning_end": "</think>",
+            "answer_marker": "\\boxed{",
+        },
     }
     for section, values in overrides.items():
         config[section] = {**config[section], **values}
@@ -76,6 +85,36 @@ def test_regression_tier_drops_the_reasoning_system_prompt():
     assert "system_prompt" not in config["model_parameters"]
 
 
+def test_system_prompt_file_resolves_to_the_files_text(tmp_path):
+    prompt_path = tmp_path / "prompt.txt"
+    prompt_path.write_text("Reason first.\n", encoding="utf-8")
+
+    settings = evaluate.resolve_settings(
+        minimal_config(sampling={"system_prompt_file": str(prompt_path)})
+    )
+
+    # The trailing newline is stripped so an editor-added one cannot make an
+    # otherwise-identical file differ.
+    assert settings["system_prompt"] == "Reason first."
+
+
+def test_an_explicit_null_system_prompt_file_yields_no_prompt():
+    settings = evaluate.resolve_settings(
+        minimal_config(sampling={"system_prompt_file": None})
+    )
+
+    assert settings["system_prompt"] is None
+
+
+def test_a_missing_system_prompt_file_is_a_clear_error():
+    with pytest.raises(ValueError, match="system prompt file not found"):
+        evaluate.resolve_settings(
+            minimal_config(
+                sampling={"system_prompt_file": "recipes/does/not/exist.txt"}
+            )
+        )
+
+
 def test_the_system_prompt_travels_in_the_model_config_not_the_command_line():
     # `endpoint litellm` has no --system-prompt flag; system_prompt is a field
     # on LightEval's ModelConfig, read from the model_parameters mapping.
@@ -100,6 +139,93 @@ def test_every_section_is_required(section):
 
     with pytest.raises(ValueError, match=section):
         evaluate.validate_eval_config(config)
+
+
+@pytest.mark.parametrize(
+    "key", ["temperature", "top_p", "max_new_tokens", "system_prompt_file"]
+)
+def test_a_missing_required_sampling_key_names_itself(key):
+    config = minimal_config()
+    del config["sampling"][key]
+
+    with pytest.raises(ValueError, match=rf"sampling\.{key}"):
+        evaluate.validate_eval_config(config)
+
+
+def test_an_empty_sampling_section_is_rejected():
+    # Every measurement-affecting key is required, so an empty section is
+    # missing all of them rather than falling back to a default. (Passing
+    # sampling={} through minimal_config would merge onto its defaults rather
+    # than emptying the section, so the section is replaced directly here.)
+    config = minimal_config()
+    config["sampling"] = {}
+
+    with pytest.raises(ValueError, match="sampling"):
+        evaluate.validate_eval_config(config)
+
+
+@pytest.mark.parametrize("key", ["reasoning_start", "reasoning_end", "answer_marker"])
+def test_a_missing_required_reporting_key_names_itself(key):
+    config = minimal_config()
+    del config["reporting"][key]
+
+    with pytest.raises(ValueError, match=rf"reporting\.{key}"):
+        evaluate.validate_eval_config(config)
+
+
+@pytest.mark.parametrize(
+    ("section", "key", "suggestion"),
+    [
+        ("eval", "tsaks", "tasks"),
+        ("server", "modle_path", "model_path"),
+        ("sampling", "temperatur", "temperature"),
+        ("reporting", "reasoning_strat", "reasoning_start"),
+    ],
+)
+def test_an_unknown_key_is_rejected_with_a_close_match_suggestion(
+    section, key, suggestion
+):
+    config = minimal_config(**{section: {key: "x"}})
+
+    with pytest.raises(
+        ValueError, match=rf"Unknown key {section}\.{key}.*{suggestion}"
+    ):
+        evaluate.validate_eval_config(config)
+
+
+def test_an_unknown_wandb_key_is_rejected():
+    with pytest.raises(ValueError, match=r"Unknown key reporting\.wandb\.entty"):
+        evaluate.validate_eval_config(
+            minimal_config(reporting={"wandb": {"entty": None}})
+        )
+
+
+def test_a_typo_d_dotted_override_is_rejected_the_same_way():
+    # Overrides apply before validation runs, so a typo'd override becomes an
+    # unknown key here rather than silently doing nothing.
+    with pytest.raises(ValueError, match=r"Unknown key sampling\.max_new_token"):
+        evaluate.load_eval_config(TIER0, ["sampling.max_new_token=4096"])
+
+
+def test_wandb_requires_project_name_and_mode_when_enabled():
+    with pytest.raises(ValueError, match=r"wandb\.project_name"):
+        evaluate.validate_eval_config(
+            minimal_config(reporting={"wandb": {"enabled": True}})
+        )
+
+
+def test_wandb_can_omit_project_name_and_mode_when_disabled():
+    evaluate.validate_eval_config(
+        minimal_config(reporting={"wandb": {"enabled": False}})
+    )
+
+
+@pytest.mark.parametrize("system_prompt_file", ["", 3, []])
+def test_system_prompt_file_must_be_a_non_empty_string_or_null(system_prompt_file):
+    with pytest.raises(ValueError, match=r"system_prompt_file"):
+        evaluate.validate_eval_config(
+            minimal_config(sampling={"system_prompt_file": system_prompt_file})
+        )
 
 
 @pytest.mark.parametrize("tasks", [[], "gsm8k", [""], [1]], ids=str)
@@ -164,18 +290,13 @@ def test_served_model_name_defaults_to_the_export_directory():
     assert settings["base_url"] == "http://127.0.0.1:8000/v1"
 
 
-def test_stop_tokens_default_to_the_chat_turn_boundary():
-    # Qwen3-Base's EOS is <|endoftext|>, but the chat template ends a turn with
-    # <|im_end|>; without this the model writes the user's next turn too.
+def test_litellm_config_never_carries_stop_tokens():
+    # vLLM matches stop strings against decoded text with special tokens
+    # stripped, so a string like <|im_end|> can never fire on the real token.
+    # Turn termination comes from the export's generation_config.json, which
+    # `open_r1_tpu.evaluation.preflight.check_export_dir` verifies instead.
     settings = evaluate.resolve_settings(minimal_config())
 
-    assert settings["stop"] == ["<|im_end|>"]
-
-
-def test_stop_tokens_can_be_disabled_explicitly():
-    settings = evaluate.resolve_settings(minimal_config(sampling={"stop": []}))
-
-    assert settings["stop"] == []
     assert (
         "stop_tokens"
         not in evaluate.litellm_model_config(settings, 0)["model_parameters"][
@@ -317,6 +438,9 @@ def read_stats(tmp_path, records, **kwargs):
     """Round-trip records through a real Parquet shard and summarize them."""
     write_details_shard(tmp_path, records)
     responses = evaluate.read_detail_responses(evaluate.find_details_files(tmp_path))
+    kwargs.setdefault("reasoning_start", "<think>")
+    kwargs.setdefault("reasoning_end", "</think>")
+    kwargs.setdefault("answer_marker", "\\boxed{")
     return evaluate.completion_stats(responses, **kwargs)
 
 
@@ -477,7 +601,7 @@ def test_build_summary_records_the_stack_and_the_sampling_parameters():
         },
     )
 
-    assert summary["sampling"]["temperature"] == evaluate.DEFAULT_TEMPERATURE
+    assert summary["sampling"]["temperature"] == 0.6
     assert set(summary["stack"]) >= {
         "python",
         "lighteval",
@@ -605,6 +729,9 @@ def test_a_summary_survives_the_full_reduction_from_real_files(tmp_path):
         per_seed_stats[seed] = evaluate.completion_stats(
             evaluate.read_detail_responses(evaluate.find_details_files(seed_dir)),
             max_new_tokens=settings["max_new_tokens"],
+            reasoning_start=settings["reasoning_start"],
+            reasoning_end=settings["reasoning_end"],
+            answer_marker=settings["answer_marker"],
         )
 
     summary = evaluate.build_summary(settings, per_seed_metrics, per_seed_stats)

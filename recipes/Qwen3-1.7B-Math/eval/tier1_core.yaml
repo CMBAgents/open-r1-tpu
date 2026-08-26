@@ -14,6 +14,8 @@
 #
 # TASK NAMES ARE NOT VERIFIED. Confirm against `lighteval tasks list` before the
 # first run.
+extends: base.yaml
+
 eval:
   tier: tier1-core
   tasks:
@@ -24,21 +26,9 @@ eval:
     # 2.5pp per question, so it decides nothing that MATH-500 does not.
   seeds: [0, 1, 2]
   max_samples: null
-  lighteval_binary: lighteval
-  extra_args: []
 
 server:
-  model_path: artifacts/Qwen3-1.7B-Math/merged
-  served_model_name: null
-  # Keep inference out of the host environment. With image omitted, the wrapper
-  # selects the local tag derived from docker/vllm-tpu's committed build inputs.
-  serve_command: ["scripts/run_vllm_tpu_container.sh"]
-  host: 127.0.0.1
-  port: 8000
   max_model_len: 20480
-  tensor_parallel_size: 1
-  startup_timeout_secs: 900
-  extra_args: []
 
 sampling:
   # The DeepSeek-R1 recommended settings, which is what most published numbers
@@ -52,24 +42,11 @@ sampling:
   # Watch generation.truncation_rate in the summary: if it is not near zero,
   # this number is too low and the accuracy below it is not trustworthy.
   max_new_tokens: 16384
-  stop: ["<|im_end|>"]
-  system_prompt: >-
-    You are an assistant that solves problems by reasoning carefully before
-    giving the final answer. Put your detailed reasoning between <think> and
-    </think>, then give the concise final solution after </think>.
+  system_prompt_file: recipes/Qwen3-1.7B-Math/system_prompt.txt
 
 reporting:
   output_dir: artifacts/Qwen3-1.7B-Math/eval/tier1
-  summary_path: null
-  reasoning_start: <think>
-  reasoning_end: </think>
-  answer_marker: "\\boxed{"
   wandb:
     enabled: true
-    project_name: open-r1-tpu
-    run_id: null
     run_name: qwen3-1.7b-math-tier1
-    entity: null
-    mode: online
-    job_type: eval
     tags: [tpu, eval, math]

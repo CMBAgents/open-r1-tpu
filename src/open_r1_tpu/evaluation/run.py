@@ -41,6 +41,7 @@ than a reassuring 0.0.
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import logging
 import os
@@ -57,7 +58,7 @@ from typing import Any
 
 import yaml
 
-from open_r1_tpu.core.config import load_config
+from open_r1_tpu.core.config import load_config, read_prompt_file
 from open_r1_tpu.core.logging import LOG_LEVELS, configure_logging
 from open_r1_tpu.evaluation.stack import (
     EVALUATION_PACKAGE_VERSIONS,
@@ -67,28 +68,14 @@ from open_r1_tpu.evaluation.stack import (
 
 LOGGER = logging.getLogger(__name__)
 
-# Sampling defaults follow the DeepSeek-R1 recommendation, which is what the
-# distilled reasoning models are tuned for and what most published numbers use.
-# Greedy decoding on a reasoning model collapses into repetition often enough
-# that it is not a safe default, and it makes pass@k meaningless.
-DEFAULT_TEMPERATURE = 0.6
-DEFAULT_TOP_P = 0.95
-# Large on purpose. A trace cut off by the token cap is scored as wrong and
-# reads as a reasoning failure, so an undersized cap silently understates the
-# model. The chat test of the first math run hit exactly this at 2048.
-DEFAULT_MAX_NEW_TOKENS = 16384
-
-DEFAULT_REASONING_START = "<think>"
-DEFAULT_REASONING_END = "</think>"
-# Substring, not a regex: the LaTeX brace makes a regex needlessly fiddly and
-# the presence of the marker is all that is being counted.
-DEFAULT_ANSWER_MARKER = "\\boxed{"
-
-# Qwen3-Base names <|endoftext|> as its EOS while the chat template closes a
-# turn with <|im_end|>. A server left to the tokenizer's own EOS therefore runs
-# past the end of the reply and writes the user's next turn too, which under a
-# benchmark reads as a model that cannot stop reasoning.
-DEFAULT_STOP_TOKENS = ("<|im_end|>",)
+# Every setting that changes what the model generates or how it is scored --
+# sampling parameters, the system prompt, the reporting markers -- must be
+# explicit in the recipe. There are no defaults for any of them here: a
+# missing key is a ValueError naming it, never a silently filled-in value.
+# See each recipe for the rationale behind its own numbers (temperature 0.6 /
+# top_p 0.95 follow the DeepSeek-R1 recommendation the distilled models are
+# tuned for; max_new_tokens is deliberately large so a trace is never cut off
+# and scored as wrong).
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
@@ -127,11 +114,68 @@ def stack_versions() -> dict[str, str]:
     }
 
 
+# The complete key set each section accepts. A key outside this set is either
+# a typo or a stale setting from a schema that moved on, and both deserve an
+# error rather than being silently ignored -- including a typo'd dotted
+# override, since `load_config` applies overrides before validation runs.
+EVAL_KEYS = {"tier", "tasks", "seeds", "max_samples", "lighteval_binary", "extra_args"}
+SERVER_KEYS = {
+    "model_path",
+    "served_model_name",
+    "serve_command",
+    "image",
+    "host",
+    "port",
+    "max_model_len",
+    "tensor_parallel_size",
+    "extra_args",
+    "startup_timeout_secs",
+    "base_url",
+}
+SAMPLING_KEYS = {"temperature", "top_p", "max_new_tokens", "system_prompt_file"}
+REPORTING_KEYS = {
+    "output_dir",
+    "summary_path",
+    "reasoning_start",
+    "reasoning_end",
+    "answer_marker",
+    "wandb",
+}
+WANDB_KEYS = {
+    "enabled",
+    "project_name",
+    "run_id",
+    "run_name",
+    "entity",
+    "group",
+    "mode",
+    "job_type",
+    "tags",
+    "resume",
+}
+
+
+def _reject_unknown_keys(
+    prefix: str, section: Mapping[str, Any], allowed: set[str]
+) -> None:
+    """Reject a key outside a section's schema, suggesting the nearest match."""
+    for key in section:
+        if key not in allowed:
+            close = difflib.get_close_matches(str(key), sorted(allowed), n=1)
+            hint = f"; did you mean {close[0]!r}?" if close else ""
+            raise ValueError(f"Unknown key {prefix}.{key}{hint}")
+
+
 def validate_eval_config(config: dict[str, Any]) -> None:
     """Fail early for recipe mistakes that would otherwise waste TPU time."""
     for section in ("eval", "server", "sampling", "reporting"):
         if not isinstance(config.get(section), dict):
             raise ValueError(f"Missing configuration section: {section}")
+
+    _reject_unknown_keys("eval", config["eval"], EVAL_KEYS)
+    _reject_unknown_keys("server", config["server"], SERVER_KEYS)
+    _reject_unknown_keys("sampling", config["sampling"], SAMPLING_KEYS)
+    _reject_unknown_keys("reporting", config["reporting"], REPORTING_KEYS)
 
     tasks = config["eval"].get("tasks")
     if (
@@ -193,15 +237,34 @@ def validate_eval_config(config: dict[str, Any]) -> None:
     if not isinstance(port, int) or not 1 <= port <= 65535:
         raise ValueError("server.port must be a TCP port number")
 
-    temperature = config["sampling"].get("temperature", DEFAULT_TEMPERATURE)
+    sampling = config["sampling"]
+    for key in ("temperature", "top_p", "max_new_tokens"):
+        if key not in sampling:
+            raise ValueError(f"sampling.{key} is required")
+    # `.get()` cannot tell "absent" from "explicitly null", and tier 3 relies
+    # on an explicit null to mean "no system prompt" -- so presence is checked
+    # with `in` rather than a default.
+    if "system_prompt_file" not in sampling:
+        raise ValueError(
+            "sampling.system_prompt_file is required (use null for no system prompt)"
+        )
+
+    temperature = sampling["temperature"]
     if not isinstance(temperature, (int, float)) or temperature < 0:
         raise ValueError("sampling.temperature must be a non-negative number")
-    top_p = config["sampling"].get("top_p", DEFAULT_TOP_P)
+    top_p = sampling["top_p"]
     if not isinstance(top_p, (int, float)) or not 0 < top_p <= 1:
         raise ValueError("sampling.top_p must be in (0.0, 1.0]")
-    max_new_tokens = config["sampling"].get("max_new_tokens", DEFAULT_MAX_NEW_TOKENS)
+    max_new_tokens = sampling["max_new_tokens"]
     if not isinstance(max_new_tokens, int) or max_new_tokens <= 0:
         raise ValueError("sampling.max_new_tokens must be a positive integer")
+    system_prompt_file = sampling["system_prompt_file"]
+    if system_prompt_file is not None and (
+        not isinstance(system_prompt_file, str) or not system_prompt_file
+    ):
+        raise ValueError(
+            "sampling.system_prompt_file must be a non-empty string or null"
+        )
 
     max_model_len = config["server"].get("max_model_len")
     if max_model_len is not None:
@@ -217,11 +280,30 @@ def validate_eval_config(config: dict[str, Any]) -> None:
                 "the prompt"
             )
 
-    wandb = config["reporting"].get("wandb", {})
+    reporting = config["reporting"]
+    for key in ("reasoning_start", "reasoning_end", "answer_marker"):
+        if key not in reporting:
+            raise ValueError(f"reporting.{key} is required")
+        if not isinstance(reporting[key], str) or not reporting[key]:
+            raise ValueError(f"reporting.{key} must be a non-empty string")
+
+    wandb = reporting.get("wandb", {})
     if not isinstance(wandb, dict):
         raise ValueError("reporting.wandb must be a configuration mapping")
-    if not isinstance(wandb.get("enabled", False), bool):
+    _reject_unknown_keys("reporting.wandb", wandb, WANDB_KEYS)
+    enabled = wandb.get("enabled", False)
+    if not isinstance(enabled, bool):
         raise ValueError("reporting.wandb.enabled must be a boolean")
+    if enabled:
+        # `log_summary_to_wandb` no longer falls back for either key: a run
+        # logged to the wrong project or the wrong mode is a mistake worth
+        # catching at load time, not a reasonable default to guess.
+        for key in ("project_name", "mode"):
+            if key not in wandb:
+                raise ValueError(
+                    f"reporting.wandb.{key} is required when "
+                    "reporting.wandb.enabled is true"
+                )
     mode = wandb.get("mode", "online")
     if mode not in {"online", "offline", "disabled"}:
         raise ValueError("reporting.wandb.mode must be online, offline, or disabled")
@@ -282,20 +364,17 @@ def resolve_settings(config: dict[str, Any]) -> dict[str, Any]:
             str(part) for part in (serve_command or DEFAULT_SERVE_COMMAND)
         ],
         "server_image": server_image,
-        "temperature": float(sampling.get("temperature", DEFAULT_TEMPERATURE)),
-        "top_p": float(sampling.get("top_p", DEFAULT_TOP_P)),
-        "max_new_tokens": int(sampling.get("max_new_tokens", DEFAULT_MAX_NEW_TOKENS)),
-        # The recipe's own system prompt. Chatting the model off-distribution
-        # changes its behaviour, so evaluation renders the prompt training used.
-        "system_prompt": sampling.get("system_prompt"),
-        "stop": [
-            str(token)
-            for token in (
-                sampling["stop"]
-                if sampling.get("stop") is not None
-                else DEFAULT_STOP_TOKENS
-            )
-        ],
+        "temperature": float(sampling["temperature"]),
+        "top_p": float(sampling["top_p"]),
+        "max_new_tokens": int(sampling["max_new_tokens"]),
+        # The recipe's own system prompt, read from the file the recipe names.
+        # Chatting the model off-distribution changes its behaviour, so
+        # evaluation renders the prompt training used.
+        "system_prompt": (
+            read_prompt_file(sampling["system_prompt_file"])
+            if sampling["system_prompt_file"] is not None
+            else None
+        ),
         "tensor_parallel_size": int(server.get("tensor_parallel_size", 1)),
         "server_extra_args": [str(arg) for arg in (server.get("extra_args") or [])],
         "startup_timeout_secs": int(server.get("startup_timeout_secs", 900)),
@@ -304,11 +383,9 @@ def resolve_settings(config: dict[str, Any]) -> dict[str, Any]:
             reporting.get("summary_path")
             or Path(output_dir) / f"summary_{evaluation.get('tier', 'unnamed')}.json"
         ),
-        "reasoning_start": str(
-            reporting.get("reasoning_start", DEFAULT_REASONING_START)
-        ),
-        "reasoning_end": str(reporting.get("reasoning_end", DEFAULT_REASONING_END)),
-        "answer_marker": str(reporting.get("answer_marker", DEFAULT_ANSWER_MARKER)),
+        "reasoning_start": str(reporting["reasoning_start"]),
+        "reasoning_end": str(reporting["reasoning_end"]),
+        "answer_marker": str(reporting["answer_marker"]),
         "wandb": dict(reporting.get("wandb", {})),
     }
 
@@ -326,8 +403,12 @@ def litellm_model_config(settings: Mapping[str, Any], seed: int) -> dict[str, An
         "max_new_tokens": settings["max_new_tokens"],
         "seed": seed,
     }
-    if settings.get("stop"):
-        generation["stop_tokens"] = list(settings["stop"])
+    # No stop tokens: vLLM matches stop strings against decoded text with
+    # special tokens stripped, so a string like <|im_end|> can never fire on
+    # the real token. Turn termination comes from the export's
+    # generation_config.json naming it as an EOS, which
+    # `open_r1_tpu.evaluation.preflight.check_export_dir` verifies before a
+    # benchmark ever starts.
     parameters: dict[str, Any] = {
         "provider": "hosted_vllm",
         "model_name": f"hosted_vllm/{settings['served_model_name']}",
@@ -553,9 +634,9 @@ def completion_stats(
     responses: Iterable[Any],
     *,
     max_new_tokens: int,
-    reasoning_start: str = DEFAULT_REASONING_START,
-    reasoning_end: str = DEFAULT_REASONING_END,
-    answer_marker: str = DEFAULT_ANSWER_MARKER,
+    reasoning_start: str,
+    reasoning_end: str,
+    answer_marker: str,
 ) -> dict[str, Any]:
     """Summarize generations along the axes accuracy alone cannot separate.
 
@@ -894,9 +975,13 @@ def log_summary_to_wandb(
 
     run_id = wandb_config.get("run_id")
     run_name = wandb_config.get("run_name") or f"{settings['tier']}-eval"
+    # No fallback for project_name or mode: validate_eval_config requires both
+    # whenever reporting.wandb.enabled is true, so logging to the wrong project
+    # or mode is a recipe mistake worth catching at load time, not a default
+    # worth guessing here.
     init_kwargs: dict[str, Any] = {
-        "project": wandb_config.get("project_name", "open-r1-tpu"),
-        "mode": wandb_config.get("mode", "online"),
+        "project": wandb_config["project_name"],
+        "mode": wandb_config["mode"],
         "job_type": wandb_config.get("job_type", "eval"),
     }
     for key in ("entity", "group", "tags"):

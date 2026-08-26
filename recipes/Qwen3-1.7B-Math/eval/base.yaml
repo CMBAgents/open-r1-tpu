@@ -1,0 +1,47 @@
+# Shared across every Qwen3-1.7B-Math eval tier. A tier file `extends` this
+# one and overrides only what actually differs between tiers -- the task
+# list, seeds, the context window, and every measurement-affecting sampling
+# knob, which stays in each tier file on purpose even where two tiers happen
+# to agree (see each tier's own sampling: block).
+#
+# `server.max_model_len` is deliberately absent here: it differs per tier
+# because it must exceed that tier's `sampling.max_new_tokens` with room left
+# for the prompt, which the recipe loader enforces.
+
+eval:
+  lighteval_binary: lighteval
+  extra_args: []
+
+server:
+  # The merged export, not a checkpoint: vLLM reads Hugging Face safetensors.
+  # Override to models/Qwen3-1.7B-Base to measure the untrained baseline on
+  # this identical stack.
+  model_path: artifacts/Qwen3-1.7B-Math/merged
+  served_model_name: null
+  # The host stays on the locked Python 3.13 LightEval stack; this wrapper
+  # runs vLLM in the local image derived from docker/vllm-tpu's committed
+  # build inputs, with persistent Hub/XLA cache volumes and explicit cleanup.
+  # Omit image to select that derived tag; set a digest-pinned remote image
+  # only for an externally managed rollback or escape hatch.
+  serve_command: ["scripts/run_vllm_tpu_container.sh"]
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 1
+  # ~15 minutes. TPU startup includes weight transfer and an XLA compilation,
+  # neither of which is fast the first time.
+  startup_timeout_secs: 900
+  extra_args: []
+
+reporting:
+  summary_path: null
+  reasoning_start: <think>
+  reasoning_end: </think>
+  answer_marker: "\\boxed{"
+  wandb:
+    project_name: open-r1-tpu
+    entity: null
+    mode: online
+    job_type: eval
+    # Set to the training run's W&B id to put these numbers on the same run
+    # as the loss curves. W&B resumes by id, never by name.
+    run_id: null

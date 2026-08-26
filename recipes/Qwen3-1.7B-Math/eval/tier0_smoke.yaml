@@ -16,6 +16,8 @@
 # `open_r1_tpu.evaluation.preflight` resolves every name here against the
 # installed registry, so
 # run the preflight rather than trusting this file.
+extends: base.yaml
+
 eval:
   tier: tier0-smoke
   tasks:
@@ -24,31 +26,11 @@ eval:
   seeds: [0]
   # Enough to expose a systematic format failure, far too few to score.
   max_samples: 200
-  lighteval_binary: lighteval
-  extra_args: []
 
 server:
-  # The merged export, not a checkpoint: vLLM reads Hugging Face safetensors.
-  # Override to models/Qwen3-1.7B-Base to measure the untrained baseline on this
-  # identical stack.
-  model_path: artifacts/Qwen3-1.7B-Math/merged
-  served_model_name: null
-  # The host stays on the locked Python 3.13 LightEval stack; this wrapper runs
-  # vLLM in the local image derived from docker/vllm-tpu's committed build
-  # inputs, with persistent Hub/XLA cache volumes and explicit cleanup.
-  # Omit image to select that derived tag; set a digest-pinned remote image only
-  # for an externally managed rollback or escape hatch.
-  serve_command: ["scripts/run_vllm_tpu_container.sh"]
-  host: 127.0.0.1
-  port: 8000
   # Prompt plus completion. Must exceed sampling.max_new_tokens with room for
   # the problem, which the recipe loader enforces.
   max_model_len: 12288
-  tensor_parallel_size: 1
-  # ~15 minutes. TPU startup includes weight transfer and an XLA compilation,
-  # neither of which is fast the first time.
-  startup_timeout_secs: 900
-  extra_args: []
 
 sampling:
   # Greedy. Successive smoke tests stay comparable, and a repetition loop shows
@@ -56,31 +38,11 @@ sampling:
   temperature: 0.0
   top_p: 1.0
   max_new_tokens: 8192
-  # Belt and braces only. vLLM matches stop strings against decoded text with
-  # special tokens stripped, so this never fires on a real <|im_end|> token;
-  # turn termination comes from the export's generation_config.json, which
-  # names <|im_end|> as an EOS (Qwen3-Base's names only <|endoftext|>).
-  stop: ["<|im_end|>"]
-  # Must match the training recipe's dataset.system_prompt verbatim.
-  system_prompt: >-
-    You are an assistant that solves problems by reasoning carefully before
-    giving the final answer. Put your detailed reasoning between <think> and
-    </think>, then give the concise final solution after </think>.
+  system_prompt_file: recipes/Qwen3-1.7B-Math/system_prompt.txt
 
 reporting:
   output_dir: artifacts/Qwen3-1.7B-Math/eval/tier0
-  summary_path: null
-  reasoning_start: <think>
-  reasoning_end: </think>
-  answer_marker: "\\boxed{"
   wandb:
     enabled: false
-    project_name: open-r1-tpu
-    # Set to the training run's W&B id to put these numbers on the same run as
-    # the loss curves. W&B resumes by id, never by name.
-    run_id: null
     run_name: qwen3-1.7b-math-tier0
-    entity: null
-    mode: online
-    job_type: eval
     tags: [tpu, eval, smoke]

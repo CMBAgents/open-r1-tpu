@@ -70,8 +70,17 @@ def test_external_server_runtime_is_reported_as_unchecked():
                 "serve_command": ["vllm", "serve"],
                 "image": None,
             },
-            "sampling": {},
-            "reporting": {},
+            "sampling": {
+                "temperature": 0.6,
+                "top_p": 0.95,
+                "max_new_tokens": 128,
+                "system_prompt_file": None,
+            },
+            "reporting": {
+                "reasoning_start": "<think>",
+                "reasoning_end": "</think>",
+                "answer_marker": "\\boxed{",
+            },
         }
     )
 
@@ -311,7 +320,11 @@ def test_every_recipe_task_resolves_against_the_installed_lighteval():
     known = check_eval_env.registry_task_names()
     assert known is not None, "LightEval's registry could not be read"
 
+    # base.yaml is not a standalone recipe -- it has no eval:/sampling: of its
+    # own and is only ever reached through another recipe's `extends`.
     for recipe in sorted(Path("recipes").glob("*/eval/*.yaml")):
+        if recipe.name == "base.yaml":
+            continue
         settings = resolve_settings(load_eval_config(str(recipe)))
         errors, warnings = check_task_names(settings["tasks"], known=known)
         assert errors == [], f"{recipe}: {errors}"

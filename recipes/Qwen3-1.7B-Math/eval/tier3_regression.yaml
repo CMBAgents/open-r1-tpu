@@ -17,6 +17,8 @@
 # loads the model in-process. Everything in this tier is generative.
 #
 # TASK NAMES ARE NOT VERIFIED. Confirm against `lighteval tasks list`.
+extends: base.yaml
+
 eval:
   tier: tier3-regression
   tasks:
@@ -31,21 +33,9 @@ eval:
     # regression needs a different scoring path.
   seeds: [0, 1, 2]
   max_samples: null
-  lighteval_binary: lighteval
-  extra_args: []
 
 server:
-  model_path: artifacts/Qwen3-1.7B-Math/merged
-  served_model_name: null
-  # Keep inference out of the host environment. With image omitted, the wrapper
-  # selects the local tag derived from docker/vllm-tpu's committed build inputs.
-  serve_command: ["scripts/run_vllm_tpu_container.sh"]
-  host: 127.0.0.1
-  port: 8000
   max_model_len: 8192
-  tensor_parallel_size: 1
-  startup_timeout_secs: 900
-  extra_args: []
 
 sampling:
   temperature: 0.6
@@ -53,25 +43,15 @@ sampling:
   # Shorter than the maths tiers: these are not long-CoT benchmarks, and IFEval
   # in particular scores instruction compliance rather than reasoning depth.
   max_new_tokens: 4096
-  stop: ["<|im_end|>"]
   # Deliberately null, unlike the maths tiers. The training system prompt
   # instructs the model to emit a reasoning trace before answering, which on
   # IFEval is itself an instruction-following failure. This tier measures the
   # model as a general assistant, so it is asked as one.
-  system_prompt: null
+  system_prompt_file: null
 
 reporting:
   output_dir: artifacts/Qwen3-1.7B-Math/eval/tier3
-  summary_path: null
-  reasoning_start: <think>
-  reasoning_end: </think>
-  answer_marker: "\\boxed{"
   wandb:
     enabled: true
-    project_name: open-r1-tpu
-    run_id: null
     run_name: qwen3-1.7b-math-tier3
-    entity: null
-    mode: online
-    job_type: eval
     tags: [tpu, eval, regression]
