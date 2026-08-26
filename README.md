@@ -944,6 +944,16 @@ and standard deviation; `aggregate_across_seeds` reports a null standard
 deviation at one seed rather than a reassuring `0.0`. Three seeds is the
 documented minimum at MATH-500's size, ten at AIME's.
 
+`eval.seeds` indexes replicates; it does not seed them. The TPU backend refuses
+a per-request seed outright — `TpuPlatform.validate_request` raises "JAX does
+not support per-request seed." for any request vLLM classifies as
+`RANDOM_SEED`, which is any seeded request with `temperature > 0` — and the
+refusal arrives as an empty-body HTTP 500 that LightEval retries rather than
+reports. So no seed is sent, replicates differ by the server's own RNG stream,
+and the summary records `seeded_replicates: false`. Spread across replicates
+remains a valid estimate of sampling variance, which is what the seeds are for;
+reproducing an individual replicate is not available on this backend.
+
 Published numbers are not a baseline either — they were produced by a different
 stack. Measure the base model on this one:
 

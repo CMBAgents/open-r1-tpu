@@ -1,5 +1,7 @@
 import json
 import os
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pyarrow as pa
@@ -85,7 +87,7 @@ def test_regression_tier_drops_the_reasoning_system_prompt():
     settings = evaluate.resolve_settings(evaluate.load_eval_config(TIER3))
 
     assert settings["system_prompt"] is None
-    config = evaluate.litellm_model_config(settings, seed=0)
+    config = evaluate.litellm_model_config(settings)
     assert "system_prompt" not in config["model_parameters"]
 
 
@@ -124,7 +126,7 @@ def test_the_system_prompt_travels_in_the_model_config_not_the_command_line():
     # on LightEval's ModelConfig, read from the model_parameters mapping.
     settings = evaluate.resolve_settings(evaluate.load_eval_config(TIER0))
 
-    config = evaluate.litellm_model_config(settings, seed=0)
+    config = evaluate.litellm_model_config(settings)
     command = evaluate.lighteval_command(settings, "m.yaml", "out")
 
     assert config["model_parameters"]["system_prompt"] == settings["system_prompt"]
@@ -320,20 +322,36 @@ def test_litellm_config_never_carries_stop_tokens():
 
     assert (
         "stop_tokens"
-        not in evaluate.litellm_model_config(settings, 0)["model_parameters"][
+        not in evaluate.litellm_model_config(settings)["model_parameters"][
             "generation_parameters"
         ]
     )
 
 
-def test_litellm_config_threads_the_seed_and_targets_the_local_server():
+def test_litellm_config_targets_the_local_server():
     settings = evaluate.resolve_settings(minimal_config())
 
-    parameters = evaluate.litellm_model_config(settings, 7)["model_parameters"]
+    parameters = evaluate.litellm_model_config(settings)["model_parameters"]
 
     assert parameters["model_name"] == "hosted_vllm/model"
     assert parameters["base_url"] == "http://127.0.0.1:8000/v1"
-    assert parameters["generation_parameters"]["seed"] == 7
+
+
+def test_litellm_config_never_sends_a_per_request_seed():
+    # The TPU backend refuses SamplingType.RANDOM_SEED outright -- vLLM assigns
+    # it whenever a seed accompanies temperature > 0 -- and the refusal arrives
+    # as an empty-body 500 that LightEval retries rather than reports. Sending
+    # one starves every sampled tier.
+    settings = evaluate.resolve_settings(minimal_config())
+
+    generation = evaluate.litellm_model_config(settings)["model_parameters"][
+        "generation_parameters"
+    ]
+
+    assert "seed" not in generation
+    assert generation["temperature"] == settings["temperature"]
+    assert generation["top_p"] == settings["top_p"]
+    assert generation["max_new_tokens"] == settings["max_new_tokens"]
 
 
 def test_lighteval_command_joins_tasks_and_appends_extra_args():
@@ -640,6 +658,9 @@ def test_build_summary_records_the_stack_and_the_sampling_parameters():
     )
 
     assert summary["sampling"]["temperature"] == 0.6
+    # Replicates are unseeded on this backend, and an archived summary listing
+    # `seeds: [0, 1, 2]` must not be read as reproducible sample-by-sample.
+    assert summary["seeded_replicates"] is False
     assert set(summary["stack"]) >= {
         "python",
         "lighteval",
@@ -781,6 +802,99 @@ def test_a_summary_survives_the_full_reduction_from_real_files(tmp_path):
     assert evaluate.read_json(tmp_path / "summary.json") == json.loads(
         json.dumps(summary)
     )
+
+
+# --- sampling probe --------------------------------------------------------
+
+
+class _FakeResponse:
+    def __init__(self, status=200):
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+
+def _http_error(code, body=b""):
+    import email.message
+    import io
+
+    return urllib.error.HTTPError(
+        "http://127.0.0.1:8000/v1/chat/completions",
+        code,
+        "err",
+        email.message.Message(),
+        io.BytesIO(body),
+    )
+
+
+def test_sampling_probe_sends_the_recipes_parameters_and_no_seed(monkeypatch):
+    settings = evaluate.resolve_settings(minimal_config())
+    sent = {}
+
+    def fake_urlopen(request, timeout=None):
+        sent["url"] = request.full_url
+        sent["payload"] = json.loads(request.data.decode())
+        return _FakeResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    evaluate.check_sampling_accepted(settings)
+
+    assert sent["url"] == "http://127.0.0.1:8000/v1/chat/completions"
+    assert sent["payload"]["temperature"] == settings["temperature"]
+    assert sent["payload"]["top_p"] == settings["top_p"]
+    assert sent["payload"]["model"] == settings["served_model_name"]
+    # A probe that reserved real decode time would tax every run it protects.
+    assert sent["payload"]["max_tokens"] == 1
+    # Probing with a seed would test parameters the run does not send.
+    assert "seed" not in sent["payload"]
+
+
+def test_sampling_probe_reports_an_empty_bodied_refusal(monkeypatch):
+    # This is exactly how the TPU backend refuses a per-request seed: a 500
+    # carrying no body and no traceback anywhere in the server log.
+    settings = evaluate.resolve_settings(minimal_config())
+
+    def fake_urlopen(request, timeout=None):
+        raise _http_error(500)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(RuntimeError) as caught:
+        evaluate.check_sampling_accepted(settings)
+
+    message = str(caught.value)
+    assert "HTTP 500" in message
+    assert "empty body" in message
+    assert f"temperature={settings['temperature']}" in message
+    assert "nothing was run" in message
+
+
+def test_sampling_probe_passes_on_the_servers_own_explanation(monkeypatch):
+    settings = evaluate.resolve_settings(minimal_config())
+
+    def fake_urlopen(request, timeout=None):
+        raise _http_error(400, b"JAX does not support per-request seed.")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(RuntimeError, match="JAX does not support per-request seed"):
+        evaluate.check_sampling_accepted(settings)
+
+
+def test_sampling_probe_distinguishes_an_unreachable_server(monkeypatch):
+    settings = evaluate.resolve_settings(minimal_config())
+
+    def fake_urlopen(request, timeout=None):
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(RuntimeError, match="Could not reach"):
+        evaluate.check_sampling_accepted(settings)
 
 
 # --- integration -----------------------------------------------------------

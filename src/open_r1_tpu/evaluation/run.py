@@ -412,18 +412,30 @@ def resolve_settings(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def litellm_model_config(settings: Mapping[str, Any], seed: int) -> dict[str, Any]:
-    """Build the litellm model file LightEval reads for one seed.
+def litellm_model_config(settings: Mapping[str, Any]) -> dict[str, Any]:
+    """Build the litellm model file LightEval reads for one replicate.
 
     `hosted_vllm/` is the litellm provider prefix for a self-hosted server; the
     part after it must match the name vLLM serves the model under, or the
     server answers with a model-not-found rather than a completion.
     """
+    # No per-request `seed`. vLLM classifies a request carrying one as
+    # SamplingType.RANDOM_SEED whenever temperature > 0, and the TPU backend
+    # refuses that outright: `TpuPlatform.validate_request` raises "JAX does
+    # not support per-request seed.". It reaches the client as an empty-body
+    # HTTP 500 with no traceback, and LightEval answers by retrying eight times
+    # with backoff and moving on, so every sampled request fails and the tier
+    # produces nothing. Greedy tiers never saw it because temperature == 0
+    # makes the request GREEDY and the seed inert.
+    #
+    # `eval.seeds` therefore indexes independent replicates rather than
+    # determining them. Spread across replicates stays a valid estimate of
+    # sampling variance; reproducing one individually is not available on this
+    # backend, which is what `seeded_replicates: false` records in the summary.
     generation: dict[str, Any] = {
         "temperature": settings["temperature"],
         "top_p": settings["top_p"],
         "max_new_tokens": settings["max_new_tokens"],
-        "seed": seed,
     }
     # No stop tokens: vLLM matches stop strings against decoded text with
     # special tokens stripped, so a string like <|im_end|> can never fire on
@@ -528,6 +540,60 @@ def container_image_provenance(settings: Mapping[str, Any]) -> dict[str, Any] | 
     if not isinstance(provenance, dict):
         raise RuntimeError("vLLM container provenance was not a JSON object")
     return provenance
+
+
+def check_sampling_accepted(
+    settings: Mapping[str, Any], timeout_secs: int = 120
+) -> None:
+    """Fail fast if the server refuses this recipe's generation parameters.
+
+    LightEval treats a rejected request as a transient fault: eight retries
+    with exponential backoff, then on to the next sample. A parameter the
+    backend refuses therefore does not stop the run, it starves it -- tier 1
+    spent three and a half hours emitting 5,332 HTTP 500s and no results. One
+    cheap request before the harness starts turns that into an immediate error
+    naming what the server would not accept.
+
+    Sent with the recipe's real temperature and top_p, since which parameters
+    are refused depends on their values: the TPU backend accepts a seed under
+    greedy decoding and rejects the same seed once temperature > 0.
+    """
+    url = str(settings["base_url"]).rstrip("/") + "/chat/completions"
+    payload = {
+        "model": settings["served_model_name"],
+        "messages": [{"role": "user", "content": "ping"}],
+        # One token is enough to prove the sampler accepted the request; this
+        # runs on the evaluation's own chip, so it must not be a real workload.
+        "max_tokens": 1,
+        "temperature": settings["temperature"],
+        "top_p": settings["top_p"],
+    }
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            # The server is local and unauthenticated, but rejects a request
+            # carrying no key at all, exactly as litellm's does.
+            "Authorization": "Bearer local",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_secs) as response:
+            if response.status != 200:
+                raise RuntimeError(f"probe returned HTTP {response.status}")
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            "The server refused this recipe's generation parameters "
+            f"(temperature={payload['temperature']}, top_p={payload['top_p']}): "
+            f"HTTP {error.code}"
+            + (f": {detail}" if detail else " with an empty body")
+            + ". Evaluating would produce nothing, so nothing was run."
+        ) from error
+    except (urllib.error.URLError, OSError) as error:
+        raise RuntimeError(f"Could not reach {url}: {error}") from error
+    LOGGER.info("Server accepted this recipe's generation parameters")
 
 
 def lighteval_command(
@@ -866,7 +932,7 @@ def run_seed(
     seed_dir.mkdir(parents=True, exist_ok=True)
     model_config_path = seed_dir / "litellm_model.yaml"
     model_config_path.write_text(
-        yaml.safe_dump(litellm_model_config(settings, seed), sort_keys=False),
+        yaml.safe_dump(litellm_model_config(settings), sort_keys=False),
         encoding="utf-8",
     )
 
@@ -946,6 +1012,9 @@ def build_summary(
         "served_model_name": settings["served_model_name"],
         "tasks": list(settings["tasks"]),
         "seeds": list(settings["seeds"]),
+        # `seeds` indexes replicates; the backend rejects per-request seeds, so
+        # an archived summary must not be read as reproducible sample-by-sample.
+        "seeded_replicates": False,
         "sampling": {
             "temperature": settings["temperature"],
             "top_p": settings["top_p"],
@@ -1057,6 +1126,7 @@ def run(settings: dict[str, Any]) -> dict[str, Any]:
     """Evaluate every seed, then reduce, persist, and report."""
     server_provenance = container_image_provenance(settings)
     wait_for_server(settings["base_url"], int(settings["startup_timeout_secs"]))
+    check_sampling_accepted(settings)
 
     work_dir = Path(settings["output_dir"]).expanduser()
     work_dir.mkdir(parents=True, exist_ok=True)
