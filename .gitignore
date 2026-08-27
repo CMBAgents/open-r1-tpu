@@ -223,3 +223,7 @@ data/
 models/
 wandb/
 .litellm_cache/
+
+# Real tracing config: deployment-specific (bucket, hosts). Only the
+# neutral configs/tracing.example.yaml is committed.
+configs/tracing.yaml

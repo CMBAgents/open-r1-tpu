@@ -79,6 +79,27 @@ dev = [
   "pyright>=1.1.400",
   "pytest>=8.0",
   "ruff>=0.14",
+  # For testing docker/trace-proxy/gcs_logger.py locally. Both are loose
+  # bounds on purpose: at runtime the logger uses whatever versions the
+  # pinned litellm proxy image ships (httpx is a litellm core dependency,
+  # google-auth arrives via its google-cloud extras), so the local pins only
+  # need the same stable APIs, not the same versions.
+  "google-auth>=2.30",
+  "httpx>=0.27",
+]
+# Optional trace-capture-to-Langfuse pipeline (docker/langfuse/README.md):
+# `open_r1_tpu.tracing.ingest`/`.scores`. Not part of the frozen evaluation
+# environment -- it has nothing to do with running LightEval or vLLM, and
+# installs into its own venv so `.venv`'s drift test stays untouched.
+tracing = [
+  # Exact pin, matching this project's convention elsewhere. This is the
+  # Python SDK's OpenTelemetry-native generation (what Langfuse's own docs
+  # call "Python SDK v3"; the PyPI package's own version numbering moved to a
+  # 4.x major version for it). `open_r1_tpu.tracing.ingest`/`.scores` use
+  # `Client.create_trace_id`, `Client.start_observation`, and
+  # `Client.create_score` from this exact generation -- see ingest.py's
+  # module docstring for two SDK limitations already worked around.
+  "langfuse==4.14.5",
 ]
 
 [tool.setuptools.packages.find]
