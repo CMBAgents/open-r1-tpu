@@ -100,6 +100,10 @@ RESPONSE_COLUMNS = ("model_response", "__model_response__")
 _TEXT_KEYS = ("text", "final_text", "generated_text", "predictions", "result")
 _TOKEN_KEYS = ("output_tokens", "generated_tokens", "num_generated_tokens")
 
+# LightEval writes a generic aggregate under this key alongside the per-task
+# keys, on every invocation, whatever ran. `normalise_results` drops it.
+LIGHTEVAL_AGGREGATE_KEY = "all"
+
 
 def _version(distribution: str) -> str:
     try:
@@ -815,13 +819,20 @@ def normalise_results(results: Mapping[str, Any]) -> dict[str, dict[str, float]]
     here would silently drop the one a newly added task reports. Standard-error
     columns are dropped: this module reports spread across seeds instead, which
     is the spread that actually moves.
+
+    LightEval's generic `all` aggregate is dropped too. It is written on every
+    invocation whatever ran, so under one task per invocation (see `run_seed`)
+    it is a copy of that one task's metrics carrying no cross-task information
+    -- and every task of a seed writes its own, so keeping them would collide
+    on merge. A per-task key always carries the suite/few-shot separator, so
+    the bare name cannot be mistaken for a task.
     """
     scores = results.get("results")
     if not isinstance(scores, Mapping):
         raise ValueError("LightEval results file has no 'results' mapping")
     normalised: dict[str, dict[str, float]] = {}
     for task, metrics in scores.items():
-        if not isinstance(metrics, Mapping):
+        if str(task) == LIGHTEVAL_AGGREGATE_KEY or not isinstance(metrics, Mapping):
             continue
         numeric = {
             name: float(value)
@@ -1000,12 +1011,19 @@ def run_seed(
         LOGGER.info("seed %d %s: %s", seed, task, " ".join(command))
         subprocess.run(command, check=True)
 
-        for name, values in normalise_results(
-            read_json(find_results_file(task_dir))
-        ).items():
+        task_metrics = normalise_results(read_json(find_results_file(task_dir)))
+        if not task_metrics:
+            raise ValueError(
+                f"Task {task} reported no per-task metrics; its results file "
+                f"under {task_dir} holds only LightEval's "
+                f"{LIGHTEVAL_AGGREGATE_KEY!r} aggregate or nothing numeric"
+            )
+        for name, values in task_metrics.items():
             # The results key is LightEval's, not the recipe's task spec, so
             # two specs mapping onto one key would silently overwrite a
-            # finished task's metrics -- refuse instead.
+            # finished task's metrics -- refuse instead. LightEval's own `all`
+            # aggregate, which every invocation writes and which would collide
+            # here on every seed, is already dropped by `normalise_results`.
             if name in metrics:
                 raise ValueError(
                     f"Task {task} reports results under {name!r}, which an "

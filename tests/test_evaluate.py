@@ -616,6 +616,20 @@ def test_normalise_results_drops_stderr_and_non_numeric_metrics():
     }
 
 
+def test_normalise_results_drops_lighteval_s_generic_all_aggregate():
+    # LightEval writes `all` on every invocation whatever ran, so under one
+    # task per invocation it is a copy of that task's own metrics -- and every
+    # task of a seed writes one, which would collide when they are merged.
+    results = {
+        "results": {
+            "task|0": {"extractive_match": 0.5},
+            "all": {"extractive_match": 0.5},
+        }
+    }
+
+    assert evaluate.normalise_results(results) == {"task|0": {"extractive_match": 0.5}}
+
+
 def test_normalise_results_rejects_a_file_with_no_results():
     with pytest.raises(ValueError, match="results"):
         evaluate.normalise_results({"config_general": {}})
@@ -903,6 +917,44 @@ def test_run_seed_refuses_two_tasks_reporting_under_one_results_key(
     )
 
     with pytest.raises(ValueError, match="already wrote"):
+        evaluate.run_seed(settings, 0, tmp_path)
+
+
+def test_run_seed_merges_tasks_that_each_wrote_an_all_aggregate(tmp_path, monkeypatch):
+    # Every invocation writes LightEval's generic `all` alongside its task key,
+    # so one invocation per task means one `all` per task. That is not two
+    # tasks colliding on one results key, and `all` is not a task to report.
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(command, check):
+        task = command[4]
+        out_dir = Path(command[command.index("--output-dir") + 1])
+        key = f"{task.split('|')[1]}|0"
+        write_results_file(out_dir, {key: {"acc": 1.0}, "all": {"acc": 1.0}})
+
+    monkeypatch.setattr(evaluate.subprocess, "run", fake_run)
+    settings = evaluate.resolve_settings(
+        minimal_config(eval={"tasks": ["suite|a|0", "suite|b|0"]})
+    )
+
+    metrics, _ = evaluate.run_seed(settings, 0, tmp_path)
+
+    assert set(metrics) == {"a|0", "b|0"}
+
+
+def test_run_seed_refuses_a_task_that_reported_only_an_aggregate(tmp_path, monkeypatch):
+    # Dropping `all` must not turn a task that reported nothing else into a
+    # silently missing row in the summary.
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(command, check):
+        out_dir = Path(command[command.index("--output-dir") + 1])
+        write_results_file(out_dir, {"all": {"acc": 1.0}})
+
+    monkeypatch.setattr(evaluate.subprocess, "run", fake_run)
+    settings = evaluate.resolve_settings(minimal_config(eval={"tasks": ["suite|a|0"]}))
+
+    with pytest.raises(ValueError, match="no per-task metrics"):
         evaluate.run_seed(settings, 0, tmp_path)
 
 
