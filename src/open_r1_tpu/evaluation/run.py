@@ -46,7 +46,9 @@ import json
 import logging
 import os
 import platform
+import re
 import shlex
+import shutil
 import statistics
 import subprocess
 import urllib.error
@@ -597,15 +599,22 @@ def check_sampling_accepted(
 
 
 def lighteval_command(
-    settings: Mapping[str, Any], model_config_path: str | Path, output_dir: str | Path
+    settings: Mapping[str, Any],
+    model_config_path: str | Path,
+    output_dir: str | Path,
+    task: str,
 ) -> list[str]:
-    """Build the LightEval invocation for one seed."""
+    """Build the LightEval invocation for one task of one seed.
+
+    Exactly one task per invocation, never a comma-joined list; `run_seed`
+    explains why.
+    """
     command = [
         settings["lighteval_binary"],
         "endpoint",
         "litellm",
         str(model_config_path),
-        ",".join(settings["tasks"]),
+        task,
         "--output-dir",
         str(output_dir),
         # Details carry the raw generations, which is the only source for the
@@ -924,10 +933,52 @@ def read_detail_responses(paths: Iterable[Path]) -> list[Any]:
     return responses
 
 
+def clear_litellm_store() -> None:
+    """Delete litellm's disk response cache so every replicate reaches the server.
+
+    LightEval's litellm client enables litellm's disk cache unconditionally and
+    keys it on the request body alone. Replicate payloads are byte-identical --
+    the backend refuses per-request seeds, so nothing in a request varies by
+    seed -- which lets a store surviving from any earlier invocation answer a
+    replicate entirely with another's stored generations, without the server
+    being queried at all: three "independent" seeds, bit-identical results,
+    std 0.0. litellm exposes no switch to turn the cache off from outside the
+    process, and the store sits at a fixed path under the working directory the
+    harness inherits, so deleting it before each invocation is the only
+    external control. Before rather than after, so the guarantee holds however
+    the previous invocation ended: a crashed run cannot leave a populated
+    store behind for the next run's first seed.
+
+    LightEval's own sample cache (`~/.cache/huggingface/lighteval/`) is a
+    separate layer and is deliberately left alone: it keys on the full model
+    and task configuration, and reusing generations across runs whose
+    configuration is genuinely identical is its purpose.
+    """
+    store = Path.cwd() / ".litellm_cache"
+    if store.is_dir():
+        shutil.rmtree(store)
+        LOGGER.info("Removed litellm response store at %s", store)
+
+
+def task_slug(task: str) -> str:
+    """Directory-safe name for one task spec (`suite|name|k` and friends)."""
+    return re.sub(r"[^\w.=@-]+", "-", task)
+
+
 def run_seed(
     settings: Mapping[str, Any], seed: int, work_dir: Path
 ) -> tuple[dict[str, dict[str, float]], dict[str, Any]]:
-    """Run the harness once and reduce what it wrote."""
+    """Run the harness once per task and reduce what it wrote.
+
+    One task per invocation is deliberate. LightEval's litellm client splits a
+    run's requests into groups of matching task-level generation settings, but
+    its split loop builds the request contexts from the whole dataset rather
+    than the split (`greedy_until` iterates `dataset`, not `split` -- present
+    in 0.13.0 and still on upstream main), so an invocation whose tasks form N
+    groups generates every document N times, keeps only the first pass, and
+    applies the first group's settings to all of it. A single task is a single
+    group for the uniform tasks used here, which keeps the defect inert.
+    """
     seed_dir = work_dir / f"seed-{seed}"
     seed_dir.mkdir(parents=True, exist_ok=True)
     model_config_path = seed_dir / "litellm_model.yaml"
@@ -936,14 +987,33 @@ def run_seed(
         encoding="utf-8",
     )
 
-    command = lighteval_command(settings, model_config_path, seed_dir)
-    LOGGER.info("seed %d: %s", seed, " ".join(command))
-    subprocess.run(command, check=True)
+    metrics: dict[str, dict[str, float]] = {}
+    detail_paths: list[Path] = []
+    for task in settings["tasks"]:
+        # One directory per task: find_results_file and find_details_files
+        # keep only the newest run under a directory, so a second invocation
+        # into a shared one would discard the first task's output.
+        task_dir = seed_dir / task_slug(task)
+        task_dir.mkdir(parents=True, exist_ok=True)
+        clear_litellm_store()
+        command = lighteval_command(settings, model_config_path, task_dir, task)
+        LOGGER.info("seed %d %s: %s", seed, task, " ".join(command))
+        subprocess.run(command, check=True)
 
-    results = read_json(find_results_file(seed_dir))
-    metrics = normalise_results(results)
+        for name, values in normalise_results(
+            read_json(find_results_file(task_dir))
+        ).items():
+            # The results key is LightEval's, not the recipe's task spec, so
+            # two specs mapping onto one key would silently overwrite a
+            # finished task's metrics -- refuse instead.
+            if name in metrics:
+                raise ValueError(
+                    f"Task {task} reports results under {name!r}, which an "
+                    "earlier task of this seed already wrote"
+                )
+            metrics[name] = values
+        detail_paths.extend(find_details_files(task_dir))
 
-    detail_paths = find_details_files(seed_dir)
     if detail_paths:
         stats = completion_stats(
             read_detail_responses(detail_paths),

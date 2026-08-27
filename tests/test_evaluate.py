@@ -127,7 +127,9 @@ def test_the_system_prompt_travels_in_the_model_config_not_the_command_line():
     settings = evaluate.resolve_settings(evaluate.load_eval_config(TIER0))
 
     config = evaluate.litellm_model_config(settings)
-    command = evaluate.lighteval_command(settings, "m.yaml", "out")
+    command = evaluate.lighteval_command(
+        settings, "m.yaml", "out", settings["tasks"][0]
+    )
 
     assert config["model_parameters"]["system_prompt"] == settings["system_prompt"]
     assert not any(argument.startswith("--system") for argument in command)
@@ -354,7 +356,7 @@ def test_litellm_config_never_sends_a_per_request_seed():
     assert generation["max_new_tokens"] == settings["max_new_tokens"]
 
 
-def test_lighteval_command_joins_tasks_and_appends_extra_args():
+def test_lighteval_command_carries_one_task_and_appends_extra_args():
     settings = evaluate.resolve_settings(
         minimal_config(
             eval={
@@ -365,9 +367,10 @@ def test_lighteval_command_joins_tasks_and_appends_extra_args():
         )
     )
 
-    command = evaluate.lighteval_command(settings, "model.yaml", "out")
+    command = evaluate.lighteval_command(settings, "model.yaml", "out", "suite|a|0")
 
-    assert "suite|a|0,suite|b|0" in command
+    assert "suite|a|0" in command
+    assert "suite|a|0,suite|b|0" not in command
     assert command[-2:] == ["--custom-tasks", "tasks.py"]
     assert "--save-details" in command
     assert command[command.index("--max-samples") + 1] == "8"
@@ -802,6 +805,105 @@ def test_a_summary_survives_the_full_reduction_from_real_files(tmp_path):
     assert evaluate.read_json(tmp_path / "summary.json") == json.loads(
         json.dumps(summary)
     )
+
+
+# --- litellm response store -------------------------------------------------
+
+
+def test_a_surviving_litellm_store_is_deleted(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    store = tmp_path / ".litellm_cache"
+    (store / "sub").mkdir(parents=True)
+    (store / "cache.db").write_text("a previous replicate's generations")
+
+    evaluate.clear_litellm_store()
+
+    assert not store.exists()
+
+
+def test_a_missing_litellm_store_is_not_an_error(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    evaluate.clear_litellm_store()
+
+
+def test_run_seed_clears_the_store_before_every_harness_launch(tmp_path, monkeypatch):
+    # The order is the guarantee: a store still present when the harness starts
+    # answers every request from disk and the replicate never reaches the
+    # server. Every launch leaves a fresh store behind, as litellm does, which
+    # the next launch must not inherit.
+    monkeypatch.chdir(tmp_path)
+    store = tmp_path / ".litellm_cache"
+    store.mkdir()
+    (store / "cache.db").write_text("stale")
+    seen_at_launch = []
+
+    def fake_run(command, check):
+        seen_at_launch.append(store.exists())
+        store.mkdir()
+        (store / "cache.db").write_text("this invocation's responses")
+        out_dir = Path(command[command.index("--output-dir") + 1])
+        key = f"{command[4].split('|')[1]}|0"
+        write_results_file(out_dir, {key: {"acc": 1.0}})
+
+    monkeypatch.setattr(evaluate.subprocess, "run", fake_run)
+    settings = evaluate.resolve_settings(
+        minimal_config(eval={"tasks": ["suite|a|0", "suite|b|0"]})
+    )
+
+    evaluate.run_seed(settings, 0, tmp_path)
+
+    assert seen_at_launch == [False, False]
+
+
+def test_run_seed_runs_one_harness_invocation_per_task(tmp_path, monkeypatch):
+    # Two tasks with differing generation settings form two dataset splits in
+    # a joint invocation, and lighteval's litellm client generates the whole
+    # dataset once per split -- so every task gets its own invocation, with
+    # its own output directory, and the reduction merges across them.
+    monkeypatch.chdir(tmp_path)
+    launched = []
+
+    def fake_run(command, check):
+        task = command[4]
+        launched.append(task)
+        out_dir = Path(command[command.index("--output-dir") + 1])
+        key = f"{task.split('|')[1]}|0"
+        write_results_file(out_dir, {key: {"acc": 1.0}})
+        write_details_shard(
+            out_dir, [{"text": ["<think>x</think>\\boxed{1}"], "output_tokens": [5]}]
+        )
+
+    monkeypatch.setattr(evaluate.subprocess, "run", fake_run)
+    settings = evaluate.resolve_settings(
+        minimal_config(eval={"tasks": ["suite|a|0", "suite|b|0"]})
+    )
+
+    metrics, stats = evaluate.run_seed(settings, 0, tmp_path)
+
+    assert launched == ["suite|a|0", "suite|b|0"]
+    assert set(metrics) == {"a|0", "b|0"}
+    assert stats["documents"] == 2
+    assert (tmp_path / "seed-0" / "suite-a-0").is_dir()
+    assert (tmp_path / "seed-0" / "suite-b-0").is_dir()
+
+
+def test_run_seed_refuses_two_tasks_reporting_under_one_results_key(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+
+    def fake_run(command, check):
+        out_dir = Path(command[command.index("--output-dir") + 1])
+        write_results_file(out_dir, {"t|0": {"acc": 1.0}})
+
+    monkeypatch.setattr(evaluate.subprocess, "run", fake_run)
+    settings = evaluate.resolve_settings(
+        minimal_config(eval={"tasks": ["suite|a|0", "suite|b|0"]})
+    )
+
+    with pytest.raises(ValueError, match="already wrote"):
+        evaluate.run_seed(settings, 0, tmp_path)
 
 
 # --- sampling probe --------------------------------------------------------
