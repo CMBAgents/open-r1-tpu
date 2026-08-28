@@ -36,6 +36,14 @@ Every Langfuse call is funnelled through `runner.LangfuseGuard`, so a dead
 Langfuse costs a missing dataset item, never a crashed sync -- consistent
 with `evaluation.runner`'s own use of the guard for traces and scores.
 
+**The dataset itself must exist before any item is upserted into it.**
+`create_dataset_item` does not create its dataset as a side effect -- against
+a live Langfuse, every item 404s until `create_dataset` has been called for
+that name at least once. `sync_recipe` calls `ensure_dataset` once per task,
+before `sync_task`'s per-document loop, and skips that task's items entirely
+if it fails, rather than attempting (and failing) every one of them
+individually against a dataset known not to exist.
+
 Run from the repository root::
 
     python -m open_r1_tpu.evaluation.dataset_sync \\
@@ -75,6 +83,18 @@ def item_id(dataset: str, doc_id: str) -> str:
     which is what makes a re-sync an upsert rather than a duplicate.
     """
     return str(uuid.uuid5(_ITEM_ID_NAMESPACE, f"{dataset}:{doc_id}"))
+
+
+def ensure_dataset(guard: LangfuseGuard, name: str) -> bool:
+    """Ensure Langfuse dataset `name` exists before any `create_dataset_item`
+    call reaches it. Returns `True` once the dataset is known to exist
+    (created now, or already there from an earlier sync); `False` if
+    Langfuse could not be reached -- `LangfuseGuard.create_dataset` has
+    already logged/counted that failure, and the caller must skip syncing
+    this task's items rather than attempt them against a dataset that
+    almost certainly does not exist.
+    """
+    return guard.create_dataset(name=name) is not None
 
 
 def sync_task(
@@ -127,7 +147,8 @@ def sync_recipe(
     guard: LangfuseGuard, settings: Mapping[str, Any]
 ) -> dict[str, tuple[str, int]]:
     """Sync every task `settings["tasks"]` names. Returns
-    `{task: (dataset_name, item_count)}`.
+    `{task: (dataset_name, item_count)}`; a task whose dataset could not be
+    ensured reports `item_count == 0` and is skipped, not retried per item.
     """
     task_names: Sequence[str] = list(settings["tasks"])
     resolved = resolve_task_configs(task_names)
@@ -136,6 +157,16 @@ def sync_recipe(
         config = resolved[task]
         spec = derive_task_spec(task, config)
         name = taskpack_dataset_name(task, spec)
+        if not ensure_dataset(guard, name):
+            LOGGER.warning(
+                "could not ensure dataset %s exists; skipping %s's documents "
+                "rather than upserting each against a dataset that almost "
+                "certainly doesn't exist",
+                name,
+                task,
+            )
+            results[task] = (name, 0)
+            continue
         count = sync_task(
             guard,
             task,

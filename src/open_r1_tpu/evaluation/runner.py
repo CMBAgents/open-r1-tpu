@@ -348,6 +348,35 @@ class LangfuseGuard:
             self.failures += 1
             LOGGER.warning("Langfuse flush failed or timed out", exc_info=True)
 
+    def create_dataset(self, **kwargs: Any) -> Any | None:
+        """Ensure one Langfuse dataset exists before any
+        `create_dataset_item` call reaches it -- `create_dataset_item` 404s
+        against a dataset that was never created, which is exactly what
+        happened the first time `evaluation.dataset_sync` ran against a live
+        Langfuse without this call. `POST /api/public/v2/datasets`'s
+        generated client (checked against the installed `langfuse==4.14.5`)
+        has no documented conflict response for an existing name -- every
+        status this endpoint's spec models falls through to a 200, so a
+        repeat call is expected to return the existing dataset rather than
+        error. If that ever turns out wrong in practice, it would show up
+        here as `failures` climbing on every routine re-sync, not as a
+        silent 404 per item -- a far cheaper failure mode to notice.
+        Returns the `Dataset`, or `None` if Langfuse failed.
+        """
+        try:
+            return self.client.create_dataset(**kwargs)
+        except Exception:
+            self.failures += 1
+            if not self._warned:
+                LOGGER.warning(
+                    "Langfuse call failed; continuing without ensuring "
+                    "further datasets exist (further failures are counted, "
+                    "not logged)",
+                    exc_info=True,
+                )
+                self._warned = True
+            return None
+
     def create_dataset_item(self, **kwargs: Any) -> Any | None:
         """Every `evaluation.dataset_sync` upsert funnelled through here, for
         the same reason `post_document` exists: a dead Langfuse must cost a

@@ -49,6 +49,11 @@ class _StubConfig:
 class FakeLangfuseClient:
     def __init__(self):
         self.create_calls = []
+        self.dataset_calls = []
+
+    def create_dataset(self, **kwargs):
+        self.dataset_calls.append(kwargs)
+        return kwargs
 
     def create_dataset_item(self, **kwargs):
         self.create_calls.append(kwargs)
@@ -56,8 +61,32 @@ class FakeLangfuseClient:
 
 
 class _AlwaysRaisingClient:
+    def create_dataset(self, **kwargs):
+        raise RuntimeError("langfuse is down")
+
     def create_dataset_item(self, **kwargs):
         raise RuntimeError("langfuse is down")
+
+
+class _SelectiveDatasetClient:
+    """`create_dataset` fails for one specific name (simulating a dead
+    Langfuse for just that task's dataset); `create_dataset_item` always
+    succeeds. Records every call, in order, in one shared list so call
+    ordering across the two methods is observable."""
+
+    def __init__(self, failing_name):
+        self._failing_name = failing_name
+        self.calls = []
+
+    def create_dataset(self, **kwargs):
+        self.calls.append(("create_dataset", kwargs))
+        if kwargs["name"] == self._failing_name:
+            raise RuntimeError("langfuse is down for this dataset")
+        return kwargs
+
+    def create_dataset_item(self, **kwargs):
+        self.calls.append(("create_dataset_item", kwargs))
+        return kwargs
 
 
 def _fake_iter_documents(monkeypatch, count):
@@ -224,3 +253,83 @@ def test_sync_task_survives_a_dead_langfuse(monkeypatch):
     )
     assert count == 5
     assert guard.failures == 5
+
+
+# --- ensure_dataset --------------------------------------------------------
+
+
+def test_ensure_dataset_creates_the_named_dataset():
+    client = FakeLangfuseClient()
+    guard = LangfuseGuard(client)
+
+    assert dataset_sync.ensure_dataset(guard, "stub_task|0@abcd1234") is True
+    assert client.dataset_calls == [{"name": "stub_task|0@abcd1234"}]
+
+
+def test_ensure_dataset_returns_false_on_a_dead_langfuse():
+    guard = LangfuseGuard(_AlwaysRaisingClient())
+
+    assert dataset_sync.ensure_dataset(guard, "ds") is False
+    assert guard.failures == 1
+
+
+# --- sync_recipe: dataset creation happens before any item upsert ---------
+
+
+def _fake_resolve_and_name(monkeypatch, configs_by_task):
+    monkeypatch.setattr(
+        dataset_sync, "resolve_task_configs", lambda tasks: configs_by_task
+    )
+    monkeypatch.setattr(dataset_sync, "derive_task_spec", lambda task, config: None)
+    monkeypatch.setattr(
+        dataset_sync, "taskpack_dataset_name", lambda task, spec: f"{task}@fixed"
+    )
+
+
+def test_sync_recipe_creates_the_dataset_before_any_item(monkeypatch):
+    _fake_iter_documents(monkeypatch, 3)
+    config = _StubConfig(
+        prompt_function=lambda row, task_name: _StubDoc(row["id"], choices=["answer"])
+    )
+    _fake_resolve_and_name(monkeypatch, {"stub_task|0": config})
+    client = _SelectiveDatasetClient(failing_name="nothing-fails")
+    guard = LangfuseGuard(client)
+
+    results = dataset_sync.sync_recipe(guard, {"tasks": ["stub_task|0"]})
+
+    assert results == {"stub_task|0": ("stub_task|0@fixed", 3)}
+    kinds = [kind for kind, _ in client.calls]
+    assert kinds == [
+        "create_dataset",
+        "create_dataset_item",
+        "create_dataset_item",
+        "create_dataset_item",
+    ]
+
+
+def test_sync_recipe_skips_a_tasks_items_when_its_dataset_cannot_be_ensured(
+    monkeypatch,
+):
+    _fake_iter_documents(monkeypatch, 2)
+    configs = {
+        "broken_task|0": _StubConfig(
+            prompt_function=lambda row, task_name: _StubDoc(row["id"], choices=["x"])
+        ),
+        "ok_task|0": _StubConfig(
+            prompt_function=lambda row, task_name: _StubDoc(row["id"], choices=["y"])
+        ),
+    }
+    _fake_resolve_and_name(monkeypatch, configs)
+    client = _SelectiveDatasetClient(failing_name="broken_task|0@fixed")
+    guard = LangfuseGuard(client)
+
+    results = dataset_sync.sync_recipe(guard, {"tasks": ["broken_task|0", "ok_task|0"]})
+
+    assert results["broken_task|0"] == ("broken_task|0@fixed", 0)
+    assert results["ok_task|0"] == ("ok_task|0@fixed", 2)
+    item_calls = [
+        kwargs for kind, kwargs in client.calls if kind == "create_dataset_item"
+    ]
+    assert all(call["dataset_name"] == "ok_task|0@fixed" for call in item_calls)
+    assert len(item_calls) == 2
+    assert guard.failures == 1
