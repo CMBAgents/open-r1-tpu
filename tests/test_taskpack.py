@@ -59,6 +59,86 @@ def test_diff_strict_reports_every_moved_field():
     assert not any("hf_repo" in e for e in errors)
 
 
+# --- dataset_fingerprint/dataset_name: pure TaskSpec helpers, no LightEval -
+
+
+def _spec(**overrides) -> taskpack.TaskSpec:
+    fields = {
+        "name": "gsm8k|0",
+        "hf_repo": "openai/gsm8k",
+        "hf_subset": "main",
+        "hf_revision": None,
+        "hf_avail_splits": ["train", "test"],
+        "evaluation_splits": ["test"],
+        "few_shots_split": None,
+        "few_shots_select": None,
+        "num_fewshots": 0,
+        "generation_size": 256,
+        "stop_sequence": ["Question:"],
+        "version": 0,
+        "prompt_function_ref": "lighteval.tasks.tasks.gsm8k:gsm8k_prompt",
+        "metrics": [
+            taskpack.MetricSpec(
+                metric_name="extractive_match",
+                category="GENERATIVE",
+                batched_compute=False,
+                higher_is_better=True,
+                sample_level_fn_class="lighteval.metrics.utils.MultilingualExtractiveMatchMetric",
+                corpus_level_fn={"extractive_match": "mean"},
+            )
+        ],
+        "example": {"query": "irrelevant"},
+    }
+    fields.update(overrides)
+    return taskpack.TaskSpec(**fields)
+
+
+def test_dataset_fingerprint_is_stable_for_the_same_spec():
+    assert taskpack.dataset_fingerprint(_spec()) == taskpack.dataset_fingerprint(
+        _spec()
+    )
+
+
+def test_dataset_fingerprint_is_eight_hex_characters():
+    fingerprint = taskpack.dataset_fingerprint(_spec())
+    assert len(fingerprint) == 8
+    assert all(c in "0123456789abcdef" for c in fingerprint)
+
+
+def test_dataset_fingerprint_changes_when_a_scoring_field_changes():
+    baseline = taskpack.dataset_fingerprint(_spec())
+    assert taskpack.dataset_fingerprint(_spec(hf_revision="abc123")) != baseline
+    assert (
+        taskpack.dataset_fingerprint(_spec(prompt_function_ref="other:fn")) != baseline
+    )
+    changed_metric = taskpack.MetricSpec(
+        metric_name="other_metric",
+        category="GENERATIVE",
+        batched_compute=False,
+        higher_is_better=True,
+        sample_level_fn_class="lighteval.metrics.utils.MultilingualExtractiveMatchMetric",
+        corpus_level_fn={"other_metric": "mean"},
+    )
+    assert taskpack.dataset_fingerprint(_spec(metrics=[changed_metric])) != baseline
+
+
+def test_dataset_fingerprint_ignores_non_scoring_fields():
+    # generation_size/stop_sequence are recorded for visibility but the
+    # recipe always wins over them (module docstring); example is
+    # best-effort. None of these should move the fingerprint.
+    baseline = taskpack.dataset_fingerprint(_spec())
+    assert taskpack.dataset_fingerprint(_spec(generation_size=1)) == baseline
+    assert taskpack.dataset_fingerprint(_spec(stop_sequence=[])) == baseline
+    assert taskpack.dataset_fingerprint(_spec(example={})) == baseline
+    assert taskpack.dataset_fingerprint(_spec(version=99)) == baseline
+
+
+def test_dataset_name_format():
+    spec = _spec()
+    name = taskpack.dataset_name("gsm8k|0", spec)
+    assert name == f"gsm8k|0@{taskpack.dataset_fingerprint(spec)}"
+
+
 def test_verify_missing_pack_file_is_a_named_error(tmp_path):
     errors, warnings = taskpack.verify_task_specs(tmp_path / "nope.yaml", ["gsm8k|0"])
     assert errors and "could not read task pack" in errors[0]

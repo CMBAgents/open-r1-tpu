@@ -256,3 +256,190 @@ def test_reasoning_tag_strip_prevents_an_abandoned_boxed_answer_from_winning():
     assert stripped_result.scores["extractive_match"] == 1.0
     assert unstripped_result.scores["extractive_match"] == 0.0
     assert stripped_result.scores != unstripped_result.scores
+
+
+# --- integration: doc_from_item / lighteval_evaluator (Langfuse adapter) ---
+
+
+def _row_and_config(task: str):
+    resolved = taskpack.resolve_task_configs([task])
+    config = resolved[task]
+    from datasets import load_dataset
+
+    row = load_dataset(
+        config.hf_repo, config.hf_subset, split=f"{config.evaluation_splits[0]}[:1]"
+    )[0]
+    return config, row
+
+
+@pytest.mark.integration
+def test_doc_from_item_agrees_with_build_doc_on_golds():
+    config, row = _row_and_config("math_500|0")
+    doc = scoring.build_doc(config.prompt_function, row, "math_500")
+    golds = doc.get_golds()
+    assert len(golds) == 1
+
+    metadata = {
+        "task": "math_500|0",
+        "doc_id": "0",
+        "specific": doc.specific,
+        "query": doc.query,
+    }
+    rebuilt = scoring.doc_from_item(golds[0], metadata, "math_500")
+    assert rebuilt.get_golds() == golds
+
+    model_response = scoring.build_model_response(golds[0])
+    metric = config.metrics[0]
+    assert scoring.compute_scores(doc, model_response, [metric]).scores == (
+        scoring.compute_scores(rebuilt, model_response, [metric]).scores
+    )
+
+
+@pytest.mark.integration
+def test_doc_from_item_carries_specific_through_for_ifeval():
+    config, row = _row_and_config("ifeval|0")
+    doc = scoring.build_doc(config.prompt_function, row, "ifeval")
+    metadata = {
+        "task": "ifeval|0",
+        "doc_id": "0",
+        "specific": doc.specific,
+        "query": doc.query,
+    }
+    rebuilt = scoring.doc_from_item(doc.get_golds()[0], metadata, "ifeval")
+    assert rebuilt.specific == doc.specific
+    assert "instructions_id_list" in rebuilt.specific
+
+
+@pytest.mark.integration
+def test_doc_from_item_rejects_metadata_missing_query():
+    with pytest.raises(ValueError, match="query"):
+        scoring.doc_from_item("gold", {"specific": None}, "gsm8k")
+
+
+@pytest.mark.integration
+def test_lighteval_evaluator_scores_a_correct_and_an_incorrect_completion():
+    config, row = _row_and_config("gsm8k|0")
+    doc = scoring.build_doc(config.prompt_function, row, "gsm8k")
+    gold = doc.get_golds()[0]
+    metadata = {
+        "task": "gsm8k|0",
+        "doc_id": "0",
+        "specific": doc.specific,
+        "query": doc.query,
+    }
+
+    evaluator = scoring.lighteval_evaluator("gsm8k|0")
+
+    correct = evaluator(
+        input=doc.query,
+        output={"text": gold, "finish_reason": "stop", "completion_tokens": 3},
+        expected_output=gold,
+        metadata=metadata,
+    )
+    by_name = {e.name: e for e in correct}
+    assert by_name["extractive_match"].value == 1.0
+    assert by_name["extractive_match"].data_type == "NUMERIC"
+    assert by_name["completion_tokens"].value == 3.0
+    assert by_name["truncated"].value == 0.0
+
+    wrong = evaluator(
+        input=doc.query,
+        output={
+            "text": " not the answer at all",
+            "finish_reason": "length",
+            "completion_tokens": 5,
+        },
+        expected_output=gold,
+        metadata=metadata,
+    )
+    wrong_by_name = {e.name: e for e in wrong}
+    assert wrong_by_name["extractive_match"].value == 0.0
+    assert wrong_by_name["truncated"].value == 1.0
+
+
+@pytest.mark.integration
+def test_lighteval_evaluator_accepts_a_bare_string_output():
+    # The task function always returns a dict (see evaluation.task_fn), but
+    # the evaluator's own Mapping check should not crash on a plain string.
+    config, row = _row_and_config("gsm8k|0")
+    doc = scoring.build_doc(config.prompt_function, row, "gsm8k")
+    gold = doc.get_golds()[0]
+    metadata = {
+        "task": "gsm8k|0",
+        "doc_id": "0",
+        "specific": doc.specific,
+        "query": doc.query,
+    }
+
+    evaluator = scoring.lighteval_evaluator("gsm8k|0")
+    evaluations = evaluator(
+        input=doc.query, output=gold, expected_output=gold, metadata=metadata
+    )
+    by_name = {e.name: e for e in evaluations}
+    assert by_name["extractive_match"].value == 1.0
+    # No run-level fields when output carries no usage/finish_reason.
+    assert "completion_tokens" not in by_name
+
+
+@pytest.mark.integration
+def test_lighteval_evaluator_returns_several_named_scores_for_a_grouping_metric():
+    config, row = _row_and_config("ifeval|0")
+    doc = scoring.build_doc(config.prompt_function, row, "ifeval")
+    metadata = {
+        "task": "ifeval|0",
+        "doc_id": "0",
+        "specific": doc.specific,
+        "query": doc.query,
+    }
+
+    evaluator = scoring.lighteval_evaluator("ifeval|0")
+    evaluations = evaluator(
+        input=doc.query,
+        output={
+            "text": "an arbitrary completion",
+            "finish_reason": "stop",
+            "completion_tokens": 4,
+        },
+        expected_output=doc.get_golds()[0],
+        metadata=metadata,
+    )
+    names = {e.name for e in evaluations}
+    assert {"prompt_level_strict_acc", "prompt_level_loose_acc"} <= names
+
+
+@pytest.mark.integration
+def test_lighteval_evaluator_marks_a_metric_failure(monkeypatch):
+    from open_r1_tpu.evaluation import taskpack as taskpack_module
+
+    class _RaisingMetric:
+        metric_name = "boom"
+        batched_compute = False
+
+        def compute_sample(self, **kwargs):
+            raise RuntimeError("kaboom")
+
+    class _FakeConfig:
+        def __init__(self):
+            self.metrics = [_RaisingMetric()]
+
+    monkeypatch.setattr(
+        taskpack_module, "resolve_task_configs", lambda tasks: {tasks[0]: _FakeConfig()}
+    )
+
+    evaluator = scoring.lighteval_evaluator("gsm8k|0")
+    metadata = {
+        "task": "gsm8k|0",
+        "doc_id": "0",
+        "specific": None,
+        "query": "Question: x\nAnswer:",
+    }
+    evaluations = evaluator(
+        input=metadata["query"],
+        output={"text": "18", "finish_reason": "stop", "completion_tokens": 2},
+        expected_output=" 18",
+        metadata=metadata,
+    )
+    by_name = {e.name: e for e in evaluations}
+    assert by_name["scoring_failed"].value == 1.0
+    assert by_name["scoring_failed"].metadata["failed_metrics"] == ["boom"]
+    assert "kaboom" in by_name["scoring_failed"].metadata["errors"]["boom"]

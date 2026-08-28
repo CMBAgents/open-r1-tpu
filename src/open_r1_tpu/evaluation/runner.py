@@ -348,6 +348,27 @@ class LangfuseGuard:
             self.failures += 1
             LOGGER.warning("Langfuse flush failed or timed out", exc_info=True)
 
+    def create_dataset_item(self, **kwargs: Any) -> Any | None:
+        """Every `evaluation.dataset_sync` upsert funnelled through here, for
+        the same reason `post_document` exists: a dead Langfuse must cost a
+        missing dataset item, never stop the sync -- and the run it gates --
+        from starting. Returns the created `DatasetItem`, or `None` if
+        Langfuse failed.
+        """
+        try:
+            return self.client.create_dataset_item(**kwargs)
+        except Exception:
+            self.failures += 1
+            if not self._warned:
+                LOGGER.warning(
+                    "Langfuse call failed; continuing without syncing "
+                    "further dataset items (further failures are counted, "
+                    "not logged)",
+                    exc_info=True,
+                )
+                self._warned = True
+            return None
+
 
 def _write_record(handle: Any, record: Mapping[str, Any]) -> None:
     # A single synchronous write with no `await` inside it: under asyncio's

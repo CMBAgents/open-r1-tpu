@@ -31,7 +31,7 @@ reimplementing its behaviour from scratch.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -219,3 +219,127 @@ def coerce_fields(fields: Mapping[str, Any]) -> dict[str, tuple[Any, str]]:
         if pair is not None:
             coerced[name] = pair
     return coerced
+
+
+# --- the Langfuse `run_experiment()` adapter --------------------------------
+#
+# Everything below is additive for the Langfuse-native evaluation plan
+# (`eval-langfuse-native-plan.md`, Task 2): `run_experiment()` drives
+# iteration and concurrency now, and calls back into this module to score
+# each document, through the two functions below. Nothing above this comment
+# changes; `runner._score_and_post_document` and `lighteval_evaluator` both
+# still call `build_model_response`/`compute_scores`/`run_level_fields`/
+# `coerce_fields` the same way, so a document scores identically whichever
+# half of the pipeline produced its trace.
+
+
+def doc_from_item(
+    expected_output: Any, metadata: Mapping[str, Any], task_name: str
+) -> Any:
+    """Rebuild a `Doc` equivalent to the one `evaluation.dataset_sync` built,
+    from a Langfuse dataset item -- for scoring only, never by calling the
+    task's prompt function a second time.
+
+    That distinction matters for at least one task: `gpqa`'s prompt function
+    shuffles its four answer choices with `random.randint` on every call, so
+    re-rendering at scoring time would judge a different shuffle than the one
+    actually sent to the model. `evaluation.dataset_sync` captures `doc.query`
+    and `doc.specific` once, verbatim, into the item's metadata; this rebuilds
+    from exactly that, for every task, not just the deterministic ones.
+
+    `choices=[expected_output]`/`gold_index=0` is a deliberate single-choice
+    reconstruction. `Doc.get_golds()` only ever reads `choices[gold_index]`,
+    so this reproduces the original gold exactly regardless of how many
+    choices (or in what order) the original prompt function offered --
+    `evaluation.dataset_sync`'s own docstring requires exactly one gold per
+    document for the same reason. A test asserts this constructor and
+    `build_doc` agree on `get_golds()` for the same document.
+    """
+    from lighteval.tasks.requests import Doc
+
+    if "query" not in metadata:
+        raise ValueError(
+            f"{task_name}: dataset item metadata has no 'query' key -- was "
+            "this item created by evaluation.dataset_sync?"
+        )
+    return Doc(
+        query=metadata["query"],
+        choices=[expected_output],
+        gold_index=0,
+        specific=metadata.get("specific"),
+        task_name=task_name,
+    )
+
+
+def lighteval_evaluator(task_name: str) -> Callable[..., list[Any]]:
+    """Factory for the per-document evaluator `dataset.run_experiment()`
+    calls: `evaluator(*, input, output, expected_output, metadata, **kwargs)
+    -> list[Evaluation]`.
+
+    Closed over `task_name`'s live metric objects, resolved fresh through
+    `evaluation.taskpack.resolve_task_configs` on every call -- never
+    deserialized from the committed task pack; see that module's docstring
+    for why. Scores exactly as `evaluation.runner._score_and_post_document`
+    does today: `build_model_response`, `compute_scores`, `run_level_fields`,
+    `coerce_fields`, in that order.
+
+    `output` is the dict `evaluation.task_fn.make_task`'s task function
+    returns (`{"text", "finish_reason", "completion_tokens", ...}`), not a
+    bare completion string -- `"text"` is what gets scored, and
+    `"finish_reason"`/`"completion_tokens"` feed `run_level_fields` exactly as
+    the generation outcome did before. `evaluation.experiment` reads the same
+    `output` dict again, independently, to persist its JSONL record, so
+    nothing downstream ever has to read a fact back out of Langfuse.
+
+    Always returns a list, so a `SampleLevelMetricGrouping` (e.g. `ifeval`'s
+    four accuracies) produces several named scores rather than being
+    flattened into one -- `coerce_fields` already drops the list-valued
+    metrics (`inst_level_*_acc`) that have no single-document scalar meaning;
+    see `coerce_score`. A `ScoringResult` with `failed_metrics` adds one more:
+    `Evaluation(name="scoring_failed", value=1.0, metadata={"failed_metrics":
+    ..., "errors": ...})` -- visible in Langfuse rather than only in a log
+    line, and readable back locally (its `metadata`) by `evaluation.experiment`
+    without another Langfuse round trip.
+    """
+    from langfuse import Evaluation
+
+    from open_r1_tpu.evaluation.taskpack import resolve_task_configs
+
+    metrics = list(resolve_task_configs([task_name])[task_name].metrics)
+
+    def evaluator(
+        *, output: Any, expected_output: Any, metadata: Mapping[str, Any], **kwargs: Any
+    ) -> list[Any]:
+        text = output["text"] if isinstance(output, Mapping) else output
+        doc = doc_from_item(expected_output, metadata, task_name)
+        model_response = build_model_response(text)
+        result = compute_scores(doc, model_response, metrics)
+
+        fields = dict(result.scores)
+        if isinstance(output, Mapping):
+            fields.update(
+                run_level_fields(
+                    completion_tokens=output.get("completion_tokens"),
+                    finish_reason=str(output.get("finish_reason", "")),
+                )
+            )
+
+        evaluations = [
+            Evaluation(name=name, value=value, data_type=data_type)
+            for name, (value, data_type) in coerce_fields(fields).items()
+        ]
+        if result.failed_metrics:
+            evaluations.append(
+                Evaluation(
+                    name="scoring_failed",
+                    value=1.0,
+                    data_type="NUMERIC",
+                    metadata={
+                        "failed_metrics": list(result.failed_metrics),
+                        "errors": dict(result.errors),
+                    },
+                )
+            )
+        return evaluations
+
+    return evaluator

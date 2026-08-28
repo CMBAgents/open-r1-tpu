@@ -54,9 +54,11 @@ Run from the repository root::
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
+from hashlib import sha256
 from importlib import import_module
 from importlib import metadata as importlib_metadata
 from pathlib import Path
@@ -252,6 +254,51 @@ def derive_task_spec(task: str, config: Any) -> TaskSpec:
 
 def _spec_to_dict(spec: TaskSpec) -> dict[str, Any]:
     return asdict(spec)
+
+
+# The fingerprint's own strict subset of _STRICT_FIELDS: dataset coordinates,
+# revision, the prompt-function reference, and the metric specs -- exactly
+# "what is asked and how it is judged" (`dataset_fingerprint`'s docstring).
+# `generation_size`/`stop_sequence` are deliberately excluded, matching the
+# module docstring's own note that a recipe's sampling settings always win
+# over them; `hf_avail_splits`/`evaluation_splits`/fewshot fields/`version`
+# are excluded too, since none of this project's tasks vary them and the four
+# kept fields are already enough to catch a LightEval upgrade that moves a
+# prompt, a dataset revision, or a metric.
+_FINGERPRINT_FIELDS = (
+    "hf_repo",
+    "hf_subset",
+    "hf_revision",
+    "prompt_function_ref",
+    "metrics",
+)
+
+
+def dataset_fingerprint(spec: TaskSpec) -> str:
+    """First 8 hex characters of a sha256 over `spec`'s `_FINGERPRINT_FIELDS`
+    -- the fields that decide what a document asks and how its answer is
+    judged. Any change to one of these should compare as a different Langfuse
+    dataset (`dataset_name`); a change to something this project's scoring
+    never uses (`generation_size`, `stop_sequence`, the best-effort `example`
+    block) must not, or a recipe pointed at an unrelated tweak would silently
+    start a brand-new dataset instead of comparing against its history.
+
+    Reuses `TaskSpec` rather than re-reading `LightevalTaskConfig` fields by
+    hand, per the module docstring: this is one more reader of the same
+    frozen spec, not a second derivation.
+    """
+    as_dict = _spec_to_dict(spec)
+    payload = {field_name: as_dict[field_name] for field_name in _FINGERPRINT_FIELDS}
+    canonical = json.dumps(payload, sort_keys=True, default=str)
+    return sha256(canonical.encode("utf-8")).hexdigest()[:8]
+
+
+def dataset_name(task: str, spec: TaskSpec) -> str:
+    """`{task}@{fingerprint}` -- the Langfuse dataset name
+    `evaluation.dataset_sync` upserts into and `evaluation.experiment` reads
+    back from. See `dataset_fingerprint`.
+    """
+    return f"{task}@{dataset_fingerprint(spec)}"
 
 
 def derive_taskpack(tasks: Sequence[str] = KNOWN_TASKS) -> dict[str, Any]:

@@ -152,6 +152,19 @@ def load_tracing_config(
     return load_config(path, overrides, validator=validate_tracing_config)
 
 
+def build_langfuse_client(tracing_config: Mapping[str, Any]) -> Any:
+    """A `Langfuse` client from this project's own tracing config -- the
+    `langfuse` section only. Shared by `evaluation.dataset_sync` and
+    `evaluation.experiment`; `evaluation.runner` keeps its own private copy
+    until Tasks 5/6 of `eval-langfuse-native-plan.md` retire it.
+    """
+    from langfuse import Langfuse
+
+    langfuse_section = tracing_config["langfuse"]
+    base_url = f"http://{langfuse_section['host']}:{langfuse_section['port']}"
+    return Langfuse(base_url=base_url)
+
+
 def render_prefix(prefix_template: str, *, recipe: str, timestamp: str) -> str:
     """Render the run-scoped GCS prefix deterministically from its inputs.
 

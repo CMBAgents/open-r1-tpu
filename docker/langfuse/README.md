@@ -50,6 +50,27 @@ The ingester's own idempotency (deterministic trace ids, upsert-by-id) means
 replaying the entire bucket backlog against a brand-new Langfuse reproduces
 every trace exactly once, whatever ran before the VM was deleted.
 
+**Datasets recover the same way, through a different command.** Under the
+Langfuse-native runner (`open_r1_tpu.evaluation.runner`/`.experiment`,
+`eval-langfuse-native-plan.md`), the datasets `dataset.run_experiment()`
+drives are not in the bucket at all -- they never went through the trace
+proxy. Rebuilding them after a fresh instance is one more idempotent command,
+using whichever recipe named the tasks that mattered:
+
+```bash
+python -m open_r1_tpu.evaluation.dataset_sync \
+  --config recipes/<model>/eval/<tier>.yaml --tracing-config configs/tracing.yaml
+```
+
+`open_r1_tpu.evaluation.dataset_sync`'s own deterministic item ids
+(`uuid5(dataset_name, doc_id)`) mean a re-run against an unchanged task
+upserts every item and creates nothing new -- the same property the
+ingester's trace ids give the command above, just for datasets instead of
+traces. Once `eval-langfuse-native-plan.md`'s Task 6 lands (the trace
+proxy/ingester deletion, gated on its own tier-1 parity gate), this becomes
+the *only* rebuild story for this stack; until then, a run still using the
+older litellm-proxy capture path needs both commands.
+
 ## Viewing the UI
 
 Run from a workstation, with the placeholders below filled in for the real
