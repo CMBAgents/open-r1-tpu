@@ -38,6 +38,16 @@ set -euo pipefail
 # unset is byte-identical to today's behaviour; setting it without
 # TRACE_CONFIG is an error before anything is launched.
 #
+# EVAL_ENTRYPOINT selects what runs against the server once it is up.
+# Defaults to `open_r1_tpu.evaluation.run` -- the LightEval subprocess path --
+# so leaving it unset is byte-identical to today's behaviour. Set it to
+# `open_r1_tpu.evaluation.experiment` to drive the Langfuse-native path
+# instead (`dataset.run_experiment()` per task/seed); that path additionally
+# needs `--tracing-config`, passed from TRACE_CONFIG (the same variable the
+# trace-proxy branch above reads). Naming the experiment entry point without
+# TRACE_CONFIG is an error before anything is launched, same as TRACE_PROXY
+# above.
+#
 # One readiness gate moves into this script when the proxy is active: the
 # harness's own `wait_for_server` polls `{base_url}/v1/models`, but the proxy
 # answers that from its static model_list without contacting vLLM, so against
@@ -54,6 +64,7 @@ SKIP_SERVER="${SKIP_SERVER:-0}"
 TRACE_PROXY="${TRACE_PROXY:-0}"
 TRACE_CONFIG="${TRACE_CONFIG:-}"
 TRACE_UPSTREAM_WAIT_SECS="${TRACE_UPSTREAM_WAIT_SECS:-900}"
+EVAL_ENTRYPOINT="${EVAL_ENTRYPOINT:-open_r1_tpu.evaluation.run}"
 
 if [[ -z "$RECIPE" ]]; then
   echo "Usage: RECIPE=recipes/<model>/eval/<tier>.yaml ./scripts/run_eval_tpu.sh [overrides...]" >&2
@@ -64,6 +75,20 @@ if [[ "$TRACE_PROXY" == "1" && -z "$TRACE_CONFIG" ]]; then
   echo "TRACE_PROXY=1 needs TRACE_CONFIG=<tracing config path>" >&2
   exit 1
 fi
+
+case "$EVAL_ENTRYPOINT" in
+  open_r1_tpu.evaluation.run) ;;
+  open_r1_tpu.evaluation.experiment)
+    if [[ -z "$TRACE_CONFIG" ]]; then
+      echo "EVAL_ENTRYPOINT=open_r1_tpu.evaluation.experiment needs TRACE_CONFIG=<tracing config path>" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "EVAL_ENTRYPOINT must be open_r1_tpu.evaluation.run or open_r1_tpu.evaluation.experiment, got: $EVAL_ENTRYPOINT" >&2
+    exit 1
+    ;;
+esac
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVER_PID=""
@@ -151,7 +176,15 @@ if [[ "$TRACE_PROXY" == "1" ]]; then
   TRACE_ARGS=("server.base_url=http://127.0.0.1:${TRACE_PROXY_PORT}/v1")
 fi
 
-# The `${TRACE_ARGS[@]+"${TRACE_ARGS[@]}"}` form, not a plain
-# `"${TRACE_ARGS[@]}"`, because bash 3.2 (macOS's default /bin/bash) treats
-# expanding an empty array as an unbound variable under `set -u`.
-python3 -m open_r1_tpu.evaluation.run --config "$RECIPE" "$@" ${TRACE_ARGS[@]+"${TRACE_ARGS[@]}"}
+# Only the experiment entry point takes --tracing-config; the default
+# `evaluation.run` path has no such flag.
+ENTRYPOINT_ARGS=()
+if [[ "$EVAL_ENTRYPOINT" == "open_r1_tpu.evaluation.experiment" ]]; then
+  ENTRYPOINT_ARGS=(--tracing-config "$TRACE_CONFIG")
+fi
+
+# The `${ARR[@]+"${ARR[@]}"}` form, not a plain `"${ARR[@]}"`, because bash 3.2
+# (macOS's default /bin/bash) treats expanding an empty array as an unbound
+# variable under `set -u`.
+python3 -m "$EVAL_ENTRYPOINT" --config "$RECIPE" \
+  ${ENTRYPOINT_ARGS[@]+"${ENTRYPOINT_ARGS[@]}"} "$@" ${TRACE_ARGS[@]+"${TRACE_ARGS[@]}"}

@@ -176,3 +176,122 @@ def test_trace_proxy_unset_forwards_no_base_url_override(tmp_path):
     assert completed.returncode == 0, completed.stderr
     argv_lines = capture_file.read_text().splitlines()
     assert not any(line.startswith("server.base_url=") for line in argv_lines)
+
+
+def test_eval_entrypoint_unset_is_byte_identical_to_the_old_run_module(tmp_path):
+    capture_file = tmp_path / "argv.txt"
+    scripts_dir, bin_dir = _stubbed_scripts_dir(tmp_path, capture_file)
+
+    completed = subprocess.run(
+        ["bash", str(scripts_dir / "run_eval_tpu.sh")],
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "RECIPE": "recipes/fake/eval/tier0.yaml",
+            "SKIP_SERVER": "1",
+        },
+        cwd=tmp_path,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    argv_lines = capture_file.read_text().splitlines()
+    assert argv_lines == [
+        "-m",
+        "open_r1_tpu.evaluation.run",
+        "--config",
+        "recipes/fake/eval/tier0.yaml",
+    ]
+
+
+def test_eval_entrypoint_experiment_without_trace_config_errors_before_launching(
+    tmp_path,
+):
+    completed = subprocess.run(
+        ["bash", str(SCRIPT_PATH)],
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "RECIPE": "recipes/fake/eval/tier0.yaml",
+            "EVAL_ENTRYPOINT": "open_r1_tpu.evaluation.experiment",
+        },
+        cwd=SCRIPT_PATH.parents[1],
+    )
+
+    assert completed.returncode == 1
+    assert "TRACE_CONFIG" in completed.stderr
+
+
+def test_eval_entrypoint_unknown_value_errors_before_launching_anything():
+    completed = subprocess.run(
+        ["bash", str(SCRIPT_PATH)],
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "RECIPE": "recipes/fake/eval/tier0.yaml",
+            "EVAL_ENTRYPOINT": "open_r1_tpu.evaluation.bogus",
+        },
+        cwd=SCRIPT_PATH.parents[1],
+    )
+
+    assert completed.returncode == 1
+    assert "EVAL_ENTRYPOINT" in completed.stderr
+
+
+def test_eval_entrypoint_experiment_passes_tracing_config(tmp_path):
+    capture_file = tmp_path / "argv.txt"
+    scripts_dir, bin_dir = _stubbed_scripts_dir(tmp_path, capture_file)
+    tracing_config = tmp_path / "tracing.yaml"
+    tracing_config.write_text("# unused; python3 is stubbed\n")
+
+    completed = subprocess.run(
+        ["bash", str(scripts_dir / "run_eval_tpu.sh")],
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "RECIPE": "recipes/fake/eval/tier0.yaml",
+            "SKIP_SERVER": "1",
+            "EVAL_ENTRYPOINT": "open_r1_tpu.evaluation.experiment",
+            "TRACE_CONFIG": str(tracing_config),
+        },
+        cwd=tmp_path,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    argv_lines = capture_file.read_text().splitlines()
+    assert argv_lines == [
+        "-m",
+        "open_r1_tpu.evaluation.experiment",
+        "--config",
+        "recipes/fake/eval/tier0.yaml",
+        "--tracing-config",
+        str(tracing_config),
+    ]
+
+
+def test_eval_entrypoint_experiment_forwards_overrides_after_tracing_config(tmp_path):
+    capture_file = tmp_path / "argv.txt"
+    scripts_dir, bin_dir = _stubbed_scripts_dir(tmp_path, capture_file)
+    tracing_config = tmp_path / "tracing.yaml"
+    tracing_config.write_text("# unused; python3 is stubbed\n")
+
+    completed = subprocess.run(
+        ["bash", str(scripts_dir / "run_eval_tpu.sh"), "reporting.wandb.enabled=false"],
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "RECIPE": "recipes/fake/eval/tier0.yaml",
+            "SKIP_SERVER": "1",
+            "EVAL_ENTRYPOINT": "open_r1_tpu.evaluation.experiment",
+            "TRACE_CONFIG": str(tracing_config),
+        },
+        cwd=tmp_path,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    argv_lines = capture_file.read_text().splitlines()
+    assert argv_lines[-1] == "reporting.wandb.enabled=false"
