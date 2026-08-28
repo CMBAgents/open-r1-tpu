@@ -114,6 +114,8 @@ def test_external_server_runtime_is_reported_as_unchecked():
                 "turn_end_token": "<|im_end|>",
                 "serve_command": ["vllm", "serve"],
                 "image": None,
+                "max_concurrency": 8,
+                "fail_fast_after": 10,
             },
             "sampling": {
                 "temperature": 0.6,

@@ -28,7 +28,12 @@ distills with their end-of-sentence token -- so the recipe names it via
 Task names are checked here too. That failure is loud rather than silent, but
 LightEval moves tasks between suites and releases and a recipe naming one that
 no longer exists is worth knowing before the server spends fifteen minutes
-loading weights.
+loading weights. The frozen task pack (`open_r1_tpu.evaluation.taskpack`) is
+re-derived and diffed against `configs/taskpack.yaml` for the same reason: a
+LightEval upgrade that quietly moves a prompt template, a generation
+parameter, or a metric's configuration fails here, naming the exact key that
+moved, rather than showing up as a headline number that shifted for no
+recorded reason.
 
 Run from the repository root::
 
@@ -59,6 +64,7 @@ from open_r1_tpu.evaluation.stack import (
     EVALUATION_PYTHON_VERSION,
     VLLM_TPU_SERVICE_VERSIONS,
 )
+from open_r1_tpu.evaluation.taskpack import DEFAULT_TASKPACK_PATH, verify_task_specs
 
 # Files a merged export needs before vLLM can serve it as a chat model.
 REQUIRED_FILES = ("config.json", "tokenizer_config.json")
@@ -399,6 +405,12 @@ def main() -> None:
     task_errors, task_warnings = check_task_names(settings["tasks"])
     errors.extend(task_errors)
     warnings.extend(task_warnings)
+
+    pack_errors, pack_warnings = verify_task_specs(
+        DEFAULT_TASKPACK_PATH, settings["tasks"]
+    )
+    errors.extend(pack_errors)
+    warnings.extend(pack_warnings)
 
     runtime_errors, runtime_warnings = check_server_runtime(settings)
     errors.extend(runtime_errors)

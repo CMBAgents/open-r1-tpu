@@ -35,15 +35,16 @@ override for either):
   public wrapper). Used defensively, guarded by `hasattr`: its absence in
   some future SDK release degrades tagging, not ingestion.
 
-Guard the `langfuse` import behind the `tracing` extra:
-
-    uv venv .venv-tracing && uv pip install --python .venv-tracing -e ".[tracing]"
+`langfuse` is part of the `eval` extra (moved there once the Langfuse-native
+runner, `evaluation.runner`, put it on the critical path); the separate
+`.venv-tracing` this module used to need is gone. `uv sync --extra eval`
+(or `--with-eval` via `scripts/setup_tpu_vm.sh`) is enough.
 
 Launch, on the VM, as a standalone loop in its own tmux session (matching how
 tiers are launched elsewhere in this project) -- placeholders only:
 
     tmux new-session -d -s trace-ingest \
-      '.venv-tracing/bin/python -m open_r1_tpu.tracing.ingest \
+      '.venv/bin/python -m open_r1_tpu.tracing.ingest \
         --config configs/tracing.yaml'
 
 `--once` processes the current backlog and exits; used by tests and by the
@@ -71,8 +72,9 @@ try:
     from langfuse import Langfuse
 except ImportError as error:  # pragma: no cover - exercised via the extra
     raise ImportError(
-        "open_r1_tpu.tracing.ingest needs the 'langfuse' package; install it "
-        "with `uv pip install -e '.[tracing]'` (see docker/langfuse/README.md)."
+        "open_r1_tpu.tracing.ingest needs the 'langfuse' package; install "
+        "the eval extra with `uv pip install -e '.[eval]'` (langfuse is part "
+        "of it; see docker/langfuse/README.md)."
     ) from error
 
 LOGGER = logging.getLogger(__name__)

@@ -747,14 +747,19 @@ reaches the right answer unaided. Those are the questions a reasoning stage is
 judged on, and only free generation scored against a reference answers them.
 
 The stack is three decoupled layers. Generation is vLLM on the TPU, serving the
-merged export behind an OpenAI-compatible endpoint. The harness is LightEval,
-reached over HTTP through its litellm backend. Scoring is whatever metric the
-LightEval task declares, which for maths is symbolic equivalence via
-latex2sympy2-extended rather than string equality.
-`src/open_r1_tpu/evaluation/run.py` owns the layers either
-side of the harness — it validates the recipe, runs the harness once per seed,
-and reduces what the harness wrote into a single summary — and imports neither
-JAX, Tunix, nor vLLM.
+merged export behind an OpenAI-compatible endpoint. The generation loop
+(`src/open_r1_tpu/evaluation/runner.py`) reaches it directly over the `openai`
+SDK, with no litellm and no proxy in between; scoring calls LightEval's own
+metric objects as a library (`src/open_r1_tpu/evaluation/scoring.py`), which
+for maths is symbolic equivalence via latex2sympy2-extended rather than string
+equality. Prompt templates, dataset coordinates, and metric configuration come
+from a frozen task pack derived once from LightEval's own task registry
+(`src/open_r1_tpu/evaluation/taskpack.py`, committed as `configs/taskpack.yaml`)
+and re-verified at preflight, so a LightEval upgrade that moves one of them
+fails loudly there instead of silently moving a headline number.
+`src/open_r1_tpu/evaluation/run.py` owns the reduction half — it validates the
+recipe and reduces what the runner wrote into a single summary — and imports
+neither JAX, Tunix, nor vLLM.
 
 ### Installing and running
 
@@ -966,18 +971,21 @@ RECIPE=recipes/Qwen3-1.7B-Math/eval/tier1_core.yaml ./scripts/run_eval_tpu.sh \
 
 The run writes `summary_<tier>.json` under `reporting.output_dir`, holding the
 per-task metrics aggregated across seeds, the sampling parameters, the model
-path, and the installed versions of LightEval, litellm and
+path, and the installed versions of LightEval, openai and
 latex2sympy2-extended. A result that does not name its stack cannot be compared
 with one produced months later.
 `reporting.summary_path` accepts a `gs://` URI to land it beside the checkpoint
 it scored.
 
-Alongside accuracy it records four things read out of LightEval's detail shards,
-each diagnosing a failure accuracy alone cannot separate:
+Alongside accuracy it records four things read out of the runner's own
+per-document records (`src/open_r1_tpu/evaluation/reduce.py`), each diagnosing
+a failure accuracy alone cannot separate:
 
-- `truncation_rate` — the fraction that hit the token cap. A truncated trace
-  scores as wrong and reads as a reasoning failure, so if this is not near zero
-  then `sampling.max_new_tokens` is too low and the accuracy under it is not
+- `truncation_rate` — the fraction whose completion ended with
+  `finish_reason == "length"`, a fact the server states rather than a
+  `token_count >= max_new_tokens` inference. A truncated trace scores as wrong
+  and reads as a reasoning failure, so if this is not near zero then
+  `sampling.max_new_tokens` is too low and the accuracy under it is not
   trustworthy.
 - `reasoning_closed_rate` and `answer_marker_rate` — whether the model produces
   the shape SFT was teaching, independent of whether the answer is right. A
@@ -985,11 +993,13 @@ each diagnosing a failure accuracy alone cannot separate:
   opens the reasoning block inside the prompt itself (DeepSeek's distills append
   `<think>` to the generation prompt), so a completion can only ever carry the
   closing tag and closure is judged on that alone.
-- `mean_completion_tokens` — the length-inflation signal.
+- `mean_completion_tokens` — the length-inflation signal, from the API
+  response's own `usage`.
 
-`truncation_rate` and `mean_completion_tokens` are `null` when the detail shards
-carry no token counts, which is honest about the gap rather than filling it with
-a character-length guess.
+`mean_completion_tokens` (and, with it, `truncation_rate`) is `null` only if
+every document in a seed's run is missing a `completion_tokens` field, which
+the API response always carries -- unlike the detail-Parquet field this project
+used to depend on for it.
 
 Set `reporting.wandb.run_id` to the training run's W&B id to put these numbers on
 the same run as the loss curves. W&B resumes by id, never by name, so without one

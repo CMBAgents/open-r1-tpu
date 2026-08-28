@@ -138,6 +138,13 @@ SERVER_KEYS = {
     "extra_args",
     "startup_timeout_secs",
     "base_url",
+    # Required by `evaluation.runner`, the Langfuse-native generation loop.
+    # No default for either: a concurrency width and an error budget are
+    # deliberate per-deployment choices (a wider width saturates a bigger
+    # server; a laxer budget is wrong for a flaky one), not values worth
+    # guessing on a recipe's behalf.
+    "max_concurrency",
+    "fail_fast_after",
 }
 SAMPLING_KEYS = {"temperature", "top_p", "max_new_tokens", "system_prompt_file"}
 REPORTING_KEYS = {
@@ -249,6 +256,21 @@ def validate_eval_config(config: dict[str, Any]) -> None:
     port = config["server"].get("port", DEFAULT_PORT)
     if not isinstance(port, int) or not 1 <= port <= 65535:
         raise ValueError("server.port must be a TCP port number")
+
+    max_concurrency = config["server"].get("max_concurrency")
+    if (
+        not isinstance(max_concurrency, int)
+        or isinstance(max_concurrency, bool)
+        or max_concurrency <= 0
+    ):
+        raise ValueError("server.max_concurrency must be a positive integer")
+    fail_fast_after = config["server"].get("fail_fast_after")
+    if (
+        not isinstance(fail_fast_after, int)
+        or isinstance(fail_fast_after, bool)
+        or fail_fast_after <= 0
+    ):
+        raise ValueError("server.fail_fast_after must be a positive integer")
 
     sampling = config["sampling"]
     for key in ("temperature", "top_p", "max_new_tokens"):
@@ -384,6 +406,8 @@ def resolve_settings(config: dict[str, Any]) -> dict[str, Any]:
         "port": port,
         "base_url": str(server.get("base_url") or f"http://{host}:{port}/v1"),
         "max_model_len": server.get("max_model_len"),
+        "max_concurrency": int(server["max_concurrency"]),
+        "fail_fast_after": int(server["fail_fast_after"]),
         "serve_command": [
             str(part) for part in (serve_command or DEFAULT_SERVE_COMMAND)
         ],

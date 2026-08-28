@@ -14,7 +14,9 @@ eval:
   tasks:
     - "aime24|0"
     - "aime25|0"
-    - "olympiad_bench:OE_TO_maths_en_COMP|0"
+    # olympiad_bench was dropped here (2026-08-28): every row's `specific`
+    # struct is empty, which broke LightEval's own Parquet detail write on
+    # this stack, and it is not part of the Open-R1 headline set.
   # Ten seeds. On a 30-problem benchmark this is what separates a
   # measurement from an anecdote.
   seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]

@@ -127,6 +127,8 @@ def test_training_and_eval_resolve_the_same_file_to_identical_text(tmp_path):
             "server": {
                 "model_path": "artifacts/model",
                 "turn_end_token": "<|im_end|>",
+                "max_concurrency": 8,
+                "fail_fast_after": 10,
             },
             "sampling": {
                 "temperature": 0.6,

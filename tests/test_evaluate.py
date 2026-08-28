@@ -26,6 +26,8 @@ def minimal_config(**overrides):
         "server": {
             "model_path": "artifacts/model",
             "turn_end_token": "<|im_end|>",
+            "max_concurrency": 8,
+            "fail_fast_after": 10,
         },
         "sampling": {
             "temperature": 0.6,
@@ -681,7 +683,7 @@ def test_build_summary_records_the_stack_and_the_sampling_parameters():
     assert set(summary["stack"]) >= {
         "python",
         "lighteval",
-        "litellm",
+        "openai",
         "latex2sympy2-extended",
     }
     # vLLM runs outside this environment, so the derived service-image contract

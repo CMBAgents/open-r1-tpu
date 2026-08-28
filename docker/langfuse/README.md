@@ -112,17 +112,14 @@ should -- do it once after standing up a new Langfuse instance, and again
 after any change to `open_r1_tpu.tracing.ingest`/`.scores` or
 `docker/trace-proxy/gcs_logger.py`.
 
-## Separate Python environment
+## Python environment
 
-The ingester and score pass depend on the `langfuse` SDK, which is not part of
-the frozen evaluation environment (`pyproject.toml`'s `eval` extra). Install
-them into their own virtual environment so `.venv` stays exactly what the
-evaluation drift test expects:
-
-```bash
-uv venv .venv-tracing
-uv pip install --python .venv-tracing -e ".[tracing]"
-```
-
-The same two commands work unmodified on a Mac, against the same GCS bucket,
-for offline browsing.
+`langfuse` is part of the frozen evaluation environment (`pyproject.toml`'s
+`eval` extra) -- it is on the critical path for `open_r1_tpu.evaluation.runner`,
+the Langfuse-native runner that talks to it in-process, so it lives beside
+`openai`, `lighteval`, and the rest of that extra rather than in a separate
+one. There is no more `.venv-tracing`: `uv sync --extra eval` (or
+`scripts/setup_tpu_vm.sh --with-eval`) is the whole setup, on the VM and on a
+Mac alike, for the runner and for `open_r1_tpu.tracing.ingest`/`.scores`
+(the older litellm-proxy capture path these superseded, still present until
+it is deleted).

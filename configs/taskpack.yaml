@@ -1,0 +1,355 @@
+lighteval_version: 0.13.0
+tasks:
+  aime24|0:
+    evaluation_splits:
+    - train
+    example:
+      choices:
+      - '204'
+      gold_index: 0
+      query: '
+
+        Solve the following math problem efficiently and clearly.  The last line of
+        your response should be of the following format: ''Therefore, the final answer
+        is: $\boxed{ANSWER}$. I hope it is correct'' (without quotes) where ANSWER
+        is just the final number or expression that solves the problem. Think step
+        by step before answering.
+
+
+        Every morning Aya goes for a $9$-kilometer-long walk and stops at a coffee
+        shop afterwards. When she walks at a constant speed of $s$ kilometers per
+        hour, the walk takes her 4 hours, including $t$ minutes spent in the coffee
+        shop. When she walks $s+2$ kilometers per hour, the walk takes her 2 hours
+        and 24 minutes, including $t$ minutes spent in the coffee shop. Suppose Aya
+        walks at $s+\frac{1}{2}$ kilometers per hour. Find the number of minutes the
+        walk takes her, including the $t$ minutes spent in the coffee shop.
+
+        '
+      specific: null
+    few_shots_select: null
+    few_shots_split: null
+    generation_size: null
+    hf_avail_splits:
+    - train
+    hf_repo: HuggingFaceH4/aime_2024
+    hf_revision: null
+    hf_subset: default
+    metrics:
+    - batched_compute: false
+      category: GENERATIVE
+      corpus_level_fn:
+        pass@k:k=1: mean
+      higher_is_better: true
+      metric_name: pass@k:k=1
+      sample_level_fn_class: lighteval.metrics.metrics_sample.PassAtK
+    - batched_compute: false
+      category: GENERATIVE
+      corpus_level_fn:
+        avg@n:n=1: mean
+      higher_is_better: true
+      metric_name: avg@n:n=1
+      sample_level_fn_class: lighteval.metrics.metrics_sample.AvgAtN
+    name: aime24|0
+    num_fewshots: 0
+    prompt_function_ref: lighteval.tasks.tasks.aime:aime_prompt
+    stop_sequence: []
+    version: 2
+  aime25|0:
+    evaluation_splits:
+    - train
+    example:
+      choices:
+      - '70'
+      gold_index: 0
+      query: '
+
+        Solve the following math problem efficiently and clearly.  The last line of
+        your response should be of the following format: ''Therefore, the final answer
+        is: $\boxed{ANSWER}$. I hope it is correct'' (without quotes) where ANSWER
+        is just the final number or expression that solves the problem. Think step
+        by step before answering.
+
+
+        Find the sum of all integer bases $b>9$ for which $17_{b}$ is a divisor of
+        $97_{b}$.
+
+        '
+      specific: null
+    few_shots_select: null
+    few_shots_split: null
+    generation_size: null
+    hf_avail_splits:
+    - train
+    hf_repo: yentinglin/aime_2025
+    hf_revision: null
+    hf_subset: default
+    metrics:
+    - batched_compute: false
+      category: GENERATIVE
+      corpus_level_fn:
+        pass@k:k=1&n=1: mean
+      higher_is_better: true
+      metric_name: pass@k:k=1&n=1
+      sample_level_fn_class: lighteval.metrics.metrics_sample.PassAtK
+    - batched_compute: false
+      category: GENERATIVE
+      corpus_level_fn:
+        avg@n:n=1: mean
+      higher_is_better: true
+      metric_name: avg@n:n=1
+      sample_level_fn_class: lighteval.metrics.metrics_sample.AvgAtN
+    name: aime25|0
+    num_fewshots: 0
+    prompt_function_ref: lighteval.tasks.tasks.aime:aime_prompt
+    stop_sequence: []
+    version: 2
+  gpqa:diamond|0:
+    evaluation_splits:
+    - train
+    example:
+      unavailable: Dataset 'Idavidrein/gpqa' is a gated dataset on the Hub. You must
+        be authenticated to access it.
+    few_shots_select: null
+    few_shots_split: null
+    generation_size: 32768
+    hf_avail_splits:
+    - train
+    hf_repo: Idavidrein/gpqa
+    hf_revision: null
+    hf_subset: gpqa_diamond
+    metrics:
+    - batched_compute: false
+      category: GENERATIVE
+      corpus_level_fn:
+        gpqa_pass@k:k=1: mean
+      higher_is_better: true
+      metric_name: gpqa_pass@k:k=1
+      sample_level_fn_class: lighteval.metrics.metrics_sample.PassAtK
+    name: gpqa:diamond|0
+    num_fewshots: 0
+    prompt_function_ref: lighteval.tasks.tasks.gpqa:gpqa_instruct_prompt
+    stop_sequence: []
+    version: 1
+  gsm8k|0:
+    evaluation_splits:
+    - test
+    example:
+      choices:
+      - " Janet sells 16 - 3 - 4 = <<16-3-4=9>>9 duck eggs a day.\nShe makes 9 * 2\
+        \ = $<<9*2=18>>18 every day at the farmer\u2019s market.\n#### 18"
+      gold_index: 0
+      query: "Question: Janet\u2019s ducks lay 16 eggs per day. She eats three for\
+        \ breakfast every morning and bakes muffins for her friends every day with\
+        \ four. She sells the remainder at the farmers' market daily for $2 per fresh\
+        \ duck egg. How much in dollars does she make every day at the farmers' market?\n\
+        Answer:"
+      specific: null
+    few_shots_select: random_sampling_from_train
+    few_shots_split: null
+    generation_size: 256
+    hf_avail_splits:
+    - train
+    - test
+    hf_repo: openai/gsm8k
+    hf_revision: null
+    hf_subset: main
+    metrics:
+    - batched_compute: false
+      category: GENERATIVE
+      corpus_level_fn:
+        extractive_match: mean
+      higher_is_better: true
+      metric_name: extractive_match
+      sample_level_fn_class: lighteval.metrics.dynamic_metrics.MultilingualExtractiveMatchMetric
+    name: gsm8k|0
+    num_fewshots: 0
+    prompt_function_ref: lighteval.tasks.tasks.gsm8k:gsm8k_prompt
+    stop_sequence:
+    - 'Question:'
+    version: 0
+  ifeval|0:
+    evaluation_splits:
+    - train
+    example:
+      choices:
+      - ''
+      gold_index: 0
+      query: Write a 300+ word summary of the wikipedia page "https://en.wikipedia.org/wiki/Raymond_III,_Count_of_Tripoli".
+        Do not use any commas and highlight at least 3 sections that has titles in
+        markdown format, for example *highlighted section part 1*, *highlighted section
+        part 2*, *highlighted section part 3*.
+      specific:
+        instructions_id_list:
+        - punctuation:no_comma
+        - detectable_format:number_highlighted_sections
+        - length_constraints:number_words
+        kwargs:
+        - capital_frequency: null
+          capital_relation: null
+          end_phrase: null
+          first_word: null
+          forbidden_words: null
+          frequency: null
+          keyword: null
+          keywords: null
+          language: null
+          let_frequency: null
+          let_relation: null
+          letter: null
+          nth_paragraph: null
+          num_bullets: null
+          num_highlights: null
+          num_paragraphs: null
+          num_placeholders: null
+          num_sections: null
+          num_sentences: null
+          num_words: null
+          postscript_marker: null
+          prompt_to_repeat: null
+          relation: null
+          section_spliter: null
+        - capital_frequency: null
+          capital_relation: null
+          end_phrase: null
+          first_word: null
+          forbidden_words: null
+          frequency: null
+          keyword: null
+          keywords: null
+          language: null
+          let_frequency: null
+          let_relation: null
+          letter: null
+          nth_paragraph: null
+          num_bullets: null
+          num_highlights: 3
+          num_paragraphs: null
+          num_placeholders: null
+          num_sections: null
+          num_sentences: null
+          num_words: null
+          postscript_marker: null
+          prompt_to_repeat: null
+          relation: null
+          section_spliter: null
+        - capital_frequency: null
+          capital_relation: null
+          end_phrase: null
+          first_word: null
+          forbidden_words: null
+          frequency: null
+          keyword: null
+          keywords: null
+          language: null
+          let_frequency: null
+          let_relation: null
+          letter: null
+          nth_paragraph: null
+          num_bullets: null
+          num_highlights: null
+          num_paragraphs: null
+          num_placeholders: null
+          num_sections: null
+          num_sentences: null
+          num_words: 300
+          postscript_marker: null
+          prompt_to_repeat: null
+          relation: at least
+          section_spliter: null
+    few_shots_select: random_sampling
+    few_shots_split: train
+    generation_size: 1280
+    hf_avail_splits:
+    - train
+    hf_repo: google/IFEval
+    hf_revision: null
+    hf_subset: default
+    metrics:
+    - batched_compute: false
+      category: GENERATIVE
+      corpus_level_fn:
+        inst_level_loose_acc: agg_inst_level_acc
+        inst_level_strict_acc: agg_inst_level_acc
+        prompt_level_loose_acc: mean
+        prompt_level_strict_acc: mean
+      higher_is_better:
+        inst_level_loose_acc: true
+        inst_level_strict_acc: true
+        prompt_level_loose_acc: true
+        prompt_level_strict_acc: true
+      metric_name:
+      - prompt_level_strict_acc
+      - inst_level_strict_acc
+      - prompt_level_loose_acc
+      - inst_level_loose_acc
+      sample_level_fn_class: lighteval.tasks.tasks.ifeval.main.IFEvalMetrics
+    name: ifeval|0
+    num_fewshots: 0
+    prompt_function_ref: lighteval.tasks.tasks.ifeval.main:ifeval_prompt
+    stop_sequence: []
+    version: '0.1'
+  math_500|0:
+    evaluation_splits:
+    - test
+    example:
+      choices:
+      - 'ANSWER: We have that $r = \sqrt{0^2 + 3^2} = 3.$  Also, if we draw the line
+        connecting the origin and $(0,3),$ this line makes an angle of $\frac{\pi}{2}$
+        with the positive $x$-axis.
+
+
+        [asy]
+
+        unitsize(0.8 cm);
+
+
+        draw((-0.5,0)--(3.5,0));
+
+        draw((0,-0.5)--(0,3.5));
+
+        draw(arc((0,0),3,0,90),red,Arrow(6));
+
+
+        dot((0,3), red);
+
+        label("$(0,3)$", (0,3), W);
+
+        dot((3,0), red);
+
+        [/asy]
+
+
+        Therefore, the polar coordinates are $\boxed{\left( 3, \frac{\pi}{2} \right)}.$'
+      gold_index: 0
+      query: 'Solve the following problem. The final line of your response MUST be
+        of the following format:
+
+        "ANSWER: $ANSWER" (without quotes) where $ANSWER is the final answer. Think
+        step by step before answering.
+
+
+        Convert the point $(0,3)$ in rectangular coordinates to polar coordinates.  Enter
+        your answer in the form $(r,\theta),$ where $r > 0$ and $0 \le \theta < 2
+        \pi.$'
+      specific: null
+    few_shots_select: null
+    few_shots_split: null
+    generation_size: 32768
+    hf_avail_splits:
+    - test
+    hf_repo: HuggingFaceH4/MATH-500
+    hf_revision: null
+    hf_subset: default
+    metrics:
+    - batched_compute: false
+      category: GENERATIVE
+      corpus_level_fn:
+        pass@k:k=1&n=1: mean
+      higher_is_better: true
+      metric_name: pass@k:k=1&n=1
+      sample_level_fn_class: lighteval.metrics.metrics_sample.PassAtK
+    name: math_500|0
+    num_fewshots: 0
+    prompt_function_ref: lighteval.tasks.tasks.math_500:math_500_prompt
+    stop_sequence: []
+    version: 2

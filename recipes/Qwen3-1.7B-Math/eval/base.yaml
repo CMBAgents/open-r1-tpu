@@ -35,6 +35,16 @@ server:
   # neither of which is fast the first time.
   startup_timeout_secs: 900
   extra_args: []
+  # Bounds the runner's concurrent in-flight chat completion requests. One
+  # TPU chip serving one model at a time: wide enough to keep the server
+  # busy through generation latency, not so wide that queued requests starve
+  # each other's decode step. Revisit with real throughput numbers once the
+  # tier-1 parity gate has run.
+  max_concurrency: 8
+  # Consecutive request failures (after each has exhausted its own retries)
+  # before the runner stops the whole tier rather than grinding through
+  # every remaining document against a dead server.
+  fail_fast_after: 10
 
 reporting:
   summary_path: null

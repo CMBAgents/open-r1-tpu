@@ -2,11 +2,11 @@
 
 Stubs a minimal `langfuse` module into `sys.modules` when the real package is
 not installed, so `open_r1_tpu.tracing.ingest`/`.scores` -- guarded to fail
-helpfully without the `tracing` extra (see their module docstrings) -- can
-still be imported and exercised. Every test that touches them passes an
-explicit fake client (`client=...`); nothing here ever constructs a real
-`Langfuse`. A real `langfuse` installation (e.g. `.venv-tracing`, see
-docker/langfuse/README.md) is left untouched.
+helpfully without it (see their module docstrings; `langfuse` is part of the
+`eval` extra) -- can still be imported and exercised. Every test that touches
+them passes an explicit fake client (`client=...`); nothing here ever
+constructs a real `Langfuse`. A real `langfuse` installation is left
+untouched.
 """
 
 from __future__ import annotations

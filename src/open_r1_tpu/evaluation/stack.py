@@ -15,9 +15,12 @@ EVALUATION_PYTHON_VERSION = "3.13.14"
 EVALUATION_PACKAGE_VERSIONS = {
     "datasets": "5.0.1",
     "huggingface-hub": "1.28.0",
+    "langfuse": "4.14.5",
     "latex2sympy2-extended": "1.0.6",
     "lighteval": "0.13.0",
-    "litellm": "1.97.0",
+    # No litellm: evaluation.runner reaches vLLM directly over openai, never
+    # through litellm -- see the eval extra's own comment in pyproject.toml.
+    "openai": "2.54.0",
     "pyarrow": "25.0.1",
     "xxhash": "3.8.1",
 }

@@ -30,33 +30,39 @@ dependencies = [
 # uv.lock freezes their transitive closure. Keep these declarations synchronized
 # with open_r1_tpu.evaluation.stack -- a unit test enforces the relationship.
 eval = [
-  # Three LightEval extras, all load-bearing:
+  # Two LightEval extras, both load-bearing:
   #   extended_tasks - IFEval and friends live under lighteval/tasks/extended.
   #     The task registry imports that tree whether or not a recipe uses it, so
   #     without this even listing tasks fails on a missing emoji import.
-  #   litellm - the backend LightEval reaches the local vLLM server through.
-  #     Prefer the extra to a bare litellm: it adds the caching support
-  #     LightEval expects.
   #   math - latex2sympy2-extended, for symbolic answer equivalence. Without
   #     it maths accuracy falls back to string equality, which understates it
   #     substantially. LightEval used Math-Verify for this until 0.13 and now
   #     parses LaTeX directly, so nothing here should name Math-Verify.
+  # No litellm extra: the Langfuse-native runner (open_r1_tpu.evaluation.runner)
+  # reaches vLLM directly over the openai SDK, and LightEval itself is used as
+  # a library for its task registry, Doc/ModelResponse types, and metric
+  # objects (open_r1_tpu.evaluation.taskpack/.scoring) -- never for its own
+  # runner, its models, or its litellm client. Every eval blocker recorded in
+  # this project's history (double generation, cache-replayed seeds, a proxy
+  # misroute to api.openai.com, a 3.5 hour retry burn) was litellm's; dropping
+  # it removes the whole layer those came from, not just the litellm package.
+  #
   # Floor at 0.13. 0.11 shipped `hf_repo="lighteval/openai/gsm8k"` in its task
   # table -- a repo id with two slashes, which no Hub lookup can resolve, so
-  # GSM8K could not load at all. 0.13 is also the release whose CLI options and
-  # ModelConfig fields this package is written against.
-  "lighteval[extended_tasks,litellm,math]==0.13.0",
-  # LightEval reaches the OpenAI-compatible service through LiteLLM. Declaring
-  # it directly prevents the backend protocol from drifting under an unchanged
-  # LightEval release.
-  "litellm==1.97.0",
+  # GSM8K could not load at all. 0.13 is also the release whose task registry,
+  # `LightevalTaskConfig`, `Doc`, and metric internals this package is written
+  # against -- see evaluation/taskpack.py and evaluation/scoring.py's module
+  # docstrings for exactly which library internals and their stability caveat.
+  "lighteval[extended_tasks,math]==0.13.0",
   # Symbolic maths scoring moved here in LightEval 0.13.
   "latex2sympy2-extended==1.0.6",
   # Dataset/Hub versions affect task revisions, cache behavior, and therefore
   # which examples are evaluated. They are part of the protocol, not tooling.
   "datasets==5.0.1",
   "huggingface-hub==1.28.0",
-  # Reading LightEval's Parquet detail shards.
+  # Reading LightEval's Parquet detail shards. Still needed while the
+  # superseded litellm-subprocess path in open_r1_tpu.evaluation.run remains
+  # (find_details_files/read_detail_responses); goes when that does.
   "pyarrow==25.0.1",
   # LightEval imports xxhash without declaring it, so the version is whatever
   # `datasets` happens to drag in. 4.0.0 (2026-08-12) stopped accepting str,
@@ -64,6 +70,23 @@ eval = [
   # computation dies after generation has already been paid for. Pinned here
   # because LightEval cannot pin what it does not declare.
   "xxhash==3.8.1",
+  # The runner's transport to vLLM: a chat completion request per document,
+  # with this project's own retry policy (open_r1_tpu.evaluation.runner),
+  # never the SDK's default. No litellm anywhere in this path.
+  "openai==2.54.0",
+  # Traces and scores, posted in-process as each document completes. Moved
+  # here from a separate `tracing` extra now that the Langfuse-native runner
+  # puts it on the critical path, on the VM, at eval time -- not an optional
+  # side pipeline anymore. Exact pin, matching this project's convention
+  # elsewhere: the Python SDK's OpenTelemetry-native generation (what
+  # Langfuse's own docs call "Python SDK v3"; the PyPI package's own version
+  # numbering moved to a 4.x major version for it).
+  # open_r1_tpu.evaluation.runner/.tracing.ingest/.tracing.scores use
+  # `Client.create_trace_id`, `Client.start_observation`, and
+  # `Client.create_score` from this exact generation -- see
+  # tracing/ingest.py's module docstring for two SDK limitations already
+  # worked around.
+  "langfuse==4.14.5",
 ]
 # vLLM is deliberately absent. Nothing here imports it -- open_r1_tpu.evaluation.run
 # starts an external inference service and talks to it over HTTP -- so declaring
@@ -87,21 +110,6 @@ dev = [
   "google-auth>=2.30",
   "httpx>=0.27",
 ]
-# Optional trace-capture-to-Langfuse pipeline (docker/langfuse/README.md):
-# `open_r1_tpu.tracing.ingest`/`.scores`. Not part of the frozen evaluation
-# environment -- it has nothing to do with running LightEval or vLLM, and
-# installs into its own venv so `.venv`'s drift test stays untouched.
-tracing = [
-  # Exact pin, matching this project's convention elsewhere. This is the
-  # Python SDK's OpenTelemetry-native generation (what Langfuse's own docs
-  # call "Python SDK v3"; the PyPI package's own version numbering moved to a
-  # 4.x major version for it). `open_r1_tpu.tracing.ingest`/`.scores` use
-  # `Client.create_trace_id`, `Client.start_observation`, and
-  # `Client.create_score` from this exact generation -- see ingest.py's
-  # module docstring for two SDK limitations already worked around.
-  "langfuse==4.14.5",
-]
-
 [tool.setuptools.packages.find]
 where = ["src"]
 

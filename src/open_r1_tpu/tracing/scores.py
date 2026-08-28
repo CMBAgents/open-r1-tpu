@@ -27,11 +27,11 @@ since the harness always runs against its own local working directory. A
 `gs://`) holds without changing a file this repository's ground rules forbid
 touching (`open_r1_tpu.evaluation.run`).
 
-Guard the `langfuse` import behind the `tracing` extra; see
-`open_r1_tpu.tracing.ingest`'s module docstring for the same note and for the
-two Langfuse Python SDK v3 limitations this module also works around
-(ingestion-time-only observation timestamps; trace tagging only through a
-private, defensively-guarded method).
+`langfuse` is part of the `eval` extra. See `open_r1_tpu.tracing.ingest`'s
+module docstring for the same note and for the two Langfuse Python SDK v3
+limitations this module also works around (ingestion-time-only observation
+timestamps; trace tagging only through a private, defensively-guarded
+method).
 """
 
 from __future__ import annotations
@@ -66,8 +66,9 @@ try:
     from langfuse import Langfuse
 except ImportError as error:  # pragma: no cover - exercised via the extra
     raise ImportError(
-        "open_r1_tpu.tracing.scores needs the 'langfuse' package; install it "
-        "with `uv pip install -e '.[tracing]'` (see docker/langfuse/README.md)."
+        "open_r1_tpu.tracing.scores needs the 'langfuse' package; install "
+        "the eval extra with `uv pip install -e '.[eval]'` (langfuse is part "
+        "of it; see docker/langfuse/README.md)."
     ) from error
 
 LOGGER = logging.getLogger(__name__)
@@ -198,30 +199,50 @@ def _tag_trace(
         LOGGER.warning("Could not tag trace %s", trace_id, exc_info=True)
 
 
+_VALID_DATA_TYPES = frozenset(
+    {"NUMERIC", "CATEGORICAL", "BOOLEAN", "TEXT", "CORRECTION"}
+)
+
+
 def post_scores(
     client: Langfuse,
     trace_id: str,
-    fields: Mapping[str, Any],
+    fields: Mapping[str, tuple[Any, str]],
     *,
     tier: str,
     seed: int,
     task: str,
     source: str,
 ) -> None:
-    """Post every present numeric field as a Langfuse score on `trace_id`,
-    each carrying tier/seed/task/source in its `metadata` -- a public,
-    stable field on `create_score` -- so that information reaches Langfuse
-    even if `_tag_trace`'s private mechanism ever stops working.
+    """Post every field as a Langfuse score on `trace_id`, each carrying
+    tier/seed/task/source in its `metadata` -- a public, stable field on
+    `create_score` -- so that information reaches Langfuse even if
+    `_tag_trace`'s private mechanism ever stops working.
+
+    `fields` maps a score name to an already-coerced `(value, data_type)`
+    pair -- see `open_r1_tpu.evaluation.scoring.coerce_score`, which is what
+    decides a metric value's Langfuse type and is the only caller that should
+    build one of these mappings by hand. This function trusts that decision
+    and posts the value through unchanged. It used to call `float(value)`
+    unconditionally, which broke on a categorical or boolean value; a caller
+    with only plain numeric fields (`tracing.scores`'s own `score_pass`, until
+    it is retired) tags each one `("NUMERIC", ...)` itself rather than this
+    function guessing.
     """
     metadata = {"tier": tier, "seed": seed, "task": task, "source": source}
     posted = False
-    for name, value in fields.items():
+    for name, (value, data_type) in fields.items():
         if value is None:
             continue
+        if data_type not in _VALID_DATA_TYPES:
+            raise ValueError(
+                f"Unknown Langfuse data_type {data_type!r} for score {name!r}"
+            )
         client.create_score(
             trace_id=trace_id,
             name=name,
-            value=float(value),
+            value=value,
+            data_type=data_type,
             metadata=metadata,
             # Deterministic on (trace, name): a re-run upserts, never
             # duplicates -- see _score_id.
@@ -233,6 +254,7 @@ def post_scores(
             trace_id=trace_id,
             name="tagged",
             value=1.0,
+            data_type="NUMERIC",
             metadata=metadata,
             score_id=_score_id(trace_id, "tagged"),
         )
@@ -336,10 +358,29 @@ def score_pass(
                                     if completion_tokens is not None
                                     else None
                                 )
+                                # Every field this call site ever produces is
+                                # plain numeric, so it tags each one itself
+                                # rather than post_scores guessing a type.
+                                # post_scores no longer float()-casts on the
+                                # caller's behalf, so this does it explicitly
+                                # to preserve this call site's prior behaviour.
                                 fields = {
-                                    **metrics,
-                                    "completion_tokens": completion_tokens,
-                                    "truncated": truncated,
+                                    **{
+                                        name: (float(value), "NUMERIC")
+                                        for name, value in metrics.items()
+                                    },
+                                    "completion_tokens": (
+                                        float(completion_tokens)
+                                        if completion_tokens is not None
+                                        else None,
+                                        "NUMERIC",
+                                    ),
+                                    "truncated": (
+                                        float(truncated)
+                                        if truncated is not None
+                                        else None,
+                                        "NUMERIC",
+                                    ),
                                 }
                                 content_hash = content_sha256(completion_text)
                                 if content_hash in seen_hashes:

@@ -1,8 +1,9 @@
 """Importing the two tracing modules that need `langfuse` fails helpfully
 without it -- run in a subprocess with this same interpreter, since
 tests/conftest.py stubs `langfuse` for every other test in this file's own
-process. Skipped where the `tracing` extra genuinely is installed (e.g. this
-suite running inside `.venv-tracing`): there is nothing to demonstrate there.
+process. `langfuse` is part of the `eval` extra (no longer a separate
+optional one), so this guard only has something to demonstrate in an
+environment without that extra installed at all; skipped otherwise.
 """
 
 from __future__ import annotations
