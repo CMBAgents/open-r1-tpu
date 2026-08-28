@@ -62,10 +62,10 @@ class _CircuitBreaker:
     rather than shared across a seed's tasks) at best.
 
     Safe without a lock: every task function this drives is `async def`
-    running under `run_experiment`'s own `asyncio.gather`, and asyncio is
-    single-threaded and cooperative, so a plain read/increment between
-    `await` points cannot race -- the same reasoning the old `ErrorBudget`
-    relied on.
+    running under one `run_experiment` call's own `asyncio.gather`, on that
+    call's own event loop and thread, and asyncio is single-threaded and
+    cooperative, so a plain read/increment between `await` points cannot
+    race -- the same reasoning the old `ErrorBudget` relied on.
     """
 
     def __init__(self, fail_fast_after: int):
@@ -110,8 +110,12 @@ def make_task(settings: Mapping[str, Any], *, client: Any) -> Callable[..., Any]
     `settings` is this recipe's resolved settings
     (`evaluation.run.resolve_settings`'s output); `client` is a shared
     `openai.AsyncOpenAI`, built once per CLI invocation by
-    `evaluation.experiment` and passed in here so every `(task, seed)` reuses
-    the same connection pool rather than opening a new one per call.
+    `evaluation.experiment` and passed in here so every `(task, seed)` sends
+    its requests through one client, configured and torn down in one place.
+    Connections themselves are deliberately not reused, there or here: each
+    `(task, seed)` runs on its own event loop, and a pooled connection
+    cannot outlive the loop that opened it -- see `evaluation.experiment`'s
+    module docstring.
 
     Deliberately no per-request `seed`: the TPU backend refuses one whenever
     `temperature > 0` (`evaluation.run.litellm_model_config`'s docstring

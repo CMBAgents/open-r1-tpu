@@ -26,6 +26,20 @@ a LightEval metric's own `signal.alarm`-based timeout can arm at all (see
 is where this gets a real smoke test; nothing here can prove it without a
 live Langfuse and a live server.
 
+**Every `run_experiment()` call runs on an event loop of its own, so no
+asyncio-bound object may outlive one.** `run_async_safely` reaches this
+module through `asyncio.run()`, which builds a fresh loop per `(task, seed)`
+and closes it on the way out. The shared `openai.AsyncOpenAI` below
+therefore asks for every connection to be closed after its response
+(`Connection: close`) rather than pooled: an idle keep-alive socket belongs
+to the loop that opened it, so the next seed's loop fails the requests that
+try to reuse one, and closing the client once every loop has gone raises
+`RuntimeError: Event loop is closed`. The tier-0 smoke run hit exactly that
+-- after all 200 documents had been generated, scored, and written -- and
+the crash in `run()`'s own teardown cost the run its summary. The client is
+still shared across `(task, seed)`, for its configuration and its single
+teardown; what is deliberately not shared is a live connection.
+
 **`server.fail_fast_after` is kept, enforced inside the task function.**
 `run_experiment` has no run-abort hook a task or evaluator can reach (see
 `evaluation.task_fn`'s module docstring) -- there is no direct replacement
@@ -48,6 +62,7 @@ directly, where the real exception is still available.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import subprocess
@@ -217,6 +232,28 @@ def run_experiment_for_task_seed(
     return result
 
 
+def _close_client(client: Any) -> None:
+    """Release the shared `openai.AsyncOpenAI` once every `(task, seed)` has
+    finished. No loop is running here -- see the module docstring -- so this
+    opens and closes one of its own, purely for cleanup.
+
+    Never fatal. By the time this runs, every seed's JSONL is already
+    written and the only work left is the summary, so a teardown that raises
+    would cost the run its result while changing nothing about the data --
+    which is precisely how the tier-0 smoke run failed. It would also
+    replace whatever exception `run()` was already propagating, hiding the
+    real failure behind a cleanup one.
+    """
+    try:
+        asyncio.run(client.close())
+    except Exception:
+        LOGGER.warning(
+            "closing the HTTP client failed; every seed's records were "
+            "already written, so the run continues to its summary",
+            exc_info=True,
+        )
+
+
 def run(
     settings: Mapping[str, Any], *, langfuse_client: Any, recipe_path: str | None = None
 ) -> Path:
@@ -231,6 +268,10 @@ def run(
         api_key="local",
         base_url=settings["base_url"],
         max_retries=0,  # evaluation.task_fn/runner own retries; see generate_one
+        # One connection per request, never a pooled one -- see the module
+        # docstring. The cost is a loopback handshake per document, which is
+        # nothing beside a multi-second generation.
+        default_headers={"Connection": "close"},
     )
     resolved = resolve_task_configs(list(settings["tasks"]))
     run_metadata = {
@@ -255,12 +296,7 @@ def run(
                     run_metadata=run_metadata,
                 )
     finally:
-        import asyncio
-
-        # No loop is running here -- see the module docstring -- so this
-        # opens and closes its own, purely for cleanup, after every
-        # run_experiment() call has already returned.
-        asyncio.run(client.close())
+        _close_client(client)
 
     return output_dir
 

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from open_r1_tpu.evaluation import experiment
 
 
@@ -299,3 +301,100 @@ def test_run_calls_run_experiment_for_every_task_seed_pair(tmp_path, monkeypatch
         ("gsm8k|0", 1),
         ("math_500|0", 1),
     }
+
+
+# --- run: nothing asyncio-bound outlives one run_experiment call -------
+
+
+def _run_with_client(monkeypatch, client, **settings_overrides):
+    """Drive `run()` with `run_experiment_for_task_seed` stubbed out, so the
+    only thing under test is what `run()` does with the HTTP client itself.
+    Returns the `openai.AsyncOpenAI` kwargs and the `(task, seed)` pairs run.
+    """
+    built = {}
+    calls = []
+
+    def fake_run_experiment_for_task_seed(langfuse_client, *, task, seed, **kwargs):
+        calls.append((task, seed))
+
+    def fake_async_openai(**kwargs):
+        built.update(kwargs)
+        return client
+
+    monkeypatch.setattr(
+        experiment, "run_experiment_for_task_seed", fake_run_experiment_for_task_seed
+    )
+    monkeypatch.setattr(experiment.openai, "AsyncOpenAI", fake_async_openai)
+    monkeypatch.setattr(
+        experiment,
+        "resolve_task_configs",
+        lambda tasks: {task: _StubResolvedConfig() for task in tasks},
+    )
+    settings = _settings(**settings_overrides)
+    output_dir = experiment.run(
+        settings, langfuse_client=object(), recipe_path="r.yaml"
+    )
+    return built, calls, output_dir
+
+
+def test_run_never_lets_a_connection_outlive_its_event_loop(tmp_path, monkeypatch):
+    class _FakeAsyncClient:
+        async def close(self):
+            pass
+
+    built, _, _ = _run_with_client(
+        monkeypatch, _FakeAsyncClient(), output_dir=str(tmp_path)
+    )
+
+    # run_experiment runs each (task, seed) on an event loop of its own, and a
+    # pooled keep-alive connection cannot outlive the loop that opened it --
+    # reusing one fails the next seed's requests, and closing one afterwards
+    # raises RuntimeError: Event loop is closed.
+    assert built["default_headers"]["Connection"] == "close"
+
+
+def test_run_reaches_its_summary_even_when_closing_the_client_fails(
+    tmp_path, monkeypatch, caplog
+):
+    class _FakeAsyncClient:
+        async def close(self):
+            raise RuntimeError("Event loop is closed")
+
+    _, calls, output_dir = _run_with_client(
+        monkeypatch,
+        _FakeAsyncClient(),
+        tasks=["gsm8k|0", "math_500|0"],
+        seeds=[0, 1],
+        output_dir=str(tmp_path),
+    )
+
+    # Every seed's records are already written by the time the client is
+    # closed, so a teardown failure must cost a warning, never the summary.
+    assert output_dir == tmp_path
+    assert len(calls) == 4
+    assert "closing the HTTP client failed" in caplog.text
+
+
+def test_run_teardown_failure_never_masks_the_real_one(tmp_path, monkeypatch):
+    class _FakeAsyncClient:
+        async def close(self):
+            raise RuntimeError("Event loop is closed")
+
+    def fake_run_experiment_for_task_seed(langfuse_client, *, task, seed, **kwargs):
+        raise RuntimeError("the server refused this request")
+
+    monkeypatch.setattr(
+        experiment, "run_experiment_for_task_seed", fake_run_experiment_for_task_seed
+    )
+    monkeypatch.setattr(
+        experiment.openai, "AsyncOpenAI", lambda **kwargs: _FakeAsyncClient()
+    )
+    monkeypatch.setattr(
+        experiment,
+        "resolve_task_configs",
+        lambda tasks: {task: _StubResolvedConfig() for task in tasks},
+    )
+
+    settings = _settings(output_dir=str(tmp_path))
+    with pytest.raises(RuntimeError, match="the server refused this request"):
+        experiment.run(settings, langfuse_client=object(), recipe_path="r.yaml")
