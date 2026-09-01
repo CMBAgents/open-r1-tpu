@@ -13,6 +13,7 @@ from open_r1_tpu.training.data import (
     encode_reasoning_example,
     message_schema_from_config,
 )
+from open_r1_tpu.training.export import safetensors_entry_fn
 
 DEFAULT_CONFIG = "recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml"
 
@@ -125,14 +126,24 @@ def main() -> None:
             "the installed tokenizer did not produce a valid assistant boundary"
         )
 
+    # Export runs after the last training step, so an unsupported combination
+    # discovered there costs the whole run. Check the same branch _export_model
+    # will take: a LoRA run merges adapters through Tunix, a full fine-tune
+    # walks live parameters through this repository's own mapping.
     if config.get("export", {}).get("enabled", False):
-        params_module = automodel.get_model_module(
-            config["model"]["model_name"], automodel.ModelModule.PARAMS
-        )
-        if not callable(
-            getattr(params_module, "save_lora_merged_model_as_safetensors", None)
-        ):
-            errors.append("the installed Tunix model lacks merged-LoRA export")
+        if config["model"].get("lora_config"):
+            params_module = automodel.get_model_module(
+                config["model"]["model_name"], automodel.ModelModule.PARAMS
+            )
+            if not callable(
+                getattr(params_module, "save_lora_merged_model_as_safetensors", None)
+            ):
+                errors.append("the installed Tunix model lacks merged-LoRA export")
+        else:
+            try:
+                safetensors_entry_fn(str(config["model"]["model_name"]))
+            except NotImplementedError as exc:
+                errors.append(str(exc))
 
     print(f"JAX {jax.__version__}; Tunix {_version('google-tunix')}")
     print(f"Devices ({len(devices)}): {devices}")

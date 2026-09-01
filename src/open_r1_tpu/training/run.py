@@ -313,12 +313,9 @@ def _export_model(
         )
     else:
         # Full fine-tune: no adapters to merge, so write the live parameters.
-        # The exporter's key mapping is Qwen3-specific.
-        if not str(config["model"]["model_name"]).startswith("qwen3"):
-            raise NotImplementedError(
-                "Full-model safetensors export is only implemented for Qwen3. "
-                "Disable export.enabled for other models."
-            )
+        # export_full_model resolves the key mapping from the model's Tunix
+        # architecture and raises NotImplementedError if there is none, so the
+        # supported set lives in one place rather than being restated here.
         from open_r1_tpu.training.export import export_full_model
 
         LOGGER.info("Exporting full fine-tuned model to %s", output_dir)
@@ -326,6 +323,7 @@ def _export_model(
             model=model,
             local_model_path=local_model_path,
             output_dir=output_dir,
+            model_name=str(config["model"]["model_name"]),
         )
 
     from open_r1_tpu.training.export import write_turn_end_generation_config

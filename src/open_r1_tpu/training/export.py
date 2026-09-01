@@ -1,12 +1,23 @@
-"""Full-parameter safetensors export for Tunix Qwen3 models.
+"""Full-parameter safetensors export for Tunix Qwen2 and Qwen3 models.
 
 Tunix (at the pinned commit) only ships ``save_lora_merged_model_as_safetensors``,
 which starts from the base checkpoint and adds LoRA deltas. A full fine-tune has
 no adapters, so this module walks the live model parameters instead and writes
 them back under Hugging Face names, inverting the loader's key and transform
-mapping in ``tunix/models/qwen3/params.py``. The export is validated against the
-base checkpoint's key set so a mapping gap fails loudly instead of silently
+mapping in ``tunix/models/<family>/params.py``. The export is validated against
+the base checkpoint's key set so a mapping gap fails loudly instead of silently
 dropping a trained tensor.
+
+The two families share every rule that touches a tensor's shape, and differ in
+which parameters exist at all: Qwen3 carries per-head query and key norms, and
+Qwen2 carries biases on its query, key and value projections. The shared rules
+live in ``_shared_safetensors_entry`` so the two mappings cannot drift apart in
+the parts that are meant to agree.
+
+Tied embeddings put no ``lm_head`` in the live model and no ``lm_head.weight``
+in the base checkpoint -- Qwen2.5-Math-1.5B and the Qwen3 Base models are tied,
+DeepSeek-R1-Distill-Qwen-1.5B is not -- so that rule is simply never exercised
+on a tied model, and the key-set check below is what proves it.
 """
 
 from __future__ import annotations
@@ -15,27 +26,37 @@ import json
 import os
 import re
 import shutil
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
 
+# One live parameter path and value in, one Hugging Face safetensors entry out.
+SafetensorsEntryFn = Callable[[str, np.ndarray], "tuple[str, np.ndarray]"]
+
 _ATTN_QKV = re.compile(r"^layers\.(\d+)\.attn\.([qkv]_proj)\.w$")
 _ATTN_OUT = re.compile(r"^layers\.(\d+)\.attn\.o_proj\.w$")
 _MLP = re.compile(r"^layers\.(\d+)\.mlp\.(gate_proj|up_proj|down_proj)\.kernel$")
-_NORM = re.compile(
-    r"^layers\.(\d+)\."
-    r"(attn\.q_norm|attn\.k_norm|input_layernorm|post_attention_layernorm)"
-    r"\.w$"
+_LAYER_NORM = re.compile(
+    r"^layers\.(\d+)\.(input_layernorm|post_attention_layernorm)\.w$"
 )
+# Qwen3 only: per-head query and key norms, which Qwen2 does not have.
+_ATTN_NORM = re.compile(r"^layers\.(\d+)\.attn\.(q_norm|k_norm)\.w$")
+# Qwen2 only: projection biases, which Qwen3 does not have. The loader stores
+# them flat, exactly as the checkpoint holds them, because the attention block
+# adds them after reshaping the projection back to (batch, time, heads*dim).
+_ATTN_BIAS = re.compile(r"^layers\.(\d+)\.attn\.([qkv])_bias$")
 
 
-def qwen3_safetensors_entry(path: str, value: np.ndarray) -> tuple[str, np.ndarray]:
-    """Map one live Tunix parameter to its Hugging Face safetensors entry.
+def _shared_safetensors_entry(
+    path: str, value: np.ndarray
+) -> tuple[str, np.ndarray] | None:
+    """Map one parameter under the rules both families share, else None.
 
     Inverts the loader's transform rules: q/k/v_proj are stored as
     (embed, heads, head_dim) and become (heads*head_dim, embed); o_proj is
     (heads, head_dim, embed) and becomes (embed, heads*head_dim); MLP kernels
-    transpose; norms and the embedding pass through unchanged.
+    and lm_head transpose; norms and the embedding pass through unchanged.
     """
     if path == "embedder.input_embedding":
         return "model.embed_tokens.weight", value
@@ -63,10 +84,9 @@ def qwen3_safetensors_entry(path: str, value: np.ndarray) -> tuple[str, np.ndarr
         layer, name = match.groups()
         return f"model.layers.{layer}.mlp.{name}.weight", value.transpose(1, 0)
 
-    match = _NORM.match(path)
+    match = _LAYER_NORM.match(path)
     if match:
         layer, name = match.groups()
-        name = name.replace("attn.", "self_attn.")
         return f"model.layers.{layer}.{name}.weight", value
 
     if path == "final_norm.w":
@@ -74,23 +94,86 @@ def qwen3_safetensors_entry(path: str, value: np.ndarray) -> tuple[str, np.ndarr
     if path == "lm_head.w":
         return "lm_head.weight", value.transpose(1, 0)
 
+    return None
+
+
+def qwen3_safetensors_entry(path: str, value: np.ndarray) -> tuple[str, np.ndarray]:
+    """Map one live Tunix Qwen3 parameter to its safetensors entry."""
+    entry = _shared_safetensors_entry(path, value)
+    if entry is not None:
+        return entry
+
+    match = _ATTN_NORM.match(path)
+    if match:
+        layer, name = match.groups()
+        return f"model.layers.{layer}.self_attn.{name}.weight", value
+
     raise ValueError(f"No safetensors mapping for Qwen3 parameter {path!r}")
+
+
+def qwen2_safetensors_entry(path: str, value: np.ndarray) -> tuple[str, np.ndarray]:
+    """Map one live Tunix Qwen2 parameter to its safetensors entry."""
+    entry = _shared_safetensors_entry(path, value)
+    if entry is not None:
+        return entry
+
+    match = _ATTN_BIAS.match(path)
+    if match:
+        layer, name = match.groups()
+        return f"model.layers.{layer}.self_attn.{name}_proj.bias", value
+
+    raise ValueError(f"No safetensors mapping for Qwen2 parameter {path!r}")
+
+
+SAFETENSORS_ENTRY_FNS: dict[str, SafetensorsEntryFn] = {
+    "qwen2": qwen2_safetensors_entry,
+    "qwen3": qwen3_safetensors_entry,
+}
+
+
+def safetensors_entry_fn(model_name: str) -> SafetensorsEntryFn:
+    """Pick the parameter mapping for a Tunix model name.
+
+    The family is read off the module Tunix itself would load rather than
+    guessed from the name, because the name does not always carry it:
+    ``deepseek-r1-distill-qwen-1.5b`` is a Qwen2 architecture, and Tunix
+    registers new names against existing families all the time. Asking the
+    registry means this cannot fall out of step with what actually loaded.
+    """
+    from tunix.models import automodel
+
+    module = automodel.get_model_module(model_name, automodel.ModelModule.MODEL)
+    family = next(
+        (part for part in module.__name__.split(".") if part in SAFETENSORS_ENTRY_FNS),
+        None,
+    )
+    if family is None:
+        raise NotImplementedError(
+            "Full-model safetensors export is not implemented for "
+            f"{model_name} ({module.__name__}). Implemented architectures: "
+            f"{', '.join(sorted(SAFETENSORS_ENTRY_FNS))}. Either disable "
+            "export.enabled or add a mapping to open_r1_tpu.training.export."
+        )
+    return SAFETENSORS_ENTRY_FNS[family]
 
 
 def collect_safetensors_state(
     named_params: list[tuple[str, np.ndarray]],
+    entry_fn: SafetensorsEntryFn,
 ) -> dict[str, np.ndarray]:
     """Map every live parameter, rejecting duplicates."""
     exported: dict[str, np.ndarray] = {}
     for path, value in named_params:
-        key, tensor = qwen3_safetensors_entry(path, value)
+        key, tensor = entry_fn(path, value)
         if key in exported:
             raise ValueError(f"Duplicate safetensors key {key!r} from {path!r}")
         exported[key] = tensor
     return exported
 
 
-def export_full_model(*, model: Any, local_model_path: str, output_dir: str) -> None:
+def export_full_model(
+    *, model: Any, local_model_path: str, output_dir: str, model_name: str
+) -> None:
     """Write the model's live parameters as an unsharded HF checkpoint.
 
     The key set must match the base checkpoint's exactly: a missing key means
@@ -102,12 +185,16 @@ def export_full_model(*, model: Any, local_model_path: str, output_dir: str) -> 
     import safetensors.flax as safe_flax
     from flax import nnx
 
+    # Resolved before any work, so an unsupported architecture fails here
+    # rather than after the parameters have been walked.
+    entry_fn = safetensors_entry_fn(model_name)
+
     named_params: list[tuple[str, np.ndarray]] = []
     state = nnx.state(model, nnx.Param)
     for path, variable in state.flat_state():
         name = ".".join(str(part) for part in path)
         named_params.append((name, np.asarray(getattr(variable, "value", variable))))
-    exported = collect_safetensors_state(named_params)
+    exported = collect_safetensors_state(named_params, entry_fn)
 
     base_state = safe_flax.load_file(
         os.path.join(local_model_path, "model.safetensors")
