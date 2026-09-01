@@ -136,11 +136,20 @@ def _record_from_item_result(
         failed_metrics = list(scoring_failed.metadata.get("failed_metrics", []))
         scoring_errors = dict(scoring_failed.metadata.get("errors", {}))
 
+    # `gold` and `query` are carried so a reduction is self-contained: they
+    # are what `evaluation.consensus` needs to rebuild a scoring `Doc` for the
+    # winning completion of a cons@n vote, and reading them back out of
+    # Langfuse instead would make the summary depend on Langfuse being alive
+    # afterwards -- which this module's docstring exists to prevent. `specific`
+    # is deliberately not carried; see `consensus._score_consensus_document`.
+    item = item_result.item
     return {
         "status": "ok",
-        "doc_id": item_result.item.metadata["doc_id"],
+        "doc_id": item.metadata["doc_id"],
         "task": task,
         "seed": seed,
+        "gold": item.expected_output,
+        "query": item.metadata.get("query"),
         "completion": output.get("text"),
         "finish_reason": output.get("finish_reason"),
         "prompt_tokens": output.get("prompt_tokens"),

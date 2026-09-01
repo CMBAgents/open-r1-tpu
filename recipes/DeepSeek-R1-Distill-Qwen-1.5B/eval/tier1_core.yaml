@@ -1,29 +1,45 @@
-# Tier 1: the decision tier, on the reference model. Task-for-task and
-# seed-for-seed identical to the Qwen3-1.7B-Math tier 1 so the two are
-# directly comparable on this stack.
+# Tier 1: the two card rows that are cheap because their benchmarks are big.
+#
+#   MATH-500 pass@1      published 83.9   (metric `pass@k:k=1&n=1`)
+#   GPQA Diamond pass@1  published 33.8   (metric `gpqa_pass@k:k=1`)
+#
+# Four replicates, not DeepSeek's 64. pass@1 is the probability that a single
+# sample is correct, and every replicate is an independent draw of that same
+# probability, so replicates buy precision and nothing else. The binomial
+# standard error is sqrt(p(1-p)/(N*n)) for N problems and n replicates: on
+# MATH-500's 500 problems four replicates give +/-0.8 points, and 64 would
+# give +/-0.2 for sixteen times the TPU hours. GPQA Diamond's 198 problems
+# land at +/-1.7, which is the loosest number in this directory -- raise
+# `eval.seeds` to eight or sixteen if that is too wide to call a gap against
+# 33.8. AIME is the benchmark where this reasoning inverts; see tier 2.
 extends: base.yaml
 
 eval:
   tier: tier1-core
   tasks:
     - "math_500|0"
-    - "gsm8k|0"
-  seeds: [0, 1, 2]
+    - "gpqa:diamond|0"
+  seeds: [0, 1, 2, 3]
   max_samples: null
 
 server:
-  max_model_len: 20480
+  max_model_len: 36864
 
 sampling:
   # The DeepSeek-recommended settings, which the model card's own numbers
   # use; its generation_config.json carries the same values.
   temperature: 0.6
   top_p: 0.95
-  # Watch generation.truncation_rate in the summary: a trace cut off by the
-  # cap scores as wrong, and DeepSeek's published numbers were measured with
-  # a 32768-token generation budget.
-  max_new_tokens: 16384
-  # No system prompt, per DeepSeek's usage guidance for the distills.
+  # DeepSeek's published budget, matched exactly. A trace cut off by the cap
+  # scores as wrong and reads as a reasoning failure, so evaluating below the
+  # budget the published number was measured at would undershoot it for a
+  # reason that has nothing to do with the model. Watch
+  # generation.truncation_rate in the summary regardless: it is the check
+  # that this budget was in fact enough.
+  max_new_tokens: 32768
+  # No system prompt, per DeepSeek's usage guidance for the distills. The
+  # chat template already opens the reasoning block, and the published
+  # numbers were measured this way.
   system_prompt_file: null
 
 reporting:
@@ -31,4 +47,4 @@ reporting:
   wandb:
     enabled: true
     run_name: deepseek-r1-distill-qwen-1.5b-tier1
-    tags: [tpu, eval, math, reference]
+    tags: [tpu, eval, math, gpqa, reference, model-card]

@@ -1,35 +1,61 @@
-# Tier 2: the headline tier, on the reference model. Identical tasks and
-# seeds to the Qwen3-1.7B-Math tier 2.
+# Tier 2: both AIME 2024 card rows, from one set of generations.
 #
-# Published reference points for this model: 28.9% AIME24 pass@1 and 83.9%
-# MATH-500 pass@1 (model card; the paper's table reads 29.3%/82.9%). Those
-# were measured with a 32768-token generation budget on a different stack --
-# if generation.truncation_rate here is not near zero, rerun with
-# `sampling.max_new_tokens=32768 server.max_model_len=36864` before reading
-# the gap as a model difference.
+#   AIME 2024 pass@1   published 28.9   (metric `pass@k:k=1`, meaned over seeds)
+#   AIME 2024 cons@64  published 52.7   (`eval.consensus`, below)
+#
+# Sixty-four replicates, and here that is not extravagance. AIME 2024 is
+# thirty problems: one replicate estimates pass@1 from thirty coin flips, a
+# binomial standard error of +/-8.3 points against a target of 28.9, and a
+# single problem flipping moves the score 3.3 points. Sixty-four replicates
+# bring that to +/-1.0. They are also not an extra cost on top of cons@64 --
+# the consensus vote needs all sixty-four samples anyway, and pass@1 falls
+# out of the same generations.
+#
+# Roughly 1,920 generations. Budget two to three hours on one v6e chip and
+# run it under tmux.
 extends: base.yaml
 
 eval:
   tier: tier2-headline
   tasks:
     - "aime24|0"
-    - "aime25|0"
-    # olympiad_bench was dropped here (2026-08-28): every row's `specific`
-    # struct is empty, which broke LightEval's own Parquet detail write on
-    # this stack, and it is not part of the Open-R1 headline set.
-  # Ten seeds. On a 30-problem benchmark this is what separates a
-  # measurement from an anecdote.
-  seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  # AIME 2025 was dropped here: it is not a row on the card this directory
+  # replicates, and carrying it at sixty-four replicates would double the
+  # tier for a number with nothing to compare against. Add it back as its own
+  # tier if the generalisation question matters more than the replication.
+  #
+  # olympiad_bench was dropped earlier (2026-08-28): every row's `specific`
+  # struct is empty, which broke LightEval's own Parquet detail write on this
+  # stack, and it is not part of the Open-R1 headline set.
+  seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+          10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+          20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+          30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
+          40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
+          50, 51, 52, 53, 54, 55, 56, 57, 58, 59,
+          60, 61, 62, 63]
   max_samples: null
+  # cons@64: majority vote over the sixty-four replicates' extracted answers,
+  # then that consensus answer judged by the task's own metric. This is the
+  # one number in the suite that cannot be read off a per-seed mean -- it
+  # needs every replicate of a *single* problem together, which is what
+  # `evaluation.consensus` joins. `n` may not exceed the replicate count.
+  consensus:
+    "aime24|0":
+      n: 64
+      metric: "pass@k:k=1"
 
 server:
-  # Olympiad-level problems produce the longest traces in the suite.
-  max_model_len: 24576
+  max_model_len: 36864
 
 sampling:
   temperature: 0.6
   top_p: 0.95
-  max_new_tokens: 20480
+  # DeepSeek's published budget, matched exactly -- and it matters most here.
+  # AIME traces are the longest in the suite, so this is the tier where a
+  # smaller cap would silently convert reasoning into wrong answers. Check
+  # generation.truncation_rate before reading the gap against 28.9.
+  max_new_tokens: 32768
   system_prompt_file: null
 
 reporting:
@@ -37,4 +63,4 @@ reporting:
   wandb:
     enabled: true
     run_name: deepseek-r1-distill-qwen-1.5b-tier2
-    tags: [tpu, eval, aime, reference]
+    tags: [tpu, eval, aime, reference, model-card]

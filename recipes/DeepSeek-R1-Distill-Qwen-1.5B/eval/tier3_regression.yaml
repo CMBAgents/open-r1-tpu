@@ -1,6 +1,13 @@
-# Tier 3: the regression tier, on the reference model. What DeepSeek's
-# math-and-reasoning distillation cost in general assistant behaviour, as
-# the reference point for the same question about this project's own models.
+# Tier 3: the only tier here that carries no card row. What DeepSeek's
+# math-and-reasoning distillation cost in general assistant behaviour, as the
+# reference point for the same question about this project's own models.
+#
+# GPQA Diamond used to run here and has moved to tier 1, which fixed a latent
+# measurement bug as well as grouping the card rows sensibly: this tier's
+# 4096-token budget is far below what a long-CoT model needs on graduate-level
+# science, so GPQA scored here would have been dominated by truncation rather
+# than by knowledge. IFEval genuinely is a short-generation benchmark, so the
+# budget is right for what is left.
 #
 # ONLY GENERATIVE TASKS WORK HERE: an OpenAI-compatible endpoint returns no
 # per-token log probabilities, so LightEval's loglikelihood-scored tasks
@@ -12,7 +19,6 @@ eval:
   tier: tier3-regression
   tasks:
     - "ifeval|0"
-    - "gpqa:diamond|0"
   seeds: [0, 1, 2]
   max_samples: null
 
@@ -22,7 +28,9 @@ server:
 sampling:
   temperature: 0.6
   top_p: 0.95
-  # Shorter than the maths tiers: these are not long-CoT benchmarks.
+  # Shorter than every other tier: IFEval is not a long-CoT benchmark, and
+  # nothing here is being compared against a published number measured at
+  # 32768.
   max_new_tokens: 4096
   # Null here matches the other tiers for this model rather than differing
   # from them: DeepSeek's distills run without a system prompt everywhere.

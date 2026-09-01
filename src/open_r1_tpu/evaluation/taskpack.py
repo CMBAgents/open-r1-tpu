@@ -44,6 +44,17 @@ Known upstream/recipe divergences, recorded rather than papered over:
 - `olympiad_bench` is not in `KNOWN_TASKS`. Its `specific` struct is empty for
   every row, which broke LightEval's own Parquet detail write on this stack,
   and it is not part of the Open-R1 headline set.
+- `lcb:codegeneration` is LightEval's `v4_v5` subset of
+  `lighteval/code_generation_lite` -- the 2024-08 to 2025-01 problem window,
+  which is the window DeepSeek's published LiveCodeBench number names. The
+  bare name is the subset, not a default that could drift: upstream names the
+  task `"lcb:codegeneration"` when its subset is `v4_v5` and
+  `f"lcb:codegeneration_{subset}"` otherwise, so a rename upstream shows up
+  here as a strict-field diff. Its `specific`
+  struct carries every public and private test case for the problem, which is
+  orders of magnitude larger than any other task's -- see
+  `evaluation.dataset_sync`, which stores `specific` in each Langfuse dataset
+  item's metadata.
 
 Run from the repository root::
 
@@ -83,6 +94,7 @@ KNOWN_TASKS: tuple[str, ...] = (
     "aime25|0",
     "ifeval|0",
     "gpqa:diamond|0",
+    "lcb:codegeneration|0",
 )
 
 DEFAULT_TASKPACK_PATH = "configs/taskpack.yaml"

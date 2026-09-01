@@ -917,6 +917,9 @@ accuracy.
 | `eval/tier2_headline.yaml` | hours | Milestones. AIME24, AIME25, OlympiadBench over ten seeds. |
 | `eval/tier3_regression.yaml` | hours | Milestones. IFEval, GPQA-Diamond, MMLU-Pro. |
 
+The reference model's directory carries a fifth, `eval/tier4_code.yaml`, and
+splits the tasks differently; see below.
+
 Tier 0 does not measure ability; it catches a model that is broken in a way loss
 cannot show. Tier 1 is the tier that decides whether a recipe change helped.
 Tier 2 exists because AIME is the number the field quotes, not because 30
@@ -929,16 +932,48 @@ Every tier `extends: base.yaml`, which holds what is genuinely identical across
 them: the whole `server:` block except `max_model_len` — including
 `server.turn_end_token`, the token the preflight verifies the export's
 `generation_config.json` stops on, which differs per model family — and the
-reporting markers and shared W&B settings. The same four tiers exist for the
-reference model under `recipes/DeepSeek-R1-Distill-Qwen-1.5B/eval/`, run the
-way DeepSeek's published numbers were measured: no system prompt, its own
-turn-end token, `reasoning_start: null`. A tier file overrides only what actually
+reporting markers and shared W&B settings. A tier file overrides only what actually
 differs — its tasks, seeds, context window, output directory, and its whole
 `sampling:` block, which stays in every tier file even where two tiers happen
 to agree, because a measurement-affecting setting belongs where it is easy to
 see. `open_r1_tpu.core.config.load_config` resolves `extends` (one level only)
 before dotted overrides and validation run, so a base recipe is invisible to
 both.
+
+### The reference model replicates a published table
+
+`recipes/DeepSeek-R1-Distill-Qwen-1.5B/eval/` is a different kind of recipe set
+from the one above. It exists to reproduce the released model's own published
+numbers on this stack, so it matches DeepSeek's protocol rather than this
+project's tier vocabulary: no system prompt, its own turn-end token,
+`reasoning_start: null`, and — on every tier carrying a published row — their
+32768-token generation budget and their sample counts.
+
+| Published row | Value | Tier | Replicates |
+| --- | --- | --- | --- |
+| AIME 2024 pass@1 | 28.9 | `tier2_headline.yaml` | 64 |
+| AIME 2024 cons@64 | 52.7 | `tier2_headline.yaml` | 64 |
+| MATH-500 pass@1 | 83.9 | `tier1_core.yaml` | 4 |
+| GPQA Diamond pass@1 | 33.8 | `tier1_core.yaml` | 4 |
+| LiveCodeBench pass@1 | 16.9 | `tier4_code.yaml` | 16 |
+| CodeForces rating | 954 | — | — |
+
+CodeForces has no tier because it cannot be measured here: LightEval 0.13.0
+ships no CodeForces task and no Elo harness, and the published rating is a
+percentile placement against human contestants across ten Div.2 contests, not
+a benchmark accuracy. Nothing in that directory approximates it.
+
+Only tier 0 still lines up task-for-task with `recipes/Qwen3-1.7B-Math/eval/`.
+Tiers 1, 2 and 4 no longer do, which is the price of replicating the card
+rather than mirroring this project's own tiers; pointing the Qwen3-1.7B-Math
+recipes at the same protocol would restore the comparison.
+
+**Tier 4 executes model-generated Python on the VM.** Scoring a code benchmark
+means running the extracted solutions against the problem's tests, which
+LightEval's `codegen_metrics` does in subprocesses behind its reliability
+guard. That is the only way LiveCodeBench can be scored, and it is a real
+difference in kind from every other tier, which only ever does arithmetic on
+strings.
 
 ### Seeds are not optional
 
@@ -948,6 +983,39 @@ recipe changes are worth. Every task runs once per seed and is reported as mean
 and standard deviation; `aggregate_across_seeds` reports a null standard
 deviation at one seed rather than a reassuring `0.0`. Three seeds is the
 documented minimum at MATH-500's size, ten at AIME's.
+
+Replicates buy precision, not a different quantity. pass@1 is the probability
+that a *single* sample is correct, and each replicate is an independent draw of
+it, so the binomial standard error is `sqrt(p(1-p)/(N*n))` for `N` problems and
+`n` replicates and shrinks as `1/sqrt(n)`. That is why the count is worth
+choosing per benchmark rather than globally: at the reference model's published
+scores, one replicate is ±8.3 points on AIME 2024's thirty problems but only
+±1.6 on MATH-500's five hundred.
+
+### cons@n needs the replicates together
+
+A consensus number is the one metric that cannot be produced per replicate and
+averaged: it is a majority vote *between* the replicates of a single problem,
+and only then a judgement of the winner. `eval.consensus` asks for one, per
+task, naming both the vote width and the metric that judges the winning answer:
+
+```yaml
+eval:
+  seeds: [0, 1, ..., 63]
+  consensus:
+    "aime24|0":
+      n: 64
+      metric: "pass@k:k=1"
+```
+
+`open_r1_tpu.evaluation.consensus` performs the join at reduction time, over
+the same per-document JSONL every other number is reduced from, so a
+killed-and-resumed tier reduces to the same value. The vote is over answers
+extracted by LightEval's own `math_normalizer`, not over raw completions —
+voting on raw long-CoT text gives every sample its own group and quietly
+degenerates into pass@1. A sample with no extractable answer does not vote;
+`n` may not exceed the replicate count, which is checked at load time rather
+than after the generations have been paid for.
 
 `eval.seeds` indexes replicates; it does not seed them. The TPU backend refuses
 a per-request seed outright — `TpuPlatform.validate_request` raises "JAX does
@@ -975,7 +1043,11 @@ path, and the installed versions of LightEval, openai and
 latex2sympy2-extended. A result that does not name its stack cannot be compared
 with one produced months later.
 `reporting.summary_path` accepts a `gs://` URI to land it beside the checkpoint
-it scored.
+it scored. Any consensus number lands under `summary["consensus"]`, apart from
+`tasks_metrics`: it is a single value computed from every replicate jointly and
+has no spread across them, so filing it beside the seed-aggregated metrics
+would invite reading its absent standard deviation as one-replicate noise.
+`summary_rows` flattens both, so W&B receives it either way.
 
 Alongside accuracy it records four things read out of the runner's own
 per-document records (`src/open_r1_tpu/evaluation/reduce.py`), each diagnosing

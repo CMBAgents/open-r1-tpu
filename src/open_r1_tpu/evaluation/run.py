@@ -124,7 +124,16 @@ def stack_versions() -> dict[str, str]:
 # a typo or a stale setting from a schema that moved on, and both deserve an
 # error rather than being silently ignored -- including a typo'd dotted
 # override, since `load_config` applies overrides before validation runs.
-EVAL_KEYS = {"tier", "tasks", "seeds", "max_samples", "lighteval_binary", "extra_args"}
+EVAL_KEYS = {
+    "tier",
+    "tasks",
+    "seeds",
+    "max_samples",
+    "lighteval_binary",
+    "extra_args",
+    "consensus",
+}
+CONSENSUS_KEYS = {"n", "metric"}
 SERVER_KEYS = {
     "model_path",
     "served_model_name",
@@ -180,6 +189,60 @@ def _reject_unknown_keys(
             raise ValueError(f"Unknown key {prefix}.{key}{hint}")
 
 
+def _validate_consensus(
+    consensus: Any, tasks: Sequence[str], seeds: Sequence[int]
+) -> None:
+    """Check `eval.consensus`, the per-task consensus (cons@n) request.
+
+    Explicit per task rather than inferred, and explicit about which metric
+    judges the consensus answer, because both choices change a headline
+    number: a task declares several metrics (`aime24` declares `pass@k:k=1`
+    and `avg@n:n=1`), and picking one of them by position would make the
+    reported `cons@n` depend on LightEval's declaration order.
+    """
+    if consensus is None:
+        return
+    if not isinstance(consensus, dict):
+        raise ValueError(
+            "eval.consensus must be a mapping of task -> {n, metric}, or null"
+        )
+    for task, request in consensus.items():
+        if task not in tasks:
+            raise ValueError(
+                f"eval.consensus names task {task!r}, which eval.tasks does "
+                f"not run (tasks: {sorted(tasks)})"
+            )
+        if not isinstance(request, dict):
+            raise ValueError(
+                f"eval.consensus[{task!r}] must be a mapping with keys "
+                f"{sorted(CONSENSUS_KEYS)}"
+            )
+        _reject_unknown_keys(f"eval.consensus.{task}", request, CONSENSUS_KEYS)
+        for key in CONSENSUS_KEYS:
+            if key not in request:
+                raise ValueError(f"eval.consensus[{task!r}].{key} is required")
+        n = request["n"]
+        if not isinstance(n, int) or isinstance(n, bool) or n < 2:
+            raise ValueError(
+                f"eval.consensus[{task!r}].n must be an integer of at least 2 "
+                "-- a majority vote over one sample is that sample"
+            )
+        if n > len(seeds):
+            # The replicates are the samples voted over, so asking for more
+            # than the tier generates cannot be satisfied. Caught here rather
+            # than after the generations have been paid for.
+            raise ValueError(
+                f"eval.consensus[{task!r}].n is {n} but eval.seeds has only "
+                f"{len(seeds)} replicate(s) to vote over"
+            )
+        metric = request["metric"]
+        if not isinstance(metric, str) or not metric:
+            raise ValueError(
+                f"eval.consensus[{task!r}].metric must name one of the task's "
+                "own LightEval metrics (e.g. 'pass@k:k=1')"
+            )
+
+
 def validate_eval_config(config: dict[str, Any]) -> None:
     """Fail early for recipe mistakes that would otherwise waste TPU time."""
     for section in ("eval", "server", "sampling", "reporting"):
@@ -214,6 +277,8 @@ def validate_eval_config(config: dict[str, Any]) -> None:
         not isinstance(max_samples, int) or max_samples <= 0
     ):
         raise ValueError("eval.max_samples must be a positive integer or null")
+
+    _validate_consensus(config["eval"].get("consensus"), tasks, seeds)
 
     model_path = config["server"].get("model_path")
     if not isinstance(model_path, str) or not model_path:
@@ -393,6 +458,12 @@ def resolve_settings(config: dict[str, Any]) -> dict[str, Any]:
         "tasks": [str(task) for task in evaluation["tasks"]],
         "seeds": [int(seed) for seed in evaluation["seeds"]],
         "max_samples": evaluation.get("max_samples"),
+        # `{task: {"n": int, "metric": str}}`; empty when the recipe asks for
+        # no consensus number. See `evaluation.consensus`.
+        "consensus": {
+            str(task): {"n": int(request["n"]), "metric": str(request["metric"])}
+            for task, request in (evaluation.get("consensus") or {}).items()
+        },
         "lighteval_binary": str(
             evaluation.get("lighteval_binary", DEFAULT_LIGHTEVAL_BINARY)
         ),
@@ -1079,8 +1150,17 @@ def build_summary(
     per_seed_metrics: Mapping[int, Mapping[str, Mapping[str, float]]],
     per_seed_stats: Mapping[int, Mapping[str, Any]],
     server_provenance: Mapping[str, Any] | None = None,
+    consensus: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Assemble the durable record of one evaluation."""
+    """Assemble the durable record of one evaluation.
+
+    `consensus` is kept out of `tasks_metrics` on purpose. Every entry there
+    is a mean and standard deviation *across* replicates; a cons@n number is
+    a single value computed *from* all of them jointly and has no spread to
+    report, so filing it alongside would invite reading a null standard
+    deviation as one-replicate noise rather than as a category difference.
+    `summary_rows` flattens both, so W&B still receives it.
+    """
     generation: dict[str, Any] = {}
     for name in (
         "format_rate",
@@ -1139,6 +1219,7 @@ def build_summary(
         "server_image_provenance": image_provenance,
         "server_command": vllm_serve_command(settings),
         "tasks_metrics": aggregate_across_seeds(per_seed_metrics),
+        "consensus": {task: dict(result) for task, result in (consensus or {}).items()},
         "generation": generation,
         "per_seed_generation": {str(k): v for k, v in per_seed_stats.items()},
     }
@@ -1159,6 +1240,21 @@ def summary_rows(summary: Mapping[str, Any]) -> list[list[Any]]:
                     stats.get("n"),
                 ]
             )
+    # Consensus rows carry no standard deviation (there is one value, not one
+    # per replicate); the count column holds the vote width instead of a
+    # replicate count, which is the number that makes `cons@64` mean what it
+    # says.
+    for task, result in sorted(summary.get("consensus", {}).items()):
+        rows.append(
+            [
+                summary.get("tier"),
+                task,
+                result.get("name"),
+                result.get("value"),
+                None,
+                result.get("n"),
+            ]
+        )
     return rows
 
 

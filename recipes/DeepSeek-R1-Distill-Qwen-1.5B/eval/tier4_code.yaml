@@ -1,0 +1,46 @@
+# Tier 4: the LiveCodeBench card row.
+#
+#   LiveCodeBench pass@1  published 16.9  (metric `codegen_pass@1:16`)
+#
+# `lcb:codegeneration` is LightEval's default LiveCodeBench subset, which is
+# `v4_v5` of `lighteval/code_generation_lite` -- problems first published
+# between 2024-08 and 2025-01. That is the same window the model card names,
+# so this is a like-for-like comparison rather than a differently-dated one.
+#
+# Sixteen replicates, matching the sixteen LightEval's own metric name
+# declares. On roughly 270 problems that is a binomial standard error of
+# +/-0.6 points against 16.9.
+#
+# **This tier executes model-generated Python on the VM.** LightEval's
+# `codegen_metrics` runs each extracted solution against the problem's test
+# cases in its own subprocess, behind the upstream reliability guard (the
+# usual disabled-builtins, resource limits and per-test timeouts), with
+# `num_process_evaluate=8`. That is the standard and only way a code
+# benchmark can be scored, but it is a real difference in kind from every
+# other tier here, which only ever does arithmetic on strings. Run it on the
+# eval VM, not on a machine holding anything you care about.
+extends: base.yaml
+
+eval:
+  tier: tier4-code
+  tasks:
+    - "lcb:codegeneration|0"
+  seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+  max_samples: null
+
+server:
+  max_model_len: 36864
+
+sampling:
+  temperature: 0.6
+  top_p: 0.95
+  # DeepSeek's published budget, matched exactly; see tier 1.
+  max_new_tokens: 32768
+  system_prompt_file: null
+
+reporting:
+  output_dir: artifacts/DeepSeek-R1-Distill-Qwen-1.5B/eval/tier4
+  wandb:
+    enabled: true
+    run_name: deepseek-r1-distill-qwen-1.5b-tier4
+    tags: [tpu, eval, code, livecodebench, reference, model-card]

@@ -24,9 +24,13 @@ class _FakeEvaluation:
 
 
 class _FakeDatasetItem:
-    def __init__(self, item_id, metadata):
+    def __init__(self, item_id, metadata, expected_output="gold"):
         self.id = item_id
         self.metadata = metadata
+        # The gold `evaluation.dataset_sync` stored. Carried into every JSONL
+        # record so `evaluation.consensus` can judge a cons@n winner without
+        # reading anything back out of Langfuse.
+        self.expected_output = expected_output
 
 
 class _FakeItemResult:
@@ -93,7 +97,11 @@ def _settings(**overrides):
 
 
 def test_record_from_item_result_matches_reduce_expected_shape(tmp_path):
-    item = _FakeDatasetItem("item-1", {"doc_id": "3", "task": "stub_task|0"})
+    item = _FakeDatasetItem(
+        "item-1",
+        {"doc_id": "3", "task": "stub_task|0", "query": "Question: ...\nAnswer:"},
+        expected_output="18",
+    )
     result = _FakeExperimentResult(
         [
             _FakeItemResult(
@@ -128,6 +136,11 @@ def test_record_from_item_result_matches_reduce_expected_shape(tmp_path):
             "doc_id": "3",
             "task": "stub_task|0",
             "seed": 0,
+            # The gold and the prompt travel with the record so a reduction
+            # is self-contained -- `evaluation.consensus` rebuilds a scoring
+            # Doc from exactly these two, never from Langfuse.
+            "gold": "18",
+            "query": "Question: ...\nAnswer:",
             "completion": "18",
             "finish_reason": "stop",
             "prompt_tokens": 7,

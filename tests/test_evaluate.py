@@ -68,6 +68,60 @@ def test_tier_recipes_keep_deployment_values_neutral():
         assert not config["server"]["model_path"].startswith("gs://")
 
 
+# The DeepSeek-R1-Distill-Qwen-1.5B recipes exist to replicate the published
+# model card, so the rows and the recipe set are checked against each other.
+# CodeForces (954) is absent on purpose: LightEval 0.13.0 ships no CodeForces
+# task and no Elo harness, and the published rating is a percentile placement
+# against human contestants rather than a benchmark accuracy.
+DISTILL_TIERS = sorted(DISTILL_DIR.glob("tier*.yaml"))
+MODEL_CARD_TASKS = {
+    "aime24|0",  # 28.9 pass@1, 52.7 cons@64
+    "math_500|0",  # 83.9 pass@1
+    "gpqa:diamond|0",  # 33.8 pass@1
+    "lcb:codegeneration|0",  # 16.9 pass@1
+}
+
+
+def test_the_reference_recipes_cover_every_measurable_model_card_row():
+    covered = set()
+    for recipe in DISTILL_TIERS:
+        covered.update(evaluate.load_eval_config(recipe)["eval"]["tasks"])
+
+    assert covered >= MODEL_CARD_TASKS
+
+
+def test_every_model_card_tier_uses_the_published_token_budget():
+    # A trace cut off by the cap scores as wrong, so evaluating below the
+    # 32768 tokens the published numbers were measured at would undershoot
+    # them for a reason that has nothing to do with the model.
+    for recipe in DISTILL_TIERS:
+        settings = evaluate.resolve_settings(evaluate.load_eval_config(recipe))
+        if not MODEL_CARD_TASKS & set(settings["tasks"]):
+            continue
+        assert settings["max_new_tokens"] == 32768, recipe.name
+        assert settings["max_model_len"] > 32768, recipe.name
+
+
+def test_the_reference_recipes_never_send_a_system_prompt():
+    # DeepSeek's usage guidance for the distills: no system prompt at all.
+    # The chat template already opens the reasoning block, and the published
+    # numbers were measured this way.
+    for recipe in DISTILL_TIERS:
+        settings = evaluate.resolve_settings(evaluate.load_eval_config(recipe))
+        assert settings["system_prompt"] is None, recipe.name
+
+
+def test_the_aime_tier_asks_for_the_consensus_number_the_card_reports():
+    settings = evaluate.resolve_settings(
+        evaluate.load_eval_config(DISTILL_DIR / "tier2_headline.yaml")
+    )
+
+    assert settings["consensus"] == {"aime24|0": {"n": 64, "metric": "pass@k:k=1"}}
+    # cons@64 votes over the replicates, so the tier has to generate 64 of
+    # them -- and pass@1 on a 30-problem benchmark needs them anyway.
+    assert len(settings["seeds"]) == 64
+
+
 def test_smoke_tier_is_greedy_and_capped():
     settings = evaluate.resolve_settings(evaluate.load_eval_config(TIER0))
 
@@ -259,6 +313,78 @@ def test_system_prompt_file_must_be_a_non_empty_string_or_null(system_prompt_fil
 def test_tasks_must_be_a_non_empty_list_of_strings(tasks):
     with pytest.raises(ValueError, match=r"eval\.tasks"):
         evaluate.validate_eval_config(minimal_config(eval={"tasks": tasks}))
+
+
+def test_a_consensus_request_must_name_a_task_the_tier_runs():
+    with pytest.raises(ValueError, match=r"eval\.tasks does not run"):
+        evaluate.validate_eval_config(
+            minimal_config(
+                eval={
+                    "tasks": ["aime24|0"],
+                    "seeds": [0, 1],
+                    "consensus": {"math_500|0": {"n": 2, "metric": "pass@k:k=1"}},
+                }
+            )
+        )
+
+
+def test_a_consensus_cannot_vote_over_more_replicates_than_the_tier_runs():
+    # Caught at load time rather than after the generations have been paid
+    # for: the replicates are the samples, so cons@64 over ten seeds is not a
+    # number that exists.
+    with pytest.raises(ValueError, match="only 10 replicate"):
+        evaluate.validate_eval_config(
+            minimal_config(
+                eval={
+                    "tasks": ["aime24|0"],
+                    "seeds": list(range(10)),
+                    "consensus": {"aime24|0": {"n": 64, "metric": "pass@k:k=1"}},
+                }
+            )
+        )
+
+
+@pytest.mark.parametrize("n", [1, 0, -1, "64", True], ids=str)
+def test_a_consensus_over_fewer_than_two_samples_is_rejected(n):
+    with pytest.raises(ValueError, match="at least 2"):
+        evaluate.validate_eval_config(
+            minimal_config(
+                eval={
+                    "tasks": ["aime24|0"],
+                    "seeds": list(range(64)),
+                    "consensus": {"aime24|0": {"n": n, "metric": "pass@k:k=1"}},
+                }
+            )
+        )
+
+
+def test_a_consensus_must_name_the_metric_that_judges_it():
+    # A task declares several metrics (aime24 declares pass@k:k=1 and
+    # avg@n:n=1); picking one by position would make a headline number depend
+    # on LightEval's declaration order.
+    with pytest.raises(ValueError, match=r"eval\.consensus\['aime24\|0'\]\.metric"):
+        evaluate.validate_eval_config(
+            minimal_config(
+                eval={
+                    "tasks": ["aime24|0"],
+                    "seeds": [0, 1],
+                    "consensus": {"aime24|0": {"n": 2}},
+                }
+            )
+        )
+
+
+def test_an_unknown_consensus_key_is_rejected():
+    with pytest.raises(ValueError, match=r"Unknown key eval\.consensus"):
+        evaluate.validate_eval_config(
+            minimal_config(
+                eval={
+                    "tasks": ["aime24|0"],
+                    "seeds": [0, 1],
+                    "consensus": {"aime24|0": {"n": 2, "metric": "pass@k:k=1", "k": 1}},
+                }
+            )
+        )
 
 
 def test_repeated_seeds_are_rejected():

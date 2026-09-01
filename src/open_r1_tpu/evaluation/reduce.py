@@ -17,6 +17,11 @@ plan called for:
   list of per-document instruction results across the whole corpus first
   (`agg_inst_level_acc`) -- and calling LightEval's own function is what
   keeps this a bridge rather than a second implementation of its scoring.
+- **cons@n is computed here too** (`evaluation.consensus`), and only here:
+  it is the one metric that cannot be produced per replicate and averaged,
+  because the vote is between replicates. `build_summary` files it under
+  `summary["consensus"]`, apart from `tasks_metrics`, since it has no spread
+  across seeds to report.
 - **`truncation_rate` comes from `finish_reason`**, a fact the server states
   (`finish_reason == "length"`), not a `token_count >= max_new_tokens`
   inference. This is the tier-0 gate's "unmeasurable" result becoming a real
@@ -34,6 +39,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from open_r1_tpu.evaluation.consensus import consensus_metrics
 from open_r1_tpu.evaluation.run import build_summary, task_slug
 
 LOGGER = logging.getLogger(__name__)
@@ -219,7 +225,15 @@ def build_summary_from_records(
         per_seed_stats[seed] = stats
 
     summary = build_summary(
-        settings, per_seed_metrics, per_seed_stats, server_provenance
+        settings,
+        per_seed_metrics,
+        per_seed_stats,
+        server_provenance,
+        # Computed here rather than during the run: a consensus needs every
+        # replicate of a document at once, which only exists once the last
+        # seed has finished. It reads the same JSONL files the loop above
+        # does, so a killed-and-resumed tier reduces to the same number.
+        consensus=consensus_metrics(settings, resolved_configs, output_path),
     )
     # `evaluation.run.build_summary` has no provenance field of its own for
     # this; recorded here so a reader of the summary JSON does not have to
