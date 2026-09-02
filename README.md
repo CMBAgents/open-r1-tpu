@@ -1,16 +1,27 @@
 # open-r1-tpu
 
-TPU-native supervised reasoning distillation built with JAX, Grain, Orbax, and
-[Google Tunix](https://github.com/google/tunix). The pipeline mirrors the SFT
-stage in Hugging Face's `open-r1`: it loads conversational reasoning traces,
-applies the model's chat template, and trains a causal language model to emit
-the complete assistant reasoning trace before a later GRPO stage.
+`open-r1-tpu` is a TPU-native post-training and evaluation workflow for open
+language models. It supports instruction tuning and reasoning distillation with
+JAX and [Google Tunix](https://github.com/google/tunix).
 
-The default recipe trains `Qwen/Qwen3-1.7B-Base` with LoRA on
-`open-r1/Mixture-of-Thoughts` using one 32 GiB TPU v6e device. It supervises
-assistant tokens only, filters incomplete reasoning traces and by default
-overlength ones, writes resumable Orbax checkpoints, and exports a merged Hugging Face-style
-safetensors directory.
+The repository is organized around complete, repeatable model-development
+runs: train models, save resumable Orbax checkpoints, export merged
+safetensors weights, and evaluate the resulting model against versioned,
+tiered benchmark recipes. Evaluation uses LightEval metrics and fixed task
+definitions, while self-hosted [Langfuse](https://langfuse.com/) records each
+task-and-seed experiment with its inputs, outputs, traces, scores, and
+provenance for inspection and comparison.
+
+It includes:
+
+- TPU-focused recipes for instruction tuning and reasoning SFT;
+- reproducible local or GCS-backed data and model staging;
+- checkpointing, model export, and W&B training metrics;
+- multi-seed benchmark evaluation and consensus scoring; and
+- Langfuse-native evaluation tracing and experiment review.
+
+Deployment-specific values and credentials stay outside the repository; recipes
+and scripts remain portable across TPU VMs.
 
 ## Package layout
 
