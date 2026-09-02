@@ -1,0 +1,56 @@
+# Tier 0: the smoke test. Runs after every training run, in about five minutes.
+#
+# WHAT IT IS FOR. Not measuring ability -- catching a model that is broken in a
+# way loss cannot show: reasoning traces that never close, generation that runs
+# past the turn boundary, or output that collapsed into repetition. A short
+# greedy pass over easy problems answers that. If Tier 0 looks wrong there is no
+# point paying for Tier 1.
+#
+# This export has two failure modes of its own worth watching here. The
+# training recipe's transcripts were disabled, so whether the model closes
+# </think> and stops at <|im_end|> has never been observed in free generation
+# before this tier: read generation.reasoning_closed_rate and truncation_rate
+# in the summary before anything else. And <think> is plain text to this
+# tokeniser rather than a special token, so a trace that opens with a variant
+# spelling would count as never opened -- format_rate catches that.
+#
+# Greedy, one seed, 200 problems. Seeds exist to average out sampling noise, and
+# at temperature 0 there is none; this tier is a functional check, so its number
+# is a tripwire rather than a result. Everything reported here is a single
+# sample and must not be quoted as a benchmark score.
+#
+# Identical to recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml apart from the
+# paths; tests/test_evaluate.py holds the two together.
+extends: base.yaml
+
+eval:
+  tier: tier0-smoke
+  tasks:
+    - "gsm8k|0"
+  # One seed: greedy decoding has no sampling variance to average out.
+  seeds: [0]
+  # Enough to expose a systematic format failure, far too few to score.
+  max_samples: 200
+
+server:
+  # Prompt plus completion. Must exceed sampling.max_new_tokens with room for
+  # the problem, which the recipe loader enforces.
+  max_model_len: 12288
+
+sampling:
+  # Greedy. Successive smoke tests stay comparable, and a repetition loop shows
+  # up rather than being sampled around.
+  temperature: 0.0
+  top_p: 1.0
+  max_new_tokens: 8192
+  # The same text training injected in front of every example, and the same
+  # file recipes/Qwen3-1.7B-Math uses, so the two stages cannot drift apart
+  # without a diff showing it.
+  system_prompt_file: recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/system_prompt.txt
+
+reporting:
+  output_dir: artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/eval/tier0
+  wandb:
+    enabled: false
+    run_name: qwen2.5-math-1.5b-r1-distill-tier0
+    tags: [tpu, eval, smoke]

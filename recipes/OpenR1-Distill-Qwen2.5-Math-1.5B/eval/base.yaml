@@ -1,0 +1,93 @@
+# Shared across every OpenR1-Distill-Qwen2.5-Math-1.5B eval tier. A tier file
+# `extends` this one and overrides only what actually differs between tiers --
+# the task list, seeds, the context window, and every measurement-affecting
+# sampling knob, which stays in each tier file on purpose even where two tiers
+# happen to agree (see each tier's own sampling: block).
+#
+# THESE TIERS MIRROR recipes/Qwen3-1.7B-Math/eval TIER FOR TIER: the same
+# tasks, seeds, context windows, sampling parameters and system prompt, which
+# tests/test_evaluate.py checks. The two recipes train the same corpus with the
+# same prompt on different base models, and that comparison only holds if the
+# evaluation protocol is identical too. It is deliberately *not* the protocol
+# of recipes/DeepSeek-R1-Distill-Qwen-1.5B/eval, which replicates that model's
+# published card (32768-token budget, 4 and 64 replicates, no system prompt).
+# To measure this export against the card's rows (AIME24 28.9, MATH-500 83.9,
+# GPQA 33.8), run *that* directory's tiers with `server.model_path`,
+# `server.turn_end_token`, `server.extra_args` and `reporting.reasoning_start`
+# overridden to the values below; the tiers here answer a different question.
+#
+# `server.max_model_len` is deliberately absent here: it differs per tier
+# because it must exceed that tier's `sampling.max_new_tokens` with room left
+# for the prompt, which the recipe loader enforces.
+
+server:
+  # The merged export of the final checkpoint (step 4026, the end of the SFT
+  # recipe's max_steps), not an Orbax checkpoint: vLLM reads Hugging Face
+  # safetensors, and this directory is what export.output_dir wrote. Stage it
+  # onto the VM's local disk from the deployment bucket before running; the
+  # bucket is deployment-specific and stays in $GCS_BUCKET. Override to
+  # models/Qwen2.5-Math-1.5B to measure the untrained base on this identical
+  # stack.
+  model_path: artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/merged
+  served_model_name: null
+  # The token the ChatML template closes each turn with. The preflight checks
+  # that the export's generation_config.json names this token's id (151645)
+  # as an EOS, which is the setting that actually stops vLLM at the turn
+  # boundary: the base model's generation_config carries <|endoftext|> only,
+  # and the export rewrites it on the way out.
+  turn_end_token: <|im_end|>
+  # The host stays on the locked Python 3.13 stack; this wrapper runs vLLM in
+  # the local image derived from docker/vllm-tpu's committed build inputs,
+  # with persistent Hub/XLA cache volumes and explicit cleanup. Omit image to
+  # select that derived tag; set a digest-pinned remote image only for an
+  # externally managed rollback or escape hatch.
+  serve_command: ["scripts/run_vllm_tpu_container.sh"]
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 1
+  # ~15 minutes. TPU startup includes weight transfer and an XLA compilation,
+  # neither of which is fast the first time.
+  startup_timeout_secs: 900
+  # THE EXPORT DECLARES A 4096-TOKEN CONTEXT AND WAS TRAINED PAST IT.
+  # Qwen2.5-Math-1.5B's config.json carries max_position_embeddings 4096, its
+  # pretraining context, and the export copies that file unchanged. vLLM caps
+  # --max-model-len at the declared value and sizes its rotary cache from it,
+  # so without this every tier's window is refused at startup, and a server
+  # forced past it would index positions the cache does not hold. The
+  # training recipe ran a 26,624-token window and the traces this model emits
+  # are long-CoT, so the declaration is what is wrong, not the window. This
+  # raises it to 32768, the smallest power of two above every tier's window
+  # and above the training window. DeepSeek did the same to the same base
+  # (DeepSeek-R1-Distill-Qwen-1.5B declares 131072). rope_theta is not touched:
+  # the weights were trained at the base model's 10000 and serving them at
+  # any other value would be evaluating a model that was never trained.
+  extra_args: ["--hf-overrides", '{"max_position_embeddings": 32768}']
+  # Bounds the runner's concurrent in-flight chat completion requests. One
+  # TPU chip serving one model at a time: wide enough to keep the server
+  # busy through generation latency, not so wide that queued requests starve
+  # each other's decode step.
+  max_concurrency: 8
+  # Consecutive request failures (after each has exhausted its own retries)
+  # before the runner stops the whole tier rather than grinding through
+  # every remaining document against a dead server.
+  fail_fast_after: 10
+
+reporting:
+  summary_path: null
+  # <think> is a literal string here, not a special token: the Qwen2.5
+  # tokeniser splits it into ['<th', 'ink', '>'] and the model learned it as
+  # ordinary text, which is what the reducer's string match sees. The ChatML
+  # template does not open the block in the generation prompt (unlike
+  # DeepSeek's template, whose recipes set this null), so a completion carries
+  # both tags and closure is judged on the pair.
+  reasoning_start: <think>
+  reasoning_end: </think>
+  answer_marker: "\\boxed{"
+  wandb:
+    project_name: open-r1-tpu
+    entity: null
+    mode: online
+    job_type: eval
+    # Set to the training run's W&B id to put these numbers on the same run
+    # as the loss curves. W&B resumes by id, never by name.
+    run_id: null

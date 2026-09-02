@@ -1,0 +1,71 @@
+# Tier 3: the regression tier. Milestones only.
+#
+# This tier answers a question the maths tiers cannot: what did the math-only
+# corpus cost? OpenR1-Math-220k carries no instruction-following and no chat
+# data, and the base here is Qwen2.5-*Math*-1.5B, a model that was already
+# maths-specialised before this stage touched it -- so the floor it starts
+# from is lower than Qwen3-1.7B-Base's, and the delta is the number to read.
+#
+# Read these as deltas against the base model on the identical stack
+# (server.model_path=models/Qwen2.5-Math-1.5B), not as absolutes. A 1.5B
+# scores near the floor on GPQA whatever you do to it; the question is whether
+# it scores *lower* than it did before SFT.
+#
+# GPQA AT 4096 TOKENS IS A REGRESSION READING, NOT THE CARD'S 33.8. A long-CoT
+# model on graduate-level science runs well past this budget, so much of what
+# this tier scores on GPQA is truncation. That is the mirrored protocol and
+# the number is comparable with recipes/Qwen3-1.7B-Math's tier 3 on those
+# terms; the reference directory moved GPQA to its tier 1 at 32768 tokens for
+# exactly this reason, and that is where a card comparison belongs.
+#
+# ONLY GENERATIVE TASKS WORK HERE. An OpenAI-compatible endpoint returns no
+# per-token log probabilities for a supplied continuation, so LightEval's
+# loglikelihood tasks -- which is how plain MMLU, HellaSwag and ARC are scored
+# -- cannot run through this backend at all. They would need a backend that
+# loads the model in-process. Everything in this tier is generative.
+#
+# Identical to recipes/Qwen3-1.7B-Math/eval/tier3_regression.yaml apart from
+# the paths; tests/test_evaluate.py holds the two together.
+extends: base.yaml
+
+eval:
+  tier: tier3-regression
+  tasks:
+    - "ifeval|0"
+    - "gpqa:diamond|0"
+    # MMLU-Pro is not in LightEval's table. The nearest is mmlu_redux_2,
+    # which is 57 per-subject tasks with no aggregate -- and multiple
+    # choice, so it scores by comparing logprobs of supplied continuations.
+    # An OpenAI-compatible endpoint cannot return those, which rules out
+    # every MC task on this stack, not just this one. Tier 3 therefore
+    # tests instruction-following and science QA only; the broad knowledge
+    # regression needs a different scoring path.
+  seeds: [0, 1, 2]
+  max_samples: null
+
+server:
+  max_model_len: 8192
+
+sampling:
+  temperature: 0.6
+  top_p: 0.95
+  # Shorter than the maths tiers: these are not long-CoT benchmarks, and IFEval
+  # in particular scores instruction compliance rather than reasoning depth.
+  max_new_tokens: 4096
+  # Deliberately null, unlike the maths tiers. The training system prompt
+  # instructs the model to emit a reasoning trace before answering, which on
+  # IFEval is itself an instruction-following failure. This tier measures the
+  # model as a general assistant, so it is asked as one. Note what null means
+  # on this tokeniser: the ChatML template substitutes its own default system
+  # message ("Please reason step by step, and put your final answer within
+  # \boxed{}.") when a conversation carries none, so the model is not
+  # prompt-free here the way the DeepSeek reference is -- it is prompted with
+  # the base model's stock line instead of the training one.
+  system_prompt_file: null
+
+reporting:
+  output_dir: artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/eval/tier3
+  wandb:
+    enabled: true
+    run_name: qwen2.5-math-1.5b-r1-distill-tier3
+    tags: [tpu, eval, regression]

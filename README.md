@@ -983,6 +983,19 @@ Tiers 1, 2 and 4 no longer do, which is the price of replicating the card
 rather than mirroring this project's own tiers; pointing the Qwen3-1.7B-Math
 recipes at the same protocol would restore the comparison.
 
+`recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/eval/` goes the other way: it
+mirrors `recipes/Qwen3-1.7B-Math/eval/` tier for tier — same tasks, seeds,
+windows, sampling and system prompt, which `tests/test_evaluate.py` pins — so
+the two from-base distillations of the same corpus compare directly. The one
+serving difference is that Qwen2.5-Math-1.5B declares a 4096-token
+`max_position_embeddings`, which the export copies unchanged and vLLM would
+refuse every tier's window against; its `base.yaml` raises the declaration
+through `server.extra_args` (`--hf-overrides`) and leaves `rope_theta` at the
+value the weights were trained with. To read that export against the
+reference model's card instead, run the reference directory's tiers with
+`server.model_path`, `server.turn_end_token`, `server.extra_args` and
+`reporting.reasoning_start` overridden to that `base.yaml`'s values.
+
 **Tier 4 executes model-generated Python on the VM.** Scoring a code benchmark
 means running the extracted solutions against the problem's tests, which
 LightEval's `codegen_metrics` does in subprocesses behind its reliability

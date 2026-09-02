@@ -13,7 +13,17 @@ TIER1 = RECIPE_DIR / "tier1_core.yaml"
 TIER2 = RECIPE_DIR / "tier2_headline.yaml"
 TIER3 = RECIPE_DIR / "tier3_regression.yaml"
 DISTILL_DIR = Path(__file__).parents[1] / "recipes/DeepSeek-R1-Distill-Qwen-1.5B/eval"
-ALL_TIERS = [TIER0, TIER1, TIER2, TIER3, *sorted(DISTILL_DIR.glob("tier*.yaml"))]
+QWEN25_MATH_DIR = (
+    Path(__file__).parents[1] / "recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/eval"
+)
+ALL_TIERS = [
+    TIER0,
+    TIER1,
+    TIER2,
+    TIER3,
+    *sorted(DISTILL_DIR.glob("tier*.yaml")),
+    *sorted(QWEN25_MATH_DIR.glob("tier*.yaml")),
+]
 
 
 def minimal_config(**overrides):
@@ -116,6 +126,65 @@ def test_the_aime_tier_asks_for_the_consensus_number_the_card_reports():
     # cons@64 votes over the replicates, so the tier has to generate 64 of
     # them -- and pass@1 on a 30-problem benchmark needs them anyway.
     assert len(settings["seeds"]) == 64
+
+
+# The OpenR1-Distill-Qwen2.5-Math-1.5B recipes train the same corpus with the
+# same prompt as Qwen3-1.7B-Math on a different base model, and that comparison
+# only holds if the two are evaluated under one protocol. Every
+# measurement-affecting setting is therefore pinned to the Qwen3-1.7B-Math tier
+# of the same name; only the paths, names and serving workaround differ.
+MIRRORED_SETTINGS = (
+    "tasks",
+    "seeds",
+    "max_samples",
+    "consensus",
+    "max_model_len",
+    "temperature",
+    "top_p",
+    "max_new_tokens",
+    "system_prompt",
+    "max_concurrency",
+    "fail_fast_after",
+    "reasoning_start",
+    "reasoning_end",
+    "answer_marker",
+    "turn_end_token",
+)
+
+
+@pytest.mark.parametrize(
+    "name", ["tier0_smoke", "tier1_core", "tier2_headline", "tier3_regression"]
+)
+def test_the_qwen25_math_tiers_mirror_the_qwen3_math_tiers(name):
+    reference = evaluate.resolve_settings(
+        evaluate.load_eval_config(RECIPE_DIR / f"{name}.yaml")
+    )
+    mirrored = evaluate.resolve_settings(
+        evaluate.load_eval_config(QWEN25_MATH_DIR / f"{name}.yaml")
+    )
+
+    for key in MIRRORED_SETTINGS:
+        assert mirrored[key] == reference[key], key
+    assert mirrored["model_path"] != reference["model_path"]
+    assert mirrored["output_dir"] != reference["output_dir"]
+    assert mirrored["wandb"]["run_name"] != reference["wandb"]["run_name"]
+
+
+def test_the_qwen25_math_tiers_raise_the_declared_context_for_serving():
+    # Qwen2.5-Math-1.5B declares max_position_embeddings 4096 and the export
+    # copies that config unchanged, so vLLM would refuse every tier's window
+    # at startup. The recipes declare a larger context through --hf-overrides
+    # and leave rope_theta alone: the weights were trained at the base's
+    # value, and serving them at another would evaluate a different model.
+    for recipe in sorted(QWEN25_MATH_DIR.glob("tier*.yaml")):
+        settings = evaluate.resolve_settings(evaluate.load_eval_config(recipe))
+        command = evaluate.vllm_serve_command(settings)
+
+        overrides = json.loads(command[command.index("--hf-overrides") + 1])
+        assert overrides["max_position_embeddings"] > settings["max_model_len"], (
+            recipe.name
+        )
+        assert "rope_theta" not in overrides, recipe.name
 
 
 def test_smoke_tier_is_greedy_and_capped():
