@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Chat interactively with locally staged Qwen3 weights on one TPU.
+"""Chat interactively with locally staged Qwen weights on the VM's TPUs.
 
 Run from the repository root on the TPU VM after activating the project
 environment::
 
     python scripts/chat_qwen_tpu.py --model-path models/Qwen3-1.7B-Base
+
+Qwen2.5-1.5B weights are detected from their local ``config.json`` and use the
+matching Tunix architecture automatically::
+
+    python scripts/chat_qwen_tpu.py --model-path models/Qwen2.5-Math-1.5B
 
 To talk to a training run's own weights, pass the recipe it was trained with.
 Its latest checkpoint is then restored on top of the base model, which is how
@@ -27,9 +32,10 @@ interactive commands.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import warnings
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -74,7 +80,8 @@ def parse_args() -> argparse.Namespace:
         "--model-path",
         default=DEFAULT_MODEL_PATH,
         help=(
-            "Local Qwen3-1.7B-Base directory containing model.safetensors "
+            "Local supported Qwen directory containing model.safetensors and "
+            "config.json "
             f"(default: {DEFAULT_MODEL_PATH})"
         ),
     )
@@ -84,6 +91,14 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Training recipe whose latest checkpoint to restore on top of "
             "--model-path. Omit to talk to the base weights."
+        ),
+    )
+    parser.add_argument(
+        "--model-name",
+        default=None,
+        help=(
+            "Canonical Tunix model name, only needed when the local config.json "
+            "has no _name_or_path."
         ),
     )
     parser.add_argument(
@@ -174,11 +189,13 @@ def model_config(
     seed: int,
     *,
     use_flash_attention: bool,
+    model_name: str,
+    mesh_shape: tuple[int, int],
     lora_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Return the inference-safe subset of the project's Qwen TPU settings."""
+    """Return the inference-safe subset of the detected Qwen TPU settings."""
     config: dict[str, Any] = {
-        "model_name": "qwen3-1.7b-base",
+        "model_name": model_name,
         "model_source": "local",
         "model_path": model_path,
         "rng_seed": seed,
@@ -187,7 +204,7 @@ def model_config(
         "remat_config": "DECODER",
         "use_flash_attention": use_flash_attention,
         "flash_attention_block_size": FLASH_ATTENTION_BLOCK_SIZE,
-        "mesh": {"shape": [1, 1], "axis_names": ["fsdp", "tp"]},
+        "mesh": {"shape": list(mesh_shape), "axis_names": ["fsdp", "tp"]},
     }
     if lora_config:
         # Adapters must be restored into the same geometry they were trained
@@ -195,6 +212,43 @@ def model_config(
         # defaults here.
         config["lora_config"] = lora_config
     return config
+
+
+def model_settings_for_path(
+    model_path: str, model_name_override: str | None = None
+) -> tuple[str, int]:
+    """Read the Tunix model name and tensor-parallel width from ``config.json``.
+
+    ``_name_or_path`` is the source model id that Hugging Face preserves in a
+    local config. Tunix uses its lowercase final path component as its model
+    name. An explicit ``--model-name`` handles exported configs that omit the
+    source id without introducing architecture-specific defaults here.
+    """
+    config_path = Path(model_path) / "config.json"
+    if not config_path.is_file():
+        raise FileNotFoundError(
+            f"No config.json found in local model directory: {config_path.parent}"
+        )
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in local model config: {config_path}") from exc
+    if not isinstance(config, dict):
+        raise ValueError(f"Local model config must be a JSON object: {config_path}")
+
+    source_name = model_name_override or config.get("_name_or_path")
+    if not isinstance(source_name, str) or not source_name.strip():
+        raise ValueError(
+            f"Local model config {config_path} has no _name_or_path; pass "
+            "--model-name with the canonical Tunix model name."
+        )
+    num_kv_heads = config.get("num_key_value_heads")
+    if not isinstance(num_kv_heads, int) or num_kv_heads <= 0:
+        raise ValueError(
+            f"Local model config {config_path} has invalid num_key_value_heads: "
+            f"{num_kv_heads!r}"
+        )
+    return source_name.rsplit("/", maxsplit=1)[-1].lower(), num_kv_heads
 
 
 def recipe_restore_settings(recipe_path: str) -> tuple[dict[str, Any] | None, str]:
@@ -401,24 +455,68 @@ def fit_history(
     return retained, count, removed_turns
 
 
+def mesh_shape_for_devices(
+    devices: Sequence[Any], num_kv_heads: int
+) -> tuple[int, int]:
+    """Use every visible TPU through FSDP and tensor parallelism.
+
+    Tensor parallelism cannot exceed the model's KV-head count. Remaining
+    chips form the FSDP axis; callers pad the interactive batch to that width
+    before sampling.
+    """
+    if num_kv_heads <= 0:
+        raise ValueError("num_kv_heads must be positive")
+    if not devices:
+        raise RuntimeError(
+            "This client needs at least one visible TPU device; JAX sees no "
+            "devices. Run it on a TPU VM with the TPU runtime configured."
+        )
+    if any(device.platform != "tpu" for device in devices):
+        visible = ", ".join(f"{device.platform}:{device.id}" for device in devices)
+        raise RuntimeError(
+            "This client requires every visible JAX device to be a TPU; JAX sees "
+            f"[{visible}]. Run it on a TPU VM with the TPU runtime configured."
+        )
+    tp_size = min(len(devices), num_kv_heads)
+    if num_kv_heads % tp_size != 0 or len(devices) % tp_size != 0:
+        raise RuntimeError(
+            "This client needs a visible TPU-chip count that can form a tensor-"
+            f"parallel width dividing its {num_kv_heads} KV heads; JAX sees "
+            f"{len(devices)} TPU devices."
+        )
+    return len(devices) // tp_size, tp_size
+
+
+def pad_input_strings_for_fsdp(input_strings: list[str], fsdp_size: int) -> list[str]:
+    """Repeat the final prompt so the sampler batch divides the FSDP width."""
+    if fsdp_size <= 0:
+        raise ValueError("FSDP mesh size must be positive")
+    if not input_strings:
+        raise ValueError("at least one input string is required")
+    remainder = len(input_strings) % fsdp_size
+    if remainder == 0:
+        return input_strings
+    return [
+        *input_strings,
+        *([input_strings[-1]] * (fsdp_size - remainder)),
+    ]
+
+
 def load_runtime(
     args: argparse.Namespace, *, use_flash_attention: bool = False
 ) -> tuple[Any, Any, Any, Any]:
-    """Create one TPU mesh, the local model, its tokenizer, and a sampler."""
+    """Create an all-visible-TPU mesh, the local model, tokenizer, and sampler."""
     import jax
     from tunix.cli.utils import model as model_utils
     from tunix.generate import sampler as sampler_lib
     from tunix.utils import mesh as mesh_utils
 
-    devices = jax.devices()
-    if len(devices) != 1 or any(device.platform != "tpu" for device in devices):
-        visible = ", ".join(f"{device.platform}:{device.id}" for device in devices)
-        raise RuntimeError(
-            "This client expects exactly one visible TPU device; JAX sees "
-            f"[{visible}]. Run it on the configured TPU VM."
-        )
-
-    mesh = mesh_utils.create_mesh((1, 1), ("fsdp", "tp"))
+    model_name, num_kv_heads = model_settings_for_path(
+        args.model_path, getattr(args, "model_name", None)
+    )
+    mesh_shape = mesh_shape_for_devices(tuple(jax.devices()), num_kv_heads)
+    mesh = mesh_utils.create_mesh(mesh_shape, ("fsdp", "tp"))
+    args.sampler_fsdp_size = mesh_shape[0]
     # Reuse the application's local safetensors loader so the inference clients
     # and SFT use the same Qwen architecture and dtype.
     from open_r1_tpu.training.run import _create_model
@@ -434,6 +532,8 @@ def load_runtime(
             args.model_path,
             args.seed,
             use_flash_attention=use_flash_attention,
+            model_name=model_name,
+            mesh_shape=mesh_shape,
             lora_config=lora_config,
         ),
         "tokenizer": tokenizer_config(args.model_path),
@@ -515,7 +615,9 @@ def chat_loop(args: argparse.Namespace, tokenizer: Any, sampler: Any) -> None:
 
         prompt = render_prompt(tokenizer, history, args.system_prompt)
         output = sampler(
-            input_strings=[prompt],
+            input_strings=pad_input_strings_for_fsdp(
+                [prompt], getattr(args, "sampler_fsdp_size", 1)
+            ),
             max_generation_steps=args.max_new_tokens,
             temperature=args.temperature,
             seed=args.seed + reply_number,

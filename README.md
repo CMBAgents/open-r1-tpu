@@ -268,8 +268,23 @@ Once a run finishes it exports merged weights, which need no recipe:
 python scripts/chat_qwen_tpu.py --model-path artifacts/Qwen3-1.7B-Instruct/merged
 ```
 
-**One TPU, one process.** The v6e-1 chip is held by whichever process claims it
-first, so this cannot run beside a training job. Stop the run, or wait for it.
+**One TPU VM, one process.** The chat and completion clients automatically use
+every visible TPU chip in a topology appropriate to the loaded architecture,
+so they work on both v6e-1 and compatible multi-chip VMs. All chips are held
+by whichever process claims them first, so do not run either client beside a
+training job.
+For Qwen3-1.7B, the visible chip count must divide its eight KV heads; a
+four-chip VM is supported.
+
+The clients derive the Tunix model name and KV-head topology from each local
+`config.json`. On four chips, Qwen2.5-Math-1.5B produces an `[fsdp, tp] =
+[2, 2]` mesh; the interactive prompt is duplicated internally to fill the two
+FSDP lanes, and only the first completion is shown. If an exported config has
+no `_name_or_path`, supply its canonical Tunix model name with `--model-name`.
+
+```bash
+python scripts/chat_qwen_tpu.py --model-path models/Qwen2.5-Math-1.5B
+```
 
 Two details of the chat script exist to match what the corpus actually teaches,
 and both would otherwise be silent:

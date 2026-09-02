@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Continue raw text with locally staged Qwen3-1.7B-Base weights on one TPU.
+"""Continue raw text with locally staged Qwen weights on the VM's TPUs.
 
 No system prompt, role markers, chat template, or history is added. For a
 single completion::
@@ -9,6 +9,7 @@ single completion::
       "The capital of France is"
 
 Omit the positional prompt to enter multiple independent prompts interactively.
+Qwen2.5-1.5B weights are also detected from their local ``config.json``.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from typing import Any
 from chat_qwen_tpu import (
     DEFAULT_MODEL_PATH,
     load_runtime,
+    pad_input_strings_for_fsdp,
     tunix_mesh_context,
 )
 
@@ -39,8 +41,17 @@ def parse_args() -> argparse.Namespace:
         "--model-path",
         default=DEFAULT_MODEL_PATH,
         help=(
-            "Local Qwen3-1.7B-Base directory containing model.safetensors "
+            "Local supported Qwen directory containing model.safetensors and "
+            "config.json "
             f"(default: {DEFAULT_MODEL_PATH})"
+        ),
+    )
+    parser.add_argument(
+        "--model-name",
+        default=None,
+        help=(
+            "Canonical Tunix model name, only needed when the local config.json "
+            "has no _name_or_path."
         ),
     )
     parser.add_argument(
@@ -105,7 +116,9 @@ def generate_completion(sampler: Any, prompt: str, args: argparse.Namespace) -> 
         )
 
     output = sampler(
-        input_strings=[prompt],
+        input_strings=pad_input_strings_for_fsdp(
+            [prompt], getattr(args, "sampler_fsdp_size", 1)
+        ),
         max_generation_steps=args.max_new_tokens,
         # With no top_p or beam_size, Tunix performs deterministic greedy
         # next-token selection; temperature is unused in that mode.

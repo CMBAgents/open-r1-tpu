@@ -2,7 +2,7 @@ import importlib.util
 import sys
 from collections import UserDict
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any, ClassVar
 
 import pytest
@@ -125,6 +125,23 @@ def test_raw_completion_passes_the_prompt_unchanged():
     assert sampler.kwargs["max_generation_steps"] == 100
 
 
+def test_raw_completion_pads_the_sampler_batch_for_fsdp():
+    sampler = FakeCompletionSampler()
+    args = SimpleNamespace(
+        max_new_tokens=100,
+        max_prompt_length=2048,
+        seed=42,
+        sampler_fsdp_size=2,
+    )
+
+    completion.generate_completion(sampler, "The capital of France is", args)
+
+    assert sampler.kwargs["input_strings"] == [
+        "The capital of France is",
+        "The capital of France is",
+    ]
+
+
 def test_completion_runtime_disables_flash_attention(monkeypatch):
     sentinel = object()
     captured = {}
@@ -208,14 +225,181 @@ def test_visible_reply_keeps_a_reasoning_trace_that_has_content():
 
 def test_model_config_carries_lora_only_when_asked():
     assert "lora_config" not in chat.model_config(
-        "/models/base", 0, use_flash_attention=False
+        "/models/base",
+        0,
+        use_flash_attention=False,
+        model_name="qwen3-1.7b-base",
+        mesh_shape=(1, 1),
     )
     lora = {"rank": 8, "alpha": 8.0, "module_path": ".*q_proj"}
     assert (
         chat.model_config(
-            "/models/base", 0, use_flash_attention=False, lora_config=lora
+            "/models/base",
+            0,
+            use_flash_attention=False,
+            model_name="qwen3-1.7b-base",
+            mesh_shape=(1, 1),
+            lora_config=lora,
         )["lora_config"]
         == lora
+    )
+
+
+def test_model_config_carries_the_discovered_mesh_shape():
+    assert chat.model_config(
+        "/models/base",
+        0,
+        use_flash_attention=False,
+        model_name="qwen3-1.7b-base",
+        mesh_shape=(1, 4),
+    )["mesh"] == {"shape": [1, 4], "axis_names": ["fsdp", "tp"]}
+
+
+def test_model_settings_are_derived_from_the_local_config(tmp_path):
+    (tmp_path / "config.json").write_text(
+        '{"_name_or_path":"Qwen/Qwen2.5-Math-1.5B","num_key_value_heads":2}',
+        encoding="utf-8",
+    )
+
+    assert chat.model_settings_for_path(str(tmp_path)) == (
+        "qwen2.5-math-1.5b",
+        2,
+    )
+
+
+def test_model_settings_accept_an_explicit_name_when_source_metadata_is_missing(
+    tmp_path,
+):
+    (tmp_path / "config.json").write_text('{"num_key_value_heads":2}', encoding="utf-8")
+
+    assert chat.model_settings_for_path(str(tmp_path), "qwen2.5-math-1.5b") == (
+        "qwen2.5-math-1.5b",
+        2,
+    )
+
+
+def test_mesh_shape_uses_every_visible_tpu_device():
+    devices = [SimpleNamespace(platform="tpu", id=device_id) for device_id in range(4)]
+
+    assert chat.mesh_shape_for_devices(devices, num_kv_heads=8) == (1, 4)
+
+
+def test_qwen2_5_mesh_uses_fully_sharded_data_parallelism_after_tp():
+    devices = [SimpleNamespace(platform="tpu", id=device_id) for device_id in range(4)]
+
+    assert chat.mesh_shape_for_devices(devices, num_kv_heads=2) == (2, 2)
+    assert chat.pad_input_strings_for_fsdp(["prompt"], fsdp_size=2) == [
+        "prompt",
+        "prompt",
+    ]
+
+
+def test_mesh_shape_rejects_no_devices_or_non_tpu_devices():
+    with pytest.raises(RuntimeError, match="at least one visible TPU"):
+        chat.mesh_shape_for_devices([], num_kv_heads=8)
+    with pytest.raises(RuntimeError, match="every visible JAX device"):
+        chat.mesh_shape_for_devices(
+            [SimpleNamespace(platform="cpu", id=0)], num_kv_heads=8
+        )
+
+
+def test_mesh_shape_rejects_a_tpu_count_that_cannot_tensor_parallelize_qwen3():
+    devices = [SimpleNamespace(platform="tpu", id=device_id) for device_id in range(3)]
+
+    with pytest.raises(RuntimeError, match="dividing its 8 KV heads"):
+        chat.mesh_shape_for_devices(devices, num_kv_heads=8)
+
+
+def test_load_runtime_wires_qwen2_5_into_the_four_chip_mesh(monkeypatch):
+    captured: dict[str, Any] = {}
+    mesh = object()
+    tokenizer = object()
+    sampler_instance = object()
+    model = SimpleNamespace(
+        config=SimpleNamespace(num_layers=28, num_kv_heads=2, head_dim=128)
+    )
+
+    def create_mesh(shape, axis_names):
+        captured["mesh"] = (shape, axis_names)
+        return mesh
+
+    def create_model(config, received_mesh):
+        captured["model"] = (config, received_mesh)
+        return model, "tokenizer-path"
+
+    def cache_config(**kwargs):
+        captured["cache"] = kwargs
+        return SimpleNamespace(**kwargs)
+
+    def sampler(**kwargs):
+        captured["sampler"] = kwargs
+        return sampler_instance
+
+    fake_jax: Any = ModuleType("jax")
+    fake_jax.devices = lambda: [
+        SimpleNamespace(platform="tpu", id=device_id) for device_id in range(4)
+    ]
+    fake_model_utils: Any = ModuleType("tunix.cli.utils.model")
+    fake_model_utils.create_tokenizer = lambda _config, _path: tokenizer
+    fake_sampler_lib: Any = ModuleType("tunix.generate.sampler")
+    fake_sampler_lib.CacheConfig = cache_config
+    fake_sampler_lib.Sampler = sampler
+    fake_mesh_utils: Any = ModuleType("tunix.utils.mesh")
+    fake_mesh_utils.create_mesh = create_mesh
+    fake_training_run: Any = ModuleType("open_r1_tpu.training.run")
+    fake_training_run._create_model = create_model
+    monkeypatch.setattr(
+        chat,
+        "model_settings_for_path",
+        lambda *_args: ("qwen2.5-math-1.5b", 2),
+    )
+
+    for name, module in {
+        "jax": fake_jax,
+        "tunix": ModuleType("tunix"),
+        "tunix.cli": ModuleType("tunix.cli"),
+        "tunix.cli.utils": ModuleType("tunix.cli.utils"),
+        "tunix.cli.utils.model": fake_model_utils,
+        "tunix.generate": ModuleType("tunix.generate"),
+        "tunix.generate.sampler": fake_sampler_lib,
+        "tunix.utils": ModuleType("tunix.utils"),
+        "tunix.utils.mesh": fake_mesh_utils,
+        "open_r1_tpu.training.run": fake_training_run,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    args = SimpleNamespace(
+        model_path="/models/base",
+        seed=42,
+        checkpoint_dir=None,
+        recipe=None,
+        max_prompt_length=1024,
+        max_new_tokens=128,
+        model_name=None,
+    )
+
+    loaded_mesh, loaded_tokenizer, loaded_sampler, loaded_model = chat.load_runtime(
+        args
+    )
+
+    assert (loaded_mesh, loaded_tokenizer, loaded_model) == (mesh, tokenizer, model)
+    assert loaded_sampler is sampler_instance
+    assert args.sampler_fsdp_size == 2
+    assert captured["mesh"] == ((2, 2), ("fsdp", "tp"))
+    assert captured["model"] == (
+        {
+            "model": {
+                **chat.model_config(
+                    "/models/base",
+                    42,
+                    use_flash_attention=False,
+                    model_name="qwen2.5-math-1.5b",
+                    mesh_shape=(2, 2),
+                )
+            },
+            "tokenizer": chat.tokenizer_config("/models/base"),
+        },
+        mesh,
     )
 
 
