@@ -72,8 +72,7 @@ LOGGER = logging.getLogger(__name__)
 
 # Namespace for deterministic dataset item ids: the same (dataset, doc_id)
 # always yields the same id, so create_dataset_item upserts rather than
-# accumulating -- matching runner._trace_id/tracing.scores._score_id's choice
-# on the trace/score side.
+# accumulating.
 _ITEM_ID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "open-r1-tpu-dataset-item")
 
 

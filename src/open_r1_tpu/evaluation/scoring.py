@@ -160,7 +160,8 @@ def compute_scores(
 
 def coerce_score(value: Any) -> tuple[Any, str] | None:
     """Map one LightEval metric value to a `(value, langfuse_data_type)` pair
-    `tracing.scores.post_scores` can post unchanged.
+    `lighteval_evaluator` turns into one `Evaluation` for `run_experiment()`
+    to post.
 
     | LightEval value | Langfuse `data_type` | Note |
     | --- | --- | --- |
@@ -209,9 +210,9 @@ def run_level_fields(
 def coerce_fields(fields: Mapping[str, Any]) -> dict[str, tuple[Any, str]]:
     """Coerce every field in `fields` and drop the ones `coerce_score` skips.
 
-    The convenience wrapper `evaluation.runner` actually calls: run
-    `compute_scores`' result and `run_level_fields`' result through this once,
-    merged, and pass the result straight to `tracing.scores.post_scores`.
+    The convenience wrapper `lighteval_evaluator` actually calls: run
+    `compute_scores`' result and `run_level_fields`' result through this
+    once, merged, then turn each coerced pair into one `Evaluation`.
     """
     coerced: dict[str, tuple[Any, str]] = {}
     for name, value in fields.items():
@@ -223,14 +224,10 @@ def coerce_fields(fields: Mapping[str, Any]) -> dict[str, tuple[Any, str]]:
 
 # --- the Langfuse `run_experiment()` adapter --------------------------------
 #
-# Everything below is additive for the Langfuse-native evaluation plan
-# (`eval-langfuse-native-plan.md`, Task 2): `run_experiment()` drives
-# iteration and concurrency now, and calls back into this module to score
-# each document, through the two functions below. Nothing above this comment
-# changes; `runner._score_and_post_document` and `lighteval_evaluator` both
-# still call `build_model_response`/`compute_scores`/`run_level_fields`/
-# `coerce_fields` the same way, so a document scores identically whichever
-# half of the pipeline produced its trace.
+# `run_experiment()` drives iteration and concurrency, and calls back into
+# this module to score each document through `lighteval_evaluator` below,
+# which calls `build_model_response`/`compute_scores`/`run_level_fields`/
+# `coerce_fields` the same way every other function above already does.
 
 
 def doc_from_item(
@@ -279,8 +276,7 @@ def lighteval_evaluator(task_name: str) -> Callable[..., list[Any]]:
     Closed over `task_name`'s live metric objects, resolved fresh through
     `evaluation.taskpack.resolve_task_configs` on every call -- never
     deserialized from the committed task pack; see that module's docstring
-    for why. Scores exactly as `evaluation.runner._score_and_post_document`
-    does today: `build_model_response`, `compute_scores`, `run_level_fields`,
+    for why. Calls `build_model_response`, `compute_scores`, `run_level_fields`,
     `coerce_fields`, in that order.
 
     `output` is the dict `evaluation.task_fn.make_task`'s task function

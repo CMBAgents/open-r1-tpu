@@ -60,10 +60,6 @@ eval = [
   # which examples are evaluated. They are part of the protocol, not tooling.
   "datasets==5.0.1",
   "huggingface-hub==1.28.0",
-  # Reading LightEval's Parquet detail shards. Still needed while the
-  # superseded litellm-subprocess path in open_r1_tpu.evaluation.run remains
-  # (find_details_files/read_detail_responses); goes when that does.
-  "pyarrow==25.0.1",
   # LightEval imports xxhash without declaring it, so the version is whatever
   # `datasets` happens to drag in. 4.0.0 (2026-08-12) stopped accepting str,
   # and LightEval hashes `doc.query` -- a str -- for every sample, so metric
@@ -74,18 +70,17 @@ eval = [
   # with this project's own retry policy (open_r1_tpu.evaluation.runner),
   # never the SDK's default. No litellm anywhere in this path.
   "openai==2.54.0",
-  # Traces and scores, posted in-process as each document completes. Moved
-  # here from a separate `tracing` extra now that the Langfuse-native runner
-  # puts it on the critical path, on the VM, at eval time -- not an optional
-  # side pipeline anymore. Exact pin, matching this project's convention
-  # elsewhere: the Python SDK's OpenTelemetry-native generation (what
-  # Langfuse's own docs call "Python SDK v3"; the PyPI package's own version
-  # numbering moved to a 4.x major version for it).
-  # open_r1_tpu.evaluation.runner/.tracing.ingest/.tracing.scores use
-  # `Client.create_trace_id`, `Client.start_observation`, and
-  # `Client.create_score` from this exact generation -- see
-  # tracing/ingest.py's module docstring for two SDK limitations already
-  # worked around.
+  # Drives generation and scoring itself: open_r1_tpu.evaluation.experiment
+  # calls dataset.run_experiment() per task/seed, which iterates the dataset,
+  # invokes the task function (open_r1_tpu.evaluation.task_fn) and evaluator
+  # (open_r1_tpu.evaluation.scoring.lighteval_evaluator), and posts the
+  # resulting trace and scores itself -- on the critical path, on the VM, at
+  # eval time, not an optional side pipeline. open_r1_tpu.evaluation.dataset_sync
+  # additionally uses `Client.create_dataset`/`create_dataset_item` to populate
+  # the dataset run_experiment() iterates. Exact pin, matching this project's
+  # convention elsewhere: the Python SDK's OpenTelemetry-native generation
+  # (what Langfuse's own docs call "Python SDK v3"; the PyPI package's own
+  # version numbering moved to a 4.x major version for it).
   "langfuse==4.14.5",
 ]
 # vLLM is deliberately absent. Nothing here imports it -- open_r1_tpu.evaluation.run
@@ -102,13 +97,6 @@ dev = [
   "pyright>=1.1.400",
   "pytest>=8.0",
   "ruff>=0.14",
-  # For testing docker/trace-proxy/gcs_logger.py locally. Both are loose
-  # bounds on purpose: at runtime the logger uses whatever versions the
-  # pinned litellm proxy image ships (httpx is a litellm core dependency,
-  # google-auth arrives via its google-cloud extras), so the local pins only
-  # need the same stable APIs, not the same versions.
-  "google-auth>=2.30",
-  "httpx>=0.27",
 ]
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,42 +1,16 @@
 # Example tracing configuration -- copy to configs/tracing.yaml (gitignored)
-# and replace every placeholder with a real value. Nothing here is a real
-# bucket, host, or deployment identifier.
+# and replace the placeholder host/port with real values. Nothing here is a
+# real deployment identifier.
 #
 # Loaded and validated by `open_r1_tpu.tracing.config`; see its module
-# docstring for the schema and `--export-env` mode. `docker/langfuse/README.md`
-# explains how `langfuse.host`/`langfuse.port` here must agree with
-# docker/langfuse/.env's LANGFUSE_WEB_PORT.
+# docstring for the schema. `docker/langfuse/README.md` explains how
+# `langfuse.host`/`langfuse.port` here must agree with docker/langfuse/.env's
+# LANGFUSE_WEB_PORT.
 #
-# Secrets are not config: LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY, and any
-# GCS key material, are read from the environment by the ingester and score
-# pass -- never written into this file.
-
-gcs:
-  # gs://<bucket> without the scheme; the ingester and score pass add it back
-  # where they need a URI.
-  bucket: your-bucket
-  # {recipe} and {timestamp} are filled in by open_r1_tpu.tracing.config at
-  # launch time, never pasted together in shell. No other field name is
-  # accepted here.
-  prefix_template: "traces/{recipe}/{timestamp}"
-
-proxy:
-  port: 4000
-  # The vLLM server's OpenAI-compatible endpoint the proxy forwards to. A
-  # loopback address is correct here: the proxy container runs with
-  # --network host (see scripts/run_trace_proxy.sh), so its 127.0.0.1 is the
-  # host's, where vLLM listens. Must agree with the recipe's server.base_url.
-  upstream_base_url: "http://127.0.0.1:8000/v1"
-  # A digest is not deployment-specific, so this real recommendation can live
-  # in the committed example: litellm's own proxy image, pinned to the exact
-  # release open_r1_tpu.evaluation.stack.EVALUATION_PACKAGE_VERSIONS pins the
-  # litellm *library* to, so proxy and harness behaviour stay aligned.
-  image: "ghcr.io/berriai/litellm:v1.97.0@sha256:468c25f35f3e5ec4e414974f00deab93337b1b4d9953cabcfd3722e59415f834"
+# Secrets are not config: LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY are read
+# from the environment (see `evaluation.experiment`/`evaluation.dataset_sync`),
+# never written into this file.
 
 langfuse:
   host: 127.0.0.1
   port: 3000
-
-ingester:
-  poll_secs: 30
-  state_dir: artifacts/tracing/ingest-state

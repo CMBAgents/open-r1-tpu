@@ -1,5 +1,5 @@
-"""Task 4's experiment entry point: `dataset.run_experiment()` per
-`(task, seed)`, replacing `evaluation.runner.run_async`/`run_seed_task`.
+"""The Langfuse-native experiment entry point: `dataset.run_experiment()` per
+`(task, seed)`.
 
 Langfuse drives the loop from here down: iteration, concurrency, and
 per-item tracing are `dataset.run_experiment()`'s
@@ -87,8 +87,8 @@ LOGGER = logging.getLogger(__name__)
 
 # Evaluations `lighteval_evaluator` posts that are not a LightEval metric
 # name -- run-level facts and the failure marker -- excluded from a JSONL
-# record's `scores` dict, matching `runner._score_and_post_document`'s own
-# separation of `result.scores` from `run_level_fields`.
+# record's `scores` dict, keeping `result.scores` (LightEval's own metric
+# names) separate from `evaluation.scoring.run_level_fields`.
 _RUN_LEVEL_EVALUATION_NAMES = frozenset(
     {"completion_tokens", "truncated", "scoring_failed"}
 )
@@ -115,9 +115,8 @@ def _git_commit() -> str | None:
 def _record_from_item_result(
     item_result: Any, *, task: str, seed: int
 ) -> dict[str, Any]:
-    """One JSONL record in exactly the shape `evaluation.reduce` reads --
-    reproducing `runner._score_and_post_document`'s return from an
-    `ExperimentItemResult` instead of from a live generation.
+    """One JSONL record in exactly the shape `evaluation.reduce` reads,
+    built from an `ExperimentItemResult` rather than from a live generation.
     """
     output = item_result.output if isinstance(item_result.output, Mapping) else {}
     evaluations_by_name = {
@@ -268,9 +267,9 @@ def run(
 ) -> Path:
     """Run every `(task, seed)` in `settings`, writing
     `output_dir/seed-{seed}/{task_slug}.jsonl`. `langfuse_client` is
-    required, matching `evaluation.runner.run_async`: no default, so
-    silently constructing one from ambient environment never hides which
-    deployment's Langfuse a run actually talks to.
+    required, with no default: silently constructing one from ambient
+    environment would hide which deployment's Langfuse a run actually
+    talks to.
     """
     output_dir = Path(settings["output_dir"]).expanduser()
     client = openai.AsyncOpenAI(

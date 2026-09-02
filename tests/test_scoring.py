@@ -15,7 +15,6 @@ from dataclasses import replace
 import pytest
 
 from open_r1_tpu.evaluation import scoring, taskpack
-from open_r1_tpu.tracing import scores as tracing_scores
 
 
 class FakeMetric:
@@ -30,17 +29,6 @@ class FakeMetric:
 
     def compute_sample(self, **kwargs):
         return self._fn(**kwargs)
-
-
-class FakeLangfuseClient:
-    def __init__(self):
-        self.score_calls = []
-
-    def create_score(self, **kwargs):
-        self.score_calls.append(kwargs)
-
-    def _create_trace_tags_via_ingestion(self, **kwargs):
-        pass
 
 
 class _StubDoc:
@@ -158,28 +146,6 @@ def test_run_level_fields():
         "completion_tokens": None,
         "truncated": False,
     }
-
-
-def test_coerced_fields_post_through_tracing_scores_with_the_right_data_type():
-    fields = scoring.coerce_fields(
-        {
-            "extractive_match": 1.0,
-            "closed": True,
-            "label": "ok",
-            "skip_me": None,
-            "grouped_list": [True, False],
-        }
-    )
-    client = FakeLangfuseClient()
-    tracing_scores.post_scores(
-        client, "trace-1", fields, tier="t", seed=0, task="gsm8k|0", source="runner"
-    )
-    by_name = {c["name"]: (c["value"], c["data_type"]) for c in client.score_calls}
-    assert by_name["extractive_match"] == (1.0, "NUMERIC")
-    assert by_name["closed"] == (1.0, "NUMERIC")
-    assert by_name["label"] == ("ok", "CATEGORICAL")
-    assert "skip_me" not in by_name
-    assert "grouped_list" not in by_name
 
 
 # --- integration: needs the real LightEval Doc/ModelResponse/metrics -------

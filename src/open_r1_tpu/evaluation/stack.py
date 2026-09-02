@@ -21,7 +21,6 @@ EVALUATION_PACKAGE_VERSIONS = {
     # No litellm: evaluation.runner reaches vLLM directly over openai, never
     # through litellm -- see the eval extra's own comment in pyproject.toml.
     "openai": "2.54.0",
-    "pyarrow": "25.0.1",
     "xxhash": "3.8.1",
 }
 

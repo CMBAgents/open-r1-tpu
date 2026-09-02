@@ -8,10 +8,6 @@
 # because it must exceed that tier's `sampling.max_new_tokens` with room left
 # for the prompt, which the recipe loader enforces.
 
-eval:
-  lighteval_binary: lighteval
-  extra_args: []
-
 server:
   # The merged export, not a checkpoint: vLLM reads Hugging Face safetensors.
   # Override to models/Qwen3-1.7B-Base to measure the untrained baseline on

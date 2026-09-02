@@ -1,14 +1,14 @@
-"""Point `evaluation.run.build_summary` at the runner's own JSONL output.
+"""Point `evaluation.run.build_summary` at `evaluation.experiment`'s own
+JSONL output.
 
 `evaluation.run`'s reduction half -- `build_summary`, `aggregate_across_seeds`,
-`log_summary_to_wandb` -- is harness-agnostic and unchanged. What it used to
-read (LightEval's own results JSON and Parquet detail shards, via `run_seed`)
-is gone; this module produces the same two inputs `run_seed` used to return,
-`(metrics, stats)` per seed, from `evaluation.runner`'s JSONL records instead,
-so nothing downstream needs to change.
+`log_summary_to_wandb` -- is harness-agnostic and unchanged. This module
+produces the `(metrics, stats)` per seed that half expects, from
+`evaluation.experiment`'s own JSONL records (one file per `(seed, task)`,
+written straight from `dataset.run_experiment()`'s `ExperimentResult`)
+instead of LightEval's own results JSON and Parquet detail shards.
 
-Two deliberate departures from what `run_seed` did, both improvements the
-plan called for:
+Two deliberate improvements over how the pre-Langfuse pipeline reduced this:
 
 - **Corpus-level aggregation reuses each metric's own `corpus_level_fn`**,
   read straight off the live `LightevalTaskConfig` (`resolve_task_configs`),
@@ -24,10 +24,8 @@ plan called for:
   across seeds to report.
 - **`truncation_rate` comes from `finish_reason`**, a fact the server states
   (`finish_reason == "length"`), not a `token_count >= max_new_tokens`
-  inference. This is the tier-0 gate's "unmeasurable" result becoming a real
-  number; `evaluation.run.completion_stats` (unchanged, still used by
-  whatever of the old subprocess path survives) keeps the old inference for
-  its own callers.
+  inference -- the tier-0 gate's former "unmeasurable" result, now a real
+  number.
 """
 
 from __future__ import annotations
@@ -67,9 +65,8 @@ def read_jsonl(path: str | Path) -> list[dict[str, Any]]:
 def reduce_task_metrics(
     records: Sequence[Mapping[str, Any]], metrics: Sequence[Any]
 ) -> dict[str, float]:
-    """One seed's one task, reduced to `{metric_name: corpus_value}` -- the
-    same shape `evaluation.run.normalise_results` used to produce from
-    LightEval's own results JSON.
+    """One seed's one task, reduced to `{metric_name: corpus_value}`, the
+    same shape LightEval's own results JSON produced per task.
 
     For each name a task's metrics declare, collects every document's raw
     value (skipping a document where that metric is absent or `None` --
@@ -99,10 +96,11 @@ def completion_stats_from_records(
     reasoning_end: str,
     answer_marker: str,
 ) -> dict[str, Any]:
-    """`evaluation.run.completion_stats`'s statistics, computed directly from
-    the runner's JSONL records rather than a LightEval detail-Parquet cell --
-    same return shape, so `build_summary` reads it unchanged. The one
-    substantive difference is `truncation_rate`; see the module docstring.
+    """Generation-level statistics computed directly from `evaluation.experiment`'s
+    JSONL records rather than a LightEval detail-Parquet cell, in the shape
+    `build_summary` expects. The one substantive difference from how the
+    pre-Langfuse pipeline computed these is `truncation_rate`; see the module
+    docstring.
     """
     documents = 0
     completions = 0
@@ -169,9 +167,8 @@ def reduce_seed(
     resolved_configs: Mapping[str, Any],
     output_dir: Path,
 ) -> tuple[dict[str, dict[str, float]], dict[str, Any]]:
-    """One seed's `(metrics, stats)`, in exactly the shape
-    `evaluation.run.run_seed` used to return -- the join point that lets
-    `build_summary` stay unchanged.
+    """One seed's `(metrics, stats)`, in exactly the shape `build_summary`
+    expects.
     """
     metrics: dict[str, dict[str, float]] = {}
     all_records: list[dict[str, Any]] = []
@@ -188,9 +185,9 @@ def reduce_seed(
                 f"(read {len(records)} record(s) from {path})"
             )
         # Keyed by the recipe's own task string, one entry per task -- unlike
-        # `evaluation.run.run_seed`, which keyed by whatever key LightEval's
-        # own results JSON happened to use and so had to guard against two
-        # different keys colliding. That indirection is gone: two tasks
+        # LightEval's own results JSON, which keys by whatever key the
+        # harness happened to use and so needs a guard against two different
+        # keys colliding. That indirection does not exist here: two tasks
         # reporting the same metric name (e.g. two maths tasks both
         # producing `extractive_match`) is expected and fine, since each
         # lands under its own task here.

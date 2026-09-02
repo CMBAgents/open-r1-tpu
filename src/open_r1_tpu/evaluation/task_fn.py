@@ -117,9 +117,13 @@ def make_task(settings: Mapping[str, Any], *, client: Any) -> Callable[..., Any]
     cannot outlive the loop that opened it -- see `evaluation.experiment`'s
     module docstring.
 
-    Deliberately no per-request `seed`: the TPU backend refuses one whenever
-    `temperature > 0` (`evaluation.run.litellm_model_config`'s docstring
-    explains why), and `generate_one` never sends one.
+    Deliberately no per-request `seed`: vLLM classifies a request carrying
+    one as `SamplingType.RANDOM_SEED` whenever `temperature > 0`, and the TPU
+    backend refuses that outright (`TpuPlatform.validate_request` raises
+    "JAX does not support per-request seed."), reaching the client as an
+    empty-body HTTP 500. `eval.seeds` therefore indexes independent
+    replicates rather than determining them, and `generate_one` never sends
+    one.
     """
     breaker = _CircuitBreaker(int(settings["fail_fast_after"]))
     served_model_name = settings["served_model_name"]

@@ -32,10 +32,6 @@
 # because it must exceed that tier's `sampling.max_new_tokens` with room left
 # for the prompt, which the recipe loader enforces.
 
-eval:
-  lighteval_binary: lighteval
-  extra_args: []
-
 server:
   # The released Hugging Face weights, staged onto the VM's local disk from
   # the bucket; vLLM reads the safetensors directly.
