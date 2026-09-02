@@ -223,6 +223,32 @@ def test_visible_reply_keeps_a_reasoning_trace_that_has_content():
     assert chat.visible_reply(reply) == reply
 
 
+def test_colour_reasoning_dims_the_trace_through_its_closing_marker():
+    assert chat.colour_reasoning("<think>\nsum digits\n</think>\n\n79.") == (
+        f"{chat.REASONING_COLOUR}<think>\nsum digits\n</think>"
+        f"{chat.COLOUR_RESET}\n\n79."
+    )
+
+
+def test_colour_reasoning_handles_a_trace_without_an_opening_marker():
+    # ChatML does not pre-open the block, and <think> is ordinary tokens to
+    # this tokeniser, so the model sometimes goes straight into the trace.
+    assert chat.colour_reasoning("sum digits</think>79.") == (
+        f"{chat.REASONING_COLOUR}sum digits</think>{chat.COLOUR_RESET}79."
+    )
+
+
+def test_colour_reasoning_dims_an_unclosed_trace_entirely():
+    # A trace that ran out the token budget never closes; all of it is trace.
+    assert chat.colour_reasoning("<think>endless deliberation") == (
+        f"{chat.REASONING_COLOUR}<think>endless deliberation{chat.COLOUR_RESET}"
+    )
+
+
+def test_colour_reasoning_leaves_a_plain_reply_untouched():
+    assert chat.colour_reasoning("Paris.") == "Paris."
+
+
 def test_model_config_carries_lora_only_when_asked():
     assert "lora_config" not in chat.model_config(
         "/models/base",

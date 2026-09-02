@@ -33,7 +33,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import sys
 import warnings
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
@@ -58,6 +60,15 @@ TURN_END_TOKENS = ("<|im_end|>", "<|endoftext|>")
 # when the message carries no <think> trace, so a model trained on a corpus
 # without traces learns to emit one. It is scaffolding, not content.
 EMPTY_REASONING = re.compile(r"\A<think>\s*</think>\s*")
+
+# Reasoning traces are dimmed to grey so the answer stands out in the
+# transcript. Display-only: history keeps the reply exactly as generated,
+# and the codes are withheld when stdout is not a terminal (or NO_COLOR is
+# set), so piped transcripts stay plain text.
+REASONING_COLOUR = "\033[90m"  # bright black, rendered grey by terminals
+COLOUR_RESET = "\033[0m"
+REASONING_START = "<think>"
+REASONING_END = "</think>"
 
 
 @contextmanager
@@ -423,6 +434,24 @@ def visible_reply(completion: str) -> str:
     return EMPTY_REASONING.sub("", clean_reply(completion), count=1).strip()
 
 
+def colour_reasoning(reply: str) -> str:
+    """Wrap the reasoning trace, when one is present, in grey.
+
+    <think> and </think> are ordinary token sequences to this corpus's
+    tokenisers and ChatML does not pre-open the block, so a reply may carry
+    a full pair, a bare closing marker, or an unclosed opening one when the
+    trace ran out the token budget. Everything through the closing marker
+    is trace; with only an opening marker the entire reply is.
+    """
+    end = reply.find(REASONING_END)
+    if end >= 0:
+        split = end + len(REASONING_END)
+        return f"{REASONING_COLOUR}{reply[:split]}{COLOUR_RESET}{reply[split:]}"
+    if reply.startswith(REASONING_START):
+        return f"{REASONING_COLOUR}{reply}{COLOUR_RESET}"
+    return reply
+
+
 def as_token_ids(value: Any) -> list[int]:
     """Normalize the tokenizer's list, array, or batch-of-one output."""
     if hasattr(value, "tolist"):
@@ -605,6 +634,7 @@ def chat_loop(args: argparse.Namespace, tokenizer: Any, sampler: Any) -> None:
     history: list[dict[str, str]] = []
     reply_number = 0
     stop_ids = stop_token_ids(tokenizer)
+    colour = sys.stdout.isatty() and "NO_COLOR" not in os.environ
     print("Ready. Type /help for commands, /reset to clear history, or /exit to quit.")
 
     while True:
@@ -666,7 +696,10 @@ def chat_loop(args: argparse.Namespace, tokenizer: Any, sampler: Any) -> None:
         # the next prompt, so the history keeps the reply as generated.
         history.append({"role": "assistant", "content": completion})
         reply_number += 1
-        print(f"\nassistant> {visible_reply(completion)}")
+        reply = visible_reply(completion)
+        if colour:
+            reply = colour_reasoning(reply)
+        print(f"\nassistant> {reply}")
 
 
 def main() -> None:
