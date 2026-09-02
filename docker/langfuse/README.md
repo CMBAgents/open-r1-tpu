@@ -11,15 +11,22 @@ pipeline itself.
 ## Setup
 
 ```bash
-cp docker/langfuse/.env.example docker/langfuse/.env
-# edit docker/langfuse/.env: passwords, keys, and (if the defaults collide
-# with something else on the host) ports.
+scripts/gen_langfuse_env.sh
 ```
 
-The `LANGFUSE_WEB_PORT` in `.env` and the tracing config's
-(`configs/tracing.yaml`) `langfuse.host`/`langfuse.port` describe the same
-endpoint. They must agree, or `evaluation.experiment`/`.dataset_sync` will
-connect to the wrong instance.
+This writes `docker/langfuse/.env` and `configs/tracing.yaml` together, with a
+fresh set of secrets and every value that must match already matching:
+`DATABASE_URL`'s embedded password, the `LANGFUSE_S3_*` MinIO credentials, and
+`langfuse.port` against `LANGFUSE_WEB_PORT`. `.env` has no variable
+interpolation, so those are the pairs a hand-edit of `.env.example` gets wrong.
+Both files are gitignored; re-running is refused without `--force` so a live
+stack's secrets are not rotated out from under its volumes.
+
+To hand-edit instead, `cp docker/langfuse/.env.example docker/langfuse/.env` and
+fill in every value, keeping the inline "must equal" notes. Either way, the
+`LANGFUSE_WEB_PORT` in `.env` and the tracing config's `langfuse.port` describe
+the same endpoint and must agree, or `evaluation.experiment`/`.dataset_sync`
+will connect to the wrong instance.
 
 ## Start, stop, inspect
 
@@ -39,11 +46,12 @@ The TPU VM this stack normally runs on is a flex-start instance that
 auto-deletes. Nothing here is backed up: Postgres, ClickHouse, Redis, and
 MinIO's volumes are disposable.
 
-On a freshly provisioned VM, rebuild the instance and its datasets in two
-commands:
+On a freshly provisioned VM, rebuild the instance and its datasets:
 
 ```bash
+scripts/gen_langfuse_env.sh                 # .env + configs/tracing.yaml are gone with the old VM
 scripts/run_langfuse_stack.sh up
+scripts/gen_langfuse_env.sh --print-keys >> ~/.tpu-env   # the file the eval launch sources
 # once healthy (headless init has created the org/project/user/keys), sync
 # every task the recipe you intend to run needs:
 python -m open_r1_tpu.evaluation.dataset_sync \
