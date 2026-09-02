@@ -126,8 +126,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-new-tokens",
         type=int,
-        default=512,
-        help="Maximum tokens to generate for each assistant reply (default: 512).",
+        default=8192,
+        help=(
+            "Maximum tokens to generate for each assistant reply (default: "
+            "8192). Reasoning-distilled models write their whole thinking "
+            "trace before the answer, so a budget that looks generous for "
+            "chat truncates them mid-thought."
+        ),
     )
     parser.add_argument(
         "--max-prompt-length",
@@ -143,6 +148,15 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.6,
         help="Sampling temperature; use 0 for greedy decoding (default: 0.6).",
+    )
+    parser.add_argument(
+        "--top-p",
+        type=float,
+        default=0.95,
+        help=(
+            "Nucleus sampling threshold (default: 0.95). Ignored when "
+            "--temperature is 0."
+        ),
     )
     parser.add_argument(
         "--seed",
@@ -161,6 +175,8 @@ def validate_options(args: argparse.Namespace) -> None:
         raise ValueError("--max-prompt-length must be positive")
     if args.temperature < 0:
         raise ValueError("--temperature cannot be negative")
+    if not 0 < args.top_p <= 1:
+        raise ValueError("--top-p must be in (0, 1]")
 
     model_path = Path(args.model_path).expanduser().resolve()
     if not model_path.is_dir():
@@ -199,8 +215,16 @@ def model_config(
         "model_source": "local",
         "model_path": model_path,
         "rng_seed": seed,
-        "dtype": "bfloat16",
-        "load_dtype": "bfloat16",
+        # float32, not training's bfloat16: under the pinned Tunix on JAX
+        # 0.10.2 / v6e, the jitted Qwen2 forward returns all-NaN logits for
+        # any KV cache of 1536 slots or more, and the sampler then emits
+        # token id 0 ("!") forever. The same computation is clean when run
+        # eagerly, at caches up to 1408 slots, and in float32 (verified to
+        # 27,648 slots), so this is a bfloat16 compilation defect rather
+        # than a weights or masking problem. Reasoning replies need caches
+        # far beyond 1408, and an interactive client can afford float32.
+        "dtype": "float32",
+        "load_dtype": "float32",
         "remat_config": "DECODER",
         "use_flash_attention": use_flash_attention,
         "flash_attention_block_size": FLASH_ATTENTION_BLOCK_SIZE,
@@ -487,6 +511,17 @@ def mesh_shape_for_devices(
     return len(devices) // tp_size, tp_size
 
 
+def sampler_top_p(temperature: float, top_p: float) -> float | None:
+    """Pick the top_p that puts the Tunix sampler in the intended mode.
+
+    The pinned sampler selects its sampling mode from top_p alone: with
+    top_p=None it greedy-decodes and silently ignores temperature and seed.
+    So temperature 0 maps to top_p=None (greedy), and any positive
+    temperature must carry a top_p for either knob to take effect at all.
+    """
+    return None if temperature == 0 else top_p
+
+
 def pad_input_strings_for_fsdp(input_strings: list[str], fsdp_size: int) -> list[str]:
     """Repeat the final prompt so the sampler batch divides the FSDP width."""
     if fsdp_size <= 0:
@@ -518,7 +553,8 @@ def load_runtime(
     mesh = mesh_utils.create_mesh(mesh_shape, ("fsdp", "tp"))
     args.sampler_fsdp_size = mesh_shape[0]
     # Reuse the application's local safetensors loader so the inference clients
-    # and SFT use the same Qwen architecture and dtype.
+    # and SFT use the same Qwen architecture. The dtype deliberately differs:
+    # see model_config for why inference runs in float32.
     from open_r1_tpu.training.run import _create_model
 
     lora_config = None
@@ -620,6 +656,7 @@ def chat_loop(args: argparse.Namespace, tokenizer: Any, sampler: Any) -> None:
             ),
             max_generation_steps=args.max_new_tokens,
             temperature=args.temperature,
+            top_p=sampler_top_p(args.temperature, args.top_p),
             seed=args.seed + reply_number,
             max_prompt_length=args.max_prompt_length,
             eos_tokens=stop_ids,

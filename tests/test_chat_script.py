@@ -245,6 +245,47 @@ def test_model_config_carries_lora_only_when_asked():
     )
 
 
+def test_model_config_loads_inference_weights_in_float32():
+    # Regression guard: under the pinned Tunix on v6e, the jitted bfloat16
+    # Qwen2 forward returns all-NaN logits for KV caches of 1536+ slots
+    # (the sampler then emits token id 0, "!", forever). float32 is clean
+    # to at least 27,648 slots, so the chat clients must stay on it.
+    config = chat.model_config(
+        "/models/base",
+        0,
+        use_flash_attention=False,
+        model_name="qwen2.5-math-1.5b",
+        mesh_shape=(2, 2),
+    )
+
+    assert config["dtype"] == "float32"
+    assert config["load_dtype"] == "float32"
+
+
+def test_sampler_top_p_gates_the_stochastic_sampling_mode():
+    # The pinned sampler greedy-decodes whenever top_p is None, silently
+    # ignoring temperature and seed, so temperature 0 must map to None and
+    # anything else must carry the top_p through.
+    assert chat.sampler_top_p(0.0, 0.95) is None
+    assert chat.sampler_top_p(0.6, 0.95) == 0.95
+
+
+def test_validate_options_rejects_top_p_out_of_range(tmp_path):
+    (tmp_path / "model.safetensors").write_bytes(b"")
+    args = SimpleNamespace(
+        max_new_tokens=8,
+        max_prompt_length=17,
+        temperature=0.6,
+        top_p=0.0,
+        model_path=str(tmp_path),
+        recipe=None,
+        checkpoint_dir=None,
+    )
+
+    with pytest.raises(ValueError, match="--top-p must be in"):
+        chat.validate_options(args)
+
+
 def test_model_config_carries_the_discovered_mesh_shape():
     assert chat.model_config(
         "/models/base",
@@ -436,6 +477,7 @@ def test_chat_prompt_length_need_not_match_splash_block(tmp_path):
         max_new_tokens=8,
         max_prompt_length=17,
         temperature=0.0,
+        top_p=0.95,
         model_path=str(tmp_path),
         recipe=None,
         checkpoint_dir=None,
@@ -452,6 +494,7 @@ def test_checkpoint_dir_without_a_recipe_is_rejected(tmp_path):
         max_new_tokens=8,
         max_prompt_length=chat.FLASH_ATTENTION_BLOCK_SIZE,
         temperature=0.0,
+        top_p=0.95,
         model_path=str(tmp_path),
         recipe=None,
         checkpoint_dir="artifacts/run/checkpoints",
