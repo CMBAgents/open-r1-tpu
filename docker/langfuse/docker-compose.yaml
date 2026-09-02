@@ -6,9 +6,14 @@
 # same headless-init environment variables, the same healthchecks. Two
 # deliberate departures from upstream:
 #
-#   - Every port is bound to 127.0.0.1 only, including langfuse-web's, which
-#     upstream exposes on all interfaces. This stack is viewed from a
-#     workstation through an SSH port-forward (see README.md), never directly.
+#   - Every port is bound to 127.0.0.1 by default, where upstream exposes them
+#     on all interfaces. The datastores (Postgres, ClickHouse, Redis, MinIO)
+#     and the worker are loopback-only unconditionally -- nothing outside this
+#     compose network has any business reaching them. Only langfuse-web's
+#     published interface is configurable, via LANGFUSE_WEB_BIND, because the
+#     evaluation may run on a different host from this stack (see README.md's
+#     "Running the stack on its own host"). It still defaults to 127.0.0.1, so
+#     a single-host deployment is unchanged.
 #   - The large block of optional feature-flag variables upstream ships
 #     (AI-agent connectors, AWS Bedrock, Azure/OCI blob, SMTP, S3 batch
 #     export) is omitted. Every one of them is empty/disabled by default
@@ -21,10 +26,12 @@
 # from an uncommitted `.env` in this directory (see .env.example). This file
 # itself carries no deployment-specific value.
 #
-# Ephemeral by design: nothing here backs up Postgres/ClickHouse/Redis/MinIO.
-# The GCS bucket the trace proxy writes to is the durable record; a freshly
-# provisioned VM rebuilds this instance with `docker compose up` followed by
-# one ingester backlog pass (`--once`). See README.md.
+# Nothing here backs up Postgres/ClickHouse/Redis/MinIO, and since the trace
+# proxy and its GCS ingester were removed there is no durable record outside
+# these volumes: whatever host holds them holds the only copy. How much that
+# matters is a deployment choice -- on a flex-start TPU VM the data dies with
+# the VM, on a long-lived host it persists -- so see README.md before treating
+# either as given.
 
 services:
   langfuse-worker:
@@ -87,7 +94,9 @@ services:
       clickhouse:
         condition: service_healthy
     ports:
-      - "127.0.0.1:${LANGFUSE_WEB_PORT:-3000}:3000"
+      # The only configurable bind address in this file; see the header and
+      # .env.example. A non-loopback value needs a firewall rule to match.
+      - "${LANGFUSE_WEB_BIND:-127.0.0.1}:${LANGFUSE_WEB_PORT:-3000}:3000"
     environment:
       <<: *langfuse-env
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-mysecret}

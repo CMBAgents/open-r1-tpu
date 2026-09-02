@@ -115,6 +115,10 @@ def test_cross_referenced_values_are_consistent(tmp_path):
     assert env["NEXTAUTH_URL"].endswith(f":{env['LANGFUSE_WEB_PORT']}")
     tracing = (tmp_path / "configs" / "tracing.yaml").read_text()
     assert f"port: {env['LANGFUSE_WEB_PORT']}" in tracing
+
+    # With no flags this is a single-host deployment: the interface the server
+    # publishes on and the address the client dials are both loopback.
+    assert env["LANGFUSE_WEB_BIND"] == "127.0.0.1"
     assert "host: 127.0.0.1" in tracing
 
 
@@ -178,3 +182,177 @@ def test_print_keys_without_an_env_file_errors(tmp_path):
     completed = _run([str(script), "--print-keys"], cwd=tmp_path)
     assert completed.returncode == 1
     assert "gen_langfuse_env.sh" in completed.stderr
+
+
+# --- Two hosts -------------------------------------------------------------
+# The stack and the evaluation need not share a machine, and then .env lives on
+# one and configs/tracing.yaml on the other. `--web-bind` is the server's side
+# of that one endpoint and `--langfuse-host` the client's; neither has a
+# non-loopback default, because both are deployment values that must not be
+# committed (AGENTS.md, tests/test_tracing_no_hardcoded_values.py).
+
+REMOTE = "192.0.2.10"  # TEST-NET-1, RFC 5737: never a real deployment.
+
+
+def test_web_bind_sets_the_published_interface(tmp_path):
+    script = _tree(tmp_path)
+    completed = _run([str(script), "--web-bind", REMOTE], cwd=tmp_path)
+    assert completed.returncode == 0, completed.stderr
+    env = _parse_env(tmp_path / "docker" / "langfuse" / ".env")
+    assert env["LANGFUSE_WEB_BIND"] == REMOTE
+
+
+def test_nextauth_url_stays_localhost_when_web_bind_does_not(tmp_path):
+    # NEXTAUTH_URL is the origin a *browser* sees, and the UI is still reached
+    # through an SSH port-forward onto localhost. Rewriting it to track the
+    # bind address would break sign-in for the supported way of viewing it.
+    script = _tree(tmp_path)
+    assert _run([str(script), "--web-bind", REMOTE], cwd=tmp_path).returncode == 0
+    env = _parse_env(tmp_path / "docker" / "langfuse" / ".env")
+    assert env["NEXTAUTH_URL"] == f"http://localhost:{env['LANGFUSE_WEB_PORT']}"
+
+
+def test_non_loopback_web_bind_warns_about_reachability(tmp_path):
+    script = _tree(tmp_path)
+    completed = _run([str(script), "--web-bind", REMOTE], cwd=tmp_path)
+    assert completed.returncode == 0, completed.stderr
+    # The two things that become the operator's problem: who may reach the
+    # port, and that the UI forward no longer targets loopback.
+    assert REMOTE in completed.stderr
+    assert "evaluation host only" in completed.stderr
+    assert "-L" in completed.stderr
+
+
+def test_the_loopback_default_does_not_warn(tmp_path):
+    script = _tree(tmp_path)
+    completed = _run([str(script)], cwd=tmp_path)
+    assert completed.returncode == 0, completed.stderr
+    assert "not loopback" not in completed.stderr
+
+
+def test_langfuse_host_sets_the_address_the_client_dials(tmp_path):
+    script = _tree(tmp_path)
+    completed = _run([str(script), "--langfuse-host", REMOTE], cwd=tmp_path)
+    assert completed.returncode == 0, completed.stderr
+    assert f"host: {REMOTE}" in (tmp_path / "configs" / "tracing.yaml").read_text()
+
+
+def test_langfuse_port_moves_both_halves_together(tmp_path):
+    script = _tree(tmp_path)
+    assert _run([str(script), "--langfuse-port", "3100"], cwd=tmp_path).returncode == 0
+    env = _parse_env(tmp_path / "docker" / "langfuse" / ".env")
+    tracing = (tmp_path / "configs" / "tracing.yaml").read_text()
+    assert env["LANGFUSE_WEB_PORT"] == "3100"
+    assert env["NEXTAUTH_URL"].endswith(":3100")
+    assert "port: 3100" in tracing
+
+
+def test_tracing_only_writes_the_client_half_and_no_secrets(tmp_path):
+    # The evaluation host needs the endpoint, not key material: nothing should
+    # generate a .env on a machine that has no stack to run.
+    script = _tree(tmp_path)
+    completed = _run(
+        [str(script), "--tracing-only", "--langfuse-host", REMOTE], cwd=tmp_path
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert not (tmp_path / "docker").exists()
+    tracing = tmp_path / "configs" / "tracing.yaml"
+    assert f"host: {REMOTE}" in tracing.read_text()
+    assert stat.S_IMODE(tracing.stat().st_mode) == 0o600
+
+
+def test_tracing_only_requires_a_host(tmp_path):
+    # Defaulting to loopback here would write a config pointing at a machine
+    # with no Langfuse on it, and the failure would surface much later.
+    script = _tree(tmp_path)
+    completed = _run([str(script), "--tracing-only"], cwd=tmp_path)
+    assert completed.returncode == 2
+    assert "--langfuse-host" in completed.stderr
+    assert not (tmp_path / "configs").exists()
+
+
+def test_tracing_only_conflicts_with_no_tracing_config(tmp_path):
+    script = _tree(tmp_path)
+    completed = _run(
+        [
+            str(script),
+            "--tracing-only",
+            "--no-tracing-config",
+            "--langfuse-host",
+            REMOTE,
+        ],
+        cwd=tmp_path,
+    )
+    assert completed.returncode == 2
+    assert "would write nothing" in completed.stderr
+
+
+def test_tracing_only_refuses_to_overwrite_without_force(tmp_path):
+    script = _tree(tmp_path)
+    args = [str(script), "--tracing-only", "--langfuse-host", REMOTE]
+    assert _run(args, cwd=tmp_path).returncode == 0
+    again = _run(args, cwd=tmp_path)
+    assert again.returncode == 1
+    assert "Refusing to overwrite" in again.stderr
+    assert _run([*args, "--force"], cwd=tmp_path).returncode == 0
+
+
+def test_an_address_flag_rejects_a_url(tmp_path):
+    # Both files want a bare host; the client composes scheme and port itself.
+    # A URL here boots a stack the client then cannot reach, with nothing
+    # obviously wrong in either file.
+    script = _tree(tmp_path)
+    for flag in ("--web-bind", "--langfuse-host"):
+        completed = _run([str(script), flag, f"http://{REMOTE}:3000"], cwd=tmp_path)
+        assert completed.returncode == 2, flag
+        assert "bare host" in completed.stderr
+        assert not (tmp_path / "docker").exists()
+
+
+def test_an_address_flag_rejects_a_host_port_pair(tmp_path):
+    script = _tree(tmp_path)
+    completed = _run([str(script), "--web-bind", f"{REMOTE}:3000"], cwd=tmp_path)
+    assert completed.returncode == 2
+    assert "bare host" in completed.stderr
+
+
+def test_langfuse_port_rejects_a_non_port(tmp_path):
+    script = _tree(tmp_path)
+    for bad in ("0", "70000", "web"):
+        completed = _run([str(script), "--langfuse-port", bad], cwd=tmp_path)
+        assert completed.returncode == 2, bad
+        assert "TCP port number" in completed.stderr
+
+
+def test_the_two_host_split_agrees_on_one_endpoint(tmp_path):
+    """The pair of invocations README.md prescribes, run against two trees:
+    what the server publishes is what the client dials, and each host writes
+    only its own half."""
+    server = tmp_path / "server"
+    client = tmp_path / "client"
+    server.mkdir()
+    client.mkdir()
+    server_script = _tree(server)
+    client_script = _tree(client)
+
+    assert (
+        _run(
+            [str(server_script), "--web-bind", REMOTE, "--no-tracing-config"],
+            cwd=server,
+        ).returncode
+        == 0
+    )
+    assert (
+        _run(
+            [str(client_script), "--tracing-only", "--langfuse-host", REMOTE],
+            cwd=client,
+        ).returncode
+        == 0
+    )
+
+    env = _parse_env(server / "docker" / "langfuse" / ".env")
+    tracing = (client / "configs" / "tracing.yaml").read_text()
+    assert f"host: {env['LANGFUSE_WEB_BIND']}" in tracing
+    assert f"port: {env['LANGFUSE_WEB_PORT']}" in tracing
+    assert not (server / "configs").exists()
+    assert not (client / "docker").exists()
