@@ -1,20 +1,31 @@
 # Tier 1: the decision tier. Run on every checkpoint worth keeping, ~1 hour.
 #
-# This is the tier that decides whether a recipe change helped. MATH-500 is the
-# workhorse: 500 problems is large enough that three seeds pin the mean down,
-# and it spans difficulty rather than clustering at the top like GSM8K or at the
-# ceiling like AIME. GSM8K stays in as the floor -- a model that regresses there
-# has lost basic arithmetic competence, whatever it gained elsewhere.
+# This is the tier that decides whether a recipe change helped. MATH-500 is
+# the workhorse and, since 2026-09-03, the whole tier: 500 problems is large
+# enough that three seeds pin the mean down, and it spans difficulty rather
+# than clustering at the top like GSM8K or at the ceiling like AIME. GSM8K
+# used to run here as the arithmetic floor; it moved out when tier 1 became
+# the single-task protocol that recipes/DeepSeek-R1-Distill-Qwen-1.5B/eval's
+# tier 1 now shares, so the published distill and this export compare on one
+# benchmark under one set of generation parameters. GSM8K coverage remains in
+# tier 0, and a single-task tier also makes the summary's pooled generation
+# stats (truncation_rate above all) MATH-500's own rather than a blend across
+# benchmarks.
 #
 # Three seeds, not one. Seed variance alone moves reasoning benchmarks by 5-15
 # points (arXiv 2504.07086), which is larger than most recipe changes are worth,
 # so a single number cannot tell an improvement from noise. Three is the
 # documented minimum for a benchmark this size.
 #
-# The comparison this tier is for is against recipes/Qwen3-1.7B-Math's tier 1:
-# same corpus, same prompt, same protocol, different base model and window. It
-# is not the card's MATH-500 83.9, which DeepSeek measured at a 32768-token
-# budget; see base.yaml for how to run that protocol against this export.
+# Two comparisons hang off this tier. Against recipes/Qwen3-1.7B-Math's
+# tier 1: same corpus, same prompt, same protocol, different base model and
+# window. Against recipes/DeepSeek-R1-Distill-Qwen-1.5B's tier 1: same task,
+# seeds and sampling block, so the gap to the published distill is measured
+# under identical generation parameters -- only the prompt side differs, on
+# purpose (this export keeps its training system prompt; DeepSeek's distills
+# run without one, per their card). Neither number is the card's MATH-500
+# 83.9, which DeepSeek measured at a 32768-token budget; see base.yaml for
+# how to run that protocol against this export.
 #
 # Identical to recipes/Qwen3-1.7B-Math/eval/tier1_core.yaml apart from the
 # paths; tests/test_evaluate.py holds the two together.
@@ -24,7 +35,6 @@ eval:
   tier: tier1-core
   tasks:
     - "math_500|0"
-    - "gsm8k|0"
     # AMC23 is not in LightEval's table -- Open-R1 carries it as a custom
     # task. Left out rather than vendored: 40 problems swing 2.5pp per
     # question, so it decides nothing that MATH-500 does not.

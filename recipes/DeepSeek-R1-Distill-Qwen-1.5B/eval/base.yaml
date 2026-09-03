@@ -6,10 +6,14 @@
 # | ---------------------- | --------- | ---- |
 # | AIME 2024 pass@1       | 28.9      | 2    |
 # | AIME 2024 cons@64      | 52.7      | 2    |
-# | MATH-500 pass@1        | 83.9      | 1    |
-# | GPQA Diamond pass@1    | 33.8      | 1    |
+# | MATH-500 pass@1        | 83.9      | 1*   |
+# | GPQA Diamond pass@1    | 33.8      | 5    |
 # | LiveCodeBench pass@1   | 16.9      | 4    |
 # | CodeForces rating      | 954       | —    |
+#
+# *Tier 1 runs MATH-500 at the project's comparison protocol (16384-token
+# budget, three seeds), not the card's; its header carries the overrides that
+# reproduce the published row's protocol.
 #
 # CodeForces has no tier because it cannot be measured here: LightEval 0.13.0
 # ships no CodeForces task and no Elo harness, and the published 954 is a
@@ -18,15 +22,14 @@
 # approximates it, deliberately -- a made-up proxy compared against 954 would
 # be worse than an absent number.
 #
-# **This is a change of purpose, and it costs something.** These recipes used
-# to mirror `recipes/Qwen3-1.7B-Math/eval/` task-for-task and seed-for-seed,
-# so the reference model and this project's own models were directly
-# comparable on this stack. Replicating the card instead means matching
-# DeepSeek's protocol -- their token budget, their sample counts, their task
-# list -- which is a different thing, and tiers 1, 2 and 4 no longer line up
-# with the Qwen3-1.7B-Math tiers of the same number. Tier 0 still does.
-# Pointing the Qwen3-1.7B-Math recipes at the same protocol would restore
-# comparability; that is a separate change, not made here.
+# **Two purposes share this directory.** Tiers 2, 4 and 5 replicate the
+# card: DeepSeek's token budget, their sample counts, their task list. Tiers
+# 0 and 1 instead line up task-for-task with the project's own tiers of the
+# same number (recipes/OpenR1-Distill-Qwen2.5-Math-1.5B and Qwen3-1.7B-Math),
+# so the reference model and this project's models are directly comparable on
+# this stack -- tier 1 moved back to this footing on 2026-09-03 for the
+# MATH-500 comparison, at the price that its number no longer reproduces the
+# card's 83.9 (its header carries the overrides that do).
 #
 # `server.max_model_len` is deliberately absent here: it differs per tier
 # because it must exceed that tier's `sampling.max_new_tokens` with room left
@@ -53,8 +56,8 @@ server:
   # Bounds the runner's concurrent in-flight chat completion requests. One
   # TPU chip serving one model at a time: wide enough to keep the server
   # busy through generation latency, not so wide that queued requests starve
-  # each other's decode step. At the 36864-token window every card-bearing
-  # tier now asks for, eight concurrent sequences is about 8 GiB of KV cache
+  # each other's decode step. At the 36864-token window the card-budget
+  # tiers (2 and 5) ask for, eight concurrent sequences is about 8 GiB of KV cache
   # on a 32 GiB v6e chip, so this width is bounded by decode economics rather
   # than by memory.
   max_concurrency: 8

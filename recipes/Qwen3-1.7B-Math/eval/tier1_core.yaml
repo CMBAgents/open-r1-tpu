@@ -1,11 +1,16 @@
 # Tier 1: the decision tier. Run on every checkpoint worth keeping, ~1 hour.
 #
-# This is the tier that decides whether a recipe change helped. MATH-500 is the
-# workhorse: 500 problems is large enough that three seeds pin the mean down,
-# and it spans difficulty rather than clustering at the top like GSM8K or at the
-# ceiling like AIME. AMC23 adds harder problems without AIME's tiny sample.
-# GSM8K stays in as the floor -- a model that regresses there has lost basic
-# arithmetic competence, whatever it gained elsewhere.
+# This is the tier that decides whether a recipe change helped. MATH-500 is
+# the workhorse and, since 2026-09-03, the whole tier: 500 problems is large
+# enough that three seeds pin the mean down, and it spans difficulty rather
+# than clustering at the top like GSM8K or at the ceiling like AIME. GSM8K
+# used to run here as the arithmetic floor; it moved out when tier 1 became
+# the single-task protocol that recipes/DeepSeek-R1-Distill-Qwen-1.5B/eval's
+# tier 1 now shares, so the published distill and this project's models
+# compare on one benchmark under one set of generation parameters. GSM8K
+# coverage remains in tier 0, and a single-task tier also makes the summary's
+# pooled generation stats (truncation_rate above all) MATH-500's own rather
+# than a blend across benchmarks.
 #
 # Three seeds, not one. Seed variance alone moves reasoning benchmarks by 5-15
 # points (arXiv 2504.07086), which is larger than most recipe changes are worth,
@@ -20,7 +25,6 @@ eval:
   tier: tier1-core
   tasks:
     - "math_500|0"
-    - "gsm8k|0"
     # AMC23 belonged here and is not in LightEval's table -- Open-R1 carries
     # it as a custom task. Left out rather than vendored: 40 problems swing
     # 2.5pp per question, so it decides nothing that MATH-500 does not.

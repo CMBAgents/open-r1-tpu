@@ -939,12 +939,12 @@ accuracy.
 | Recipe | Cost | When |
 | --- | --- | --- |
 | `eval/tier0_smoke.yaml` | ~5 min | Every run. GSM8K, 200 problems, greedy. |
-| `eval/tier1_core.yaml` | ~1 h | Every checkpoint worth keeping. MATH-500, AMC23, GSM8K over three seeds. |
+| `eval/tier1_core.yaml` | ~1 h | Every checkpoint worth keeping. MATH-500 over three seeds. |
 | `eval/tier2_headline.yaml` | hours | Milestones. AIME24, AIME25, OlympiadBench over ten seeds. |
 | `eval/tier3_regression.yaml` | hours | Milestones. IFEval, GPQA-Diamond, MMLU-Pro. |
 
-The reference model's directory carries a fifth, `eval/tier4_code.yaml`, and
-splits the tasks differently; see below.
+The reference model's directory carries two more, `eval/tier4_code.yaml` and
+`eval/tier5_gpqa.yaml`, and splits the tasks differently; see below.
 
 Tier 0 does not measure ability; it catches a model that is broken in a way loss
 cannot show. Tier 1 is the tier that decides whether a recipe change helped.
@@ -972,27 +972,34 @@ both.
 from the one above. It exists to reproduce the released model's own published
 numbers on this stack, so it matches DeepSeek's protocol rather than this
 project's tier vocabulary: no system prompt, its own turn-end token,
-`reasoning_start: null`, and — on every tier carrying a published row — their
-32768-token generation budget and their sample counts.
+`reasoning_start: null`, and — on every tier carrying a published row at its
+published protocol — their 32768-token generation budget and their sample
+counts. The exception is tier 1, which instead adopts the project's tier-1
+generation parameters so both models are measured on MATH-500 under one
+protocol; its number is therefore not the card's 83.9.
 
 | Published row | Value | Tier | Replicates |
 | --- | --- | --- | --- |
 | AIME 2024 pass@1 | 28.9 | `tier2_headline.yaml` | 64 |
 | AIME 2024 cons@64 | 52.7 | `tier2_headline.yaml` | 64 |
-| MATH-500 pass@1 | 83.9 | `tier1_core.yaml` | 4 |
-| GPQA Diamond pass@1 | 33.8 | `tier1_core.yaml` | 4 |
+| MATH-500 pass@1 | 83.9 | `tier1_core.yaml`\* | 3 |
+| GPQA Diamond pass@1 | 33.8 | `tier5_gpqa.yaml` | 4 |
 | LiveCodeBench pass@1 | 16.9 | `tier4_code.yaml` | 16 |
 | CodeForces rating | 954 | — | — |
+
+\*Tier 1 measures MATH-500 at the comparison protocol (16384-token budget,
+three seeds), not the card's; the recipe header carries the overrides that
+reproduce the published row.
 
 CodeForces has no tier because it cannot be measured here: LightEval 0.13.0
 ships no CodeForces task and no Elo harness, and the published rating is a
 percentile placement against human contestants across ten Div.2 contests, not
 a benchmark accuracy. Nothing in that directory approximates it.
 
-Only tier 0 still lines up task-for-task with `recipes/Qwen3-1.7B-Math/eval/`.
-Tiers 1, 2 and 4 no longer do, which is the price of replicating the card
-rather than mirroring this project's own tiers; pointing the Qwen3-1.7B-Math
-recipes at the same protocol would restore the comparison.
+Tiers 0 and 1 line up task-for-task with `recipes/Qwen3-1.7B-Math/eval/` —
+tier 1 shares that tier's full generation-parameter set, which is what makes
+the MATH-500 comparison direct. Tiers 2, 4 and 5 replicate the card instead,
+which is why they do not line up with the project tiers of the same number.
 
 `recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/eval/` goes the other way: it
 mirrors `recipes/Qwen3-1.7B-Math/eval/` tier for tier — same tasks, seeds,

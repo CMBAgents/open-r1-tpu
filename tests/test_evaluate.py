@@ -104,6 +104,11 @@ def test_every_model_card_tier_uses_the_published_token_budget():
         settings = evaluate.resolve_settings(evaluate.load_eval_config(recipe))
         if not MODEL_CARD_TASKS & set(settings["tasks"]):
             continue
+        if recipe.name == "tier1_core.yaml":
+            # math_500 runs there at the project's comparison protocol, not
+            # the card's; the tier-1 parity test below pins what it must
+            # match instead.
+            continue
         assert settings["max_new_tokens"] == 32768, recipe.name
         assert settings["max_model_len"] > 32768, recipe.name
 
@@ -115,6 +120,34 @@ def test_the_reference_recipes_never_send_a_system_prompt():
     for recipe in DISTILL_TIERS:
         settings = evaluate.resolve_settings(evaluate.load_eval_config(recipe))
         assert settings["system_prompt"] is None, recipe.name
+
+
+def test_the_reference_tier1_runs_the_comparison_protocol():
+    # Tier 1 measures the published distill and the project's own 1.5B export
+    # on MATH-500 under identical generation parameters; only the prompt side
+    # may differ (DeepSeek's distills run without a system prompt, the
+    # project export keeps the prompt it was trained with).
+    reference = evaluate.resolve_settings(
+        evaluate.load_eval_config(DISTILL_DIR / "tier1_core.yaml")
+    )
+    project = evaluate.resolve_settings(
+        evaluate.load_eval_config(QWEN25_MATH_DIR / "tier1_core.yaml")
+    )
+
+    assert reference["tasks"] == ["math_500|0"]
+    for key in (
+        "tasks",
+        "seeds",
+        "max_samples",
+        "consensus",
+        "max_model_len",
+        "temperature",
+        "top_p",
+        "max_new_tokens",
+    ):
+        assert reference[key] == project[key], key
+    assert reference["system_prompt"] is None
+    assert project["system_prompt"] is not None
 
 
 def test_the_aime_tier_asks_for_the_consensus_number_the_card_reports():

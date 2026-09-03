@@ -8,9 +8,11 @@
 # tasks, seeds, context windows, sampling parameters and system prompt, which
 # tests/test_evaluate.py checks. The two recipes train the same corpus with the
 # same prompt on different base models, and that comparison only holds if the
-# evaluation protocol is identical too. It is deliberately *not* the protocol
-# of recipes/DeepSeek-R1-Distill-Qwen-1.5B/eval, which replicates that model's
-# published card (32768-token budget, 4 and 64 replicates, no system prompt).
+# evaluation protocol is identical too. It is deliberately *not* the
+# card-replication protocol most of recipes/DeepSeek-R1-Distill-Qwen-1.5B/eval
+# runs (32768-token budget, 4 and 64 replicates, no system prompt) -- with one
+# exception: that directory's tier 1 adopts *this* tier-1 generation protocol,
+# so the reference distill and this export compare directly on MATH-500.
 # To measure this export against the card's rows (AIME24 28.9, MATH-500 83.9,
 # GPQA 33.8), run *that* directory's tiers with `server.model_path`,
 # `server.turn_end_token`, `server.extra_args` and `reporting.reasoning_start`
