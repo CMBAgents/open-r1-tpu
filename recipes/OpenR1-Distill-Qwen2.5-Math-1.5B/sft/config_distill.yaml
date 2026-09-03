@@ -8,7 +8,10 @@
 # evaluates against in recipes/DeepSeek-R1-Distill-Qwen-1.5B/eval. Training the
 # same base on a public corpus is the 1.5B analogue of open-r1's own from-base
 # reproduction (OpenR1-Distill-7B = Qwen2.5-Math-7B + Mixture-of-Thoughts),
-# which matched DeepSeek's published 7B numbers. DeepSeek's own 800k-trace
+# which matched DeepSeek's published 7B numbers. Their run actually starts
+# from open-r1/Qwen2.5-Math-7B-RoPE-300k, a config-only long-context variant
+# of the base; this recipe mirrors that with a theta-300k variant of the
+# 1.5B -- see the ROPE note in the model block. DeepSeek's own 800k-trace
 # dataset is closed, so this substitutes OpenR1-Math-220k for it; the published
 # card numbers (AIME24 28.9, MATH-500 83.9, GPQA 33.8) are the yardstick, not a
 # target this corpus is expected to reach.
@@ -82,8 +85,16 @@
 model:
   model_name: qwen2.5-math-1.5b
   model_id: Qwen/Qwen2.5-Math-1.5B
-  model_source: huggingface
-  model_path: ""
+  # Local, not huggingface, for two reasons. The local path is the only
+  # model_source that forwards ModelConfig fields, and rope_theta below must
+  # reach the kernel. And the merged export copies every non-safetensors
+  # file from this directory verbatim, so the staged config.json is what
+  # the serving side later reads: stage the config-edited RoPE-300k variant
+  # of Qwen/Qwen2.5-Math-1.5B here (rope_theta 300000,
+  # max_position_embeddings 32768, weights untouched), or the export will
+  # declare theta 10000 while the weights were trained at 300000.
+  model_source: local
+  model_path: models/Qwen2.5-Math-1.5B-RoPE-300k
   model_download_path: /tmp/open-r1-tpu/models/qwen2.5-math-1.5b
   intermediate_ckpt_dir: /tmp/open-r1-tpu/intermediate_ckpt
   rng_seed: 42
@@ -99,20 +110,22 @@ model:
   flash_attention_block_size: 1024
   # No lora_config: this is a full-parameter fine-tune. See the header.
   #
-  # ROPE IS LEFT AT THE BASE MODEL'S 10000. Qwen2.5-Math-1.5B declares
-  # max_position_embeddings 4096 and rope_theta 10000, so a 26,624-token window
-  # runs 6.5x past the pretraining context. Tunix's ModelConfig carries no
-  # position cap -- RoPE is computed from rope_theta and the positions handed
-  # in -- so nothing here blocks the longer window, and packing restarts
-  # positions at each example boundary, which caps the position actually seen
-  # at the longest single example rather than at the window. DeepSeek did
-  # exactly this: DeepSeek-R1-Distill-Qwen-1.5B keeps rope_theta at 10000 and
-  # simply declares max_position_embeddings 131072. open-r1 made the other
-  # choice for their 7B reproduction, raising theta 10000 -> 300000. To follow
-  # them, stage the weights and override on the local path, which is the only
-  # one that forwards arbitrary ModelConfig fields:
-  #   model.model_source=local model.model_path=models/Qwen2.5-Math-1.5B \
-  #   model.rope_theta=300000
+  # ROPE THETA 300000: THE 4K BASE IS EXTENDED BEFORE TRAINING. The original
+  # Qwen2.5-Math-1.5B declares max_position_embeddings 4096 and rope_theta
+  # 10000, so a 26,624-token window runs 6.5x past the pretraining context.
+  # The first run of this recipe left theta at 10000, leaning on DeepSeek's
+  # config (their distill keeps theta 10000 and declares 131072) -- but
+  # DeepSeek brute-forced the extension with ~800k samples, a budget this
+  # run does not have, and the result was mean completions of ~13.8k tokens
+  # collapsing into repetition loops, the canonical RoPE-extrapolation
+  # failure. Every working from-base comparator extended RoPE before SFT;
+  # open-r1's exp1-exp3 found theta 100k/300k/500k indistinguishable and
+  # kept 300k. The tunix preset for qwen2.5-math-1.5b hardcodes theta 10000
+  # and unknown keys are silently dropped, so this field name must match
+  # ModelConfig exactly. Packing still restarts positions at each example
+  # boundary, so the largest position seen in training is the longest
+  # single example (25,733), not the window.
+  rope_theta: 300000
   mesh:
     # [fsdp, tp] over the four v6e chips. See the header for why tp is 2.
     shape: [2, 2]
@@ -166,10 +179,10 @@ dataset:
   # boundaries: segment_ids gate the splash kernel and RoPE positions restart
   # per example. Packing also cuts the attention bill, since the kernel skips
   # the off-diagonal blocks rather than paying for a dense 26,624-token window.
-  num_train_epochs: 4
+  num_train_epochs: 6
   max_examples: null
   # Disabled, as in recipes/Qwen3-1.7B-Math, and the first thing to enable once
-  # peak HBM is known. This run covers three epochs, so held-out loss is a real
+  # peak HBM is known. This run covers five epochs, so held-out loss is a real
   # overfitting signal rather than a first-pass curiosity. It is off only
   # because the memory budget above has no measured slack, and the instruct
   # run's evals once took a 25.2 GiB steady state to 31.23 of 31.25 GiB.
@@ -194,34 +207,40 @@ dataset:
   system_prompt_file: recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/system_prompt.txt
 
 optimizer:
-  # recipes/Qwen3-1.7B-Math's full-fine-tune rate, carried over unchanged. That
-  # recipe set it for ~48 examples per optimizer step; this one runs ~70, so if
-  # anything the rate is now conservative rather than hot, and 1.5e-5 to 2.0e-5
-  # is defensible if the loss curve reads as under-trained. It stays at 1.0e-5
-  # because that is the value this repository has actually run, and this is an
-  # expensive run to spend on an untested one. For scale at the other end,
-  # open-r1 used 4.0e-5 for the 7B from-base distill at roughly eight times
-  # this token budget per step.
-  learning_rate: 1.0e-5
+  # open-r1's 7B from-base value: their exp4-exp6 scaled the rate
+  # 1e-5 -> 2e-5 -> 4e-5 and the released run used 4e-5 for 5 epochs. The
+  # first run of this recipe used 1.0e-5 and read as drastically
+  # under-trained. At 1.5B the size argument points up, not down
+  # (OpenThinker3-1.5B trained at 1.6e-4), while this run's ~2-8x smaller
+  # token budget per step discounts the 7B rate back toward it, so 4.0e-5
+  # is a conservative floor here rather than a ceiling. It travels with
+  # max_grad_norm 0.2 below; do not raise one without the other.
+  learning_rate: 4.0e-5
   warmup_ratio: 0.03
   min_lr_ratio: 0.1
   b1: 0.9
-  b2: 0.99
+  # 0.999, as in both working comparator recipes (open-r1 7B, OpenThinker3).
+  b2: 0.999
   eps: 1.0e-8
   # 0.0 on a full fine-tune: decay here would pull the pretrained weights
   # themselves toward zero, not regularise an adapter.
   weight_decay: 0.0
-  max_grad_norm: 1.0
+  # open-r1's tight clip, part of what makes 4.0e-5 safe. Watch the raw
+  # gradient norm in the first steps: clipping on every step would mean the
+  # clip is silently rescaling the learning rate.
+  max_grad_norm: 0.2
 
 training:
-  # Three epochs. From the measured numbers: 21,485 packed windows per epoch,
-  # 16 windows per optimizer step, 1,342 steps per epoch. num_train_epochs is 4
-  # so the input pipeline outlives this bound rather than running dry.
+  # Five epochs, open-r1's count for the 7B from-base distill (and still
+  # 5.6x fewer sequences than their 5 x 350k). From the measured numbers:
+  # 21,485 packed windows per epoch, 16 windows per optimizer step, 1,342
+  # steps per epoch. num_train_epochs is 6 so the input pipeline outlives
+  # this bound rather than running dry.
   # Seconds per step is unmeasured -- the closest reference is the Qwen3-1.7B
   # instruct run's 2.98 s/step at 2048 tokens over 32 windows on one chip, and
   # nothing about that transfers to four chips, tensor parallelism and 13x the
   # tokens per step. Re-derive the wall clock from the first steps.
-  max_steps: 4026
+  max_steps: 6710
   # 16 windows, 425,984 tokens and ~70 examples per optimizer step.
   gradient_accumulation_steps: 8
   # Inert while eval_fraction is 0.0.
@@ -244,7 +263,9 @@ training:
   project_name: open-r1-tpu
   # Distinct from the other recipes' run names so wandb.resume: allow cannot
   # append this run to one of theirs.
-  run_name: qwen2.5-math-1.5b-r1-distill-sft
+  # The -rope300k suffix also keeps wandb resume: allow from appending this
+  # run to the first (theta-10000, LR 1e-5) run of this recipe.
+  run_name: qwen2.5-math-1.5b-r1-distill-sft-rope300k
   flush_every_n_steps: 10
   wandb:
     enabled: true
