@@ -207,15 +207,16 @@ dataset:
   system_prompt_file: recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/system_prompt.txt
 
 optimizer:
-  # open-r1's 7B from-base value: their exp4-exp6 scaled the rate
-  # 1e-5 -> 2e-5 -> 4e-5 and the released run used 4e-5 for 5 epochs. The
-  # first run of this recipe used 1.0e-5 and read as drastically
-  # under-trained. At 1.5B the size argument points up, not down
-  # (OpenThinker3-1.5B trained at 1.6e-4), while this run's ~2-8x smaller
-  # token budget per step discounts the 7B rate back toward it, so 4.0e-5
-  # is a conservative floor here rather than a ceiling. It travels with
-  # max_grad_norm 0.2 below; do not raise one without the other.
-  learning_rate: 4.0e-5
+  # 2.0e-4. History on this recipe: run 1 used 1.0e-5 (drastically
+  # under-trained); run 2 used 4.0e-5 (open-r1's 7B from-base value) and its
+  # train loss plateaued at ~0.45 by ~step 600 of 6710 and never moved again
+  # -- epochs 2-4 added nothing. So the rate goes up, past OpenThinker3-1.5B's
+  # 1.6e-4: at 1.5B the width argument favours a hotter rate, and run 2's
+  # observed gradient norm was ~0.016, far below max_grad_norm 0.2, so the
+  # clip has ample headroom for a 5x larger step and is left at 0.2 (a
+  # single-variable change from the 4.0e-5 arm). Watch the first ~250 steps
+  # through peak LR for a spike the clip would not catch at this magnitude.
+  learning_rate: 2.0e-4
   warmup_ratio: 0.03
   min_lr_ratio: 0.1
   b1: 0.9
@@ -225,9 +226,10 @@ optimizer:
   # 0.0 on a full fine-tune: decay here would pull the pretrained weights
   # themselves toward zero, not regularise an adapter.
   weight_decay: 0.0
-  # open-r1's tight clip, part of what makes 4.0e-5 safe. Watch the raw
-  # gradient norm in the first steps: clipping on every step would mean the
-  # clip is silently rescaling the learning rate.
+  # open-r1's tight clip. Run 2 (LR 4.0e-5) logged gradient norm ~0.016, so
+  # this never bound; kept at 0.2 for the LR 2.0e-4 run since even a 5x step
+  # stays well under it. Watch the raw gradient norm in the first steps: if it
+  # now approaches 0.2, the clip is silently rescaling the learning rate.
   max_grad_norm: 0.2
 
 training:
@@ -262,10 +264,10 @@ training:
   metrics_log_dir: artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/logs
   project_name: open-r1-tpu
   # Distinct from the other recipes' run names so wandb.resume: allow cannot
-  # append this run to one of theirs.
-  # The -rope300k suffix also keeps wandb resume: allow from appending this
-  # run to the first (theta-10000, LR 1e-5) run of this recipe.
-  run_name: qwen2.5-math-1.5b-r1-distill-sft-rope300k
+  # append this run to one of theirs. The -rope300k-lr2e4 suffix also keeps
+  # resume: allow from appending to run 1 (theta 10000, LR 1e-5) or run 2
+  # (-rope300k, LR 4e-5, W&B 69fabmkn, stopped at step 5870).
+  run_name: qwen2.5-math-1.5b-r1-distill-sft-rope300k-lr2e4
   flush_every_n_steps: 10
   wandb:
     enabled: true
