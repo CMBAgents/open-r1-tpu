@@ -283,6 +283,22 @@ def test_doc_from_item_rejects_metadata_missing_query():
 
 
 @pytest.mark.integration
+def test_doc_from_item_coerces_non_string_expected_output_to_str():
+    """Regression guard for the AIME24 card run (LOG.md 2026-09-15): Langfuse's
+    `expected_output` field is `Any`, and round-tripping a gold string through
+    it silently turns a round-trip-safe numeric string into a JSON number
+    (`"204"` comes back as `204`) while a non-round-trip-safe one (`"025"`)
+    survives as a string. LightEval's metrics `.strip()` the gold
+    unconditionally, so an un-coerced `int`/`float` gold crashes every metric
+    for that document.
+    """
+    metadata = {"task": "aime24|0", "doc_id": "0", "specific": None, "query": "q"}
+    assert scoring.doc_from_item(204, metadata, "aime24").get_golds() == ["204"]
+    assert scoring.doc_from_item(204.0, metadata, "aime24").get_golds() == ["204.0"]
+    assert scoring.doc_from_item("025", metadata, "aime24").get_golds() == ["025"]
+
+
+@pytest.mark.integration
 def test_lighteval_evaluator_scores_a_correct_and_an_incorrect_completion():
     config, row = _row_and_config("gsm8k|0")
     doc = scoring.build_doc(config.prompt_function, row, "gsm8k")

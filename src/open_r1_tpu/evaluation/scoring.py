@@ -251,6 +251,18 @@ def doc_from_item(
     `evaluation.dataset_sync`'s own docstring requires exactly one gold per
     document for the same reason. A test asserts this constructor and
     `build_doc` agree on `get_golds()` for the same document.
+
+    `expected_output` is coerced to `str` here because Langfuse's own
+    `expected_output` field is typed `Any`, and round-tripping a gold string
+    through it silently turns a round-trip-safe numeric string into a JSON
+    number (`"204"` comes back as `204`) while leaving a non-round-trip-safe
+    one (`"025"`, where `str(int("025")) != "025"`) as a string -- observed on
+    AIME24, whose gold is a bare integer string with no `\\boxed{}` wrapper.
+    LightEval's metrics call `.strip()` on the gold unconditionally, so an
+    `int` gold crashes every metric for that document (`evaluation.consensus`
+    hits the same call through this same function). `evaluation.dataset_sync`
+    always writes a `str` (`Doc.get_golds()` on a freshly-built `Doc`), so this
+    only ever fires for what Langfuse handed back, never for what was sent.
     """
     from lighteval.tasks.requests import Doc
 
@@ -259,6 +271,8 @@ def doc_from_item(
             f"{task_name}: dataset item metadata has no 'query' key -- was "
             "this item created by evaluation.dataset_sync?"
         )
+    if not isinstance(expected_output, str):
+        expected_output = str(expected_output)
     return Doc(
         query=metadata["query"],
         choices=[expected_output],
