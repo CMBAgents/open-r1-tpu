@@ -333,9 +333,9 @@ def restore_checkpoint(
     """Restore checkpoint parameters into `model`, returning the step restored."""
     from tunix.sft import checkpoint_manager as checkpoint_manager_lib
 
-    from open_r1_tpu.training.run import _absolute_checkpoint_dir
+    from open_r1_tpu.model.loading import absolute_checkpoint_dir
 
-    root = _absolute_checkpoint_dir(checkpoint_dir)
+    root = absolute_checkpoint_dir(checkpoint_dir)
     step = resolve_step(root, step)
     # Deliberately built with Tunix's default options rather than the recipe's:
     # this client only reads, and the recipe's max_to_keep carries a
@@ -584,7 +584,7 @@ def load_runtime(
     # Reuse the application's local safetensors loader so the inference clients
     # and SFT use the same Qwen architecture. The dtype deliberately differs:
     # see model_config for why inference runs in float32.
-    from open_r1_tpu.training.run import _create_model
+    from open_r1_tpu.model.loading import create_model
 
     lora_config = None
     checkpoint_dir = args.checkpoint_dir
@@ -603,7 +603,7 @@ def load_runtime(
         ),
         "tokenizer": tokenizer_config(args.model_path),
     }
-    model, tokenizer_path = _create_model(config, mesh)
+    model, tokenizer_path = create_model(config, mesh)
     if args.recipe:
         restored = restore_checkpoint(
             model, checkpoint_dir, args.step, lora_only=bool(lora_config)

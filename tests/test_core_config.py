@@ -115,7 +115,7 @@ def test_training_and_eval_resolve_the_same_file_to_identical_text(tmp_path):
     # shared helper alone -- a recipe that names the same file for both
     # stages must not drift even if one caller's plumbing changes.
     from open_r1_tpu.evaluation.run import resolve_settings as eval_resolve_settings
-    from open_r1_tpu.training.preflight import _preflight_example
+    from open_r1_tpu.sft.preflight import _preflight_example
 
     prompt_path = tmp_path / "prompt.txt"
     prompt_path.write_text("Shared prompt text.\n", encoding="utf-8")

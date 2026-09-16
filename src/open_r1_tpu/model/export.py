@@ -1,4 +1,4 @@
-"""Full-parameter safetensors export for Tunix Qwen2 and Qwen3 models.
+"""Full-parameter and merged-LoRA safetensors export for Tunix models.
 
 Tunix (at the pinned commit) only ships ``save_lora_merged_model_as_safetensors``,
 which starts from the base checkpoint and adds LoRA deltas. A full fine-tune has
@@ -23,13 +23,19 @@ on a tied model, and the key-set check below is what proves it.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from open_r1_tpu.model.tokenizing import assistant_turn_end_id
+
+LOGGER = logging.getLogger(__name__)
 
 # One live parameter path and value in, one Hugging Face safetensors entry out.
 SafetensorsEntryFn = Callable[[str, np.ndarray], "tuple[str, np.ndarray]"]
@@ -152,7 +158,7 @@ def safetensors_entry_fn(model_name: str) -> SafetensorsEntryFn:
             "Full-model safetensors export is not implemented for "
             f"{model_name} ({module.__name__}). Implemented architectures: "
             f"{', '.join(sorted(SAFETENSORS_ENTRY_FNS))}. Either disable "
-            "export.enabled or add a mapping to open_r1_tpu.training.export."
+            "export.enabled or add a mapping to open_r1_tpu.model.export."
         )
     return SAFETENSORS_ENTRY_FNS[family]
 
@@ -235,8 +241,6 @@ def write_turn_end_generation_config(*, output_dir: str, tokenizer: Any) -> None
     the turn end must be a token-level EOS. Chat-tuned releases (Qwen3
     instruct) ship exactly this list, turn-end token first.
     """
-    from open_r1_tpu.training.data import assistant_turn_end_id
-
     turn_end = assistant_turn_end_id(tokenizer)
     path = os.path.join(output_dir, "generation_config.json")
     generation_config: dict[str, Any] = {}
@@ -252,3 +256,76 @@ def write_turn_end_generation_config(*, output_dir: str, tokenizer: Any) -> None
     with open(path, "w") as handle:
         json.dump(generation_config, handle, indent=2, sort_keys=True)
         handle.write("\n")
+
+
+def export_model(
+    *,
+    config: dict[str, Any],
+    model: Any,
+    tokenizer: Any,
+    local_model_path: str,
+) -> None:
+    """Merge and export the trained model, if ``export.enabled`` in the recipe.
+
+    Branches on whether the recipe trains a LoRA adapter (merge through
+    Tunix's own exporter) or a full fine-tune (walk the live parameters
+    through this module's own key mapping).
+    """
+    export = config.get("export", {})
+    if not export.get("enabled", False):
+        return
+
+    output_path = Path(export["output_dir"]).expanduser().resolve()
+    protected_paths = {
+        Path("/").resolve(),
+        Path.home().resolve(),
+        Path.cwd().resolve(),
+        Path(local_model_path).expanduser().resolve(),
+        Path(config["training"]["checkpoint_dir"]).expanduser().resolve(),
+    }
+    if output_path in protected_paths or any(
+        protected.is_relative_to(output_path) for protected in protected_paths
+    ):
+        raise ValueError(f"Refusing unsafe merged export directory: {output_path}")
+    if output_path.exists() and not export.get("overwrite", False):
+        raise FileExistsError(
+            f"Merged export directory already exists: {output_path}. Set "
+            "export.overwrite=true to replace it."
+        )
+    output_dir = str(output_path)
+    lora = config["model"].get("lora_config")
+    if lora:
+        from tunix.models import automodel
+
+        params_module = automodel.get_model_module(
+            config["model"]["model_name"], automodel.ModelModule.PARAMS
+        )
+        save_fn = getattr(params_module, "save_lora_merged_model_as_safetensors", None)
+        if save_fn is None:
+            raise NotImplementedError(
+                "This Tunix model does not expose merged-LoRA safetensors "
+                "export. Disable export.enabled or choose a supported model "
+                "such as Qwen3."
+            )
+        LOGGER.info("Exporting merged SFT model to %s", output_dir)
+        save_fn(
+            local_model_path=local_model_path,
+            output_dir=output_dir,
+            lora_model=model,
+            rank=int(lora["rank"]),
+            alpha=float(lora["alpha"]),
+        )
+    else:
+        # Full fine-tune: no adapters to merge, so write the live parameters.
+        # export_full_model resolves the key mapping from the model's Tunix
+        # architecture and raises NotImplementedError if there is none, so the
+        # supported set lives in one place rather than being restated here.
+        LOGGER.info("Exporting full fine-tuned model to %s", output_dir)
+        export_full_model(
+            model=model,
+            local_model_path=local_model_path,
+            output_dir=output_dir,
+            model_name=str(config["model"]["model_name"]),
+        )
+
+    write_turn_end_generation_config(output_dir=output_dir, tokenizer=tokenizer)

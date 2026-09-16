@@ -29,8 +29,13 @@ The Python package is grouped by workflow rather than kept as one flat module
 directory:
 
 - `open_r1_tpu.core` contains configuration parsing and shared logging;
-- `open_r1_tpu.training` contains data preparation, SFT orchestration,
-  transcripts, export, and the training preflight;
+- `open_r1_tpu.model` contains model creation, optimizer, metrics logging,
+  tokenizing helpers, and checkpoint/export handling shared by the SFT and
+  GRPO training stages;
+- `open_r1_tpu.sft` contains data preparation, SFT orchestration,
+  transcripts, and the training preflight;
+- `open_r1_tpu.grpo` contains GRPO prompt dataset loading, reward functions,
+  and orchestration;
 - `open_r1_tpu.evaluation` contains LightEval orchestration, evaluation
   preflight, immutable stack pins, and the vLLM/Tunix speed benchmark.
 
@@ -96,7 +101,7 @@ expects.
 **5. Run preflight.**
 
 ```bash
-python -m open_r1_tpu.training.preflight \
+python -m open_r1_tpu.sft.preflight \
   model.model_source=local \
   model.model_path=models/Qwen3-1.7B-Base \
   tokenizer.tokenizer_path=models/Qwen3-1.7B-Base
@@ -152,7 +157,7 @@ Validate the environment on the TPU VM itself before downloading the full model
 or starting a training job:
 
 ```bash
-python -m open_r1_tpu.training.preflight
+python -m open_r1_tpu.sft.preflight
 ```
 
 This initializes JAX and requires the configured mesh device count to consist
@@ -1166,6 +1171,25 @@ Merged export currently depends on Tunix's model-specific exporter. The default
 Qwen3 recipe supports it. When changing model families, set
 `export.enabled=false` unless that Tunix params module provides
 `save_lora_merged_model_as_safetensors`.
+
+**A GRPO training pipeline is implemented**, targeting
+`OpenR1-Distill-Qwen2.5-Math-1.5B`'s merged SFT export rather than Qwen3:
+`src/open_r1_tpu/grpo/run.py` (the `tunix.rl` orchestration —
+actor/reference loading, the RL cluster, the GRPO learner),
+`src/open_r1_tpu/grpo/data.py` (prompt-and-gold-answer dataset
+loading) and `src/open_r1_tpu/grpo/rewards.py` (format and correctness
+reward functions; a repetition-penalty reward is deferred to keep this a
+core GRPO implementation first), driven by
+`recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/grpo/config_grpo.yaml`. Its API
+usage was verified directly against this project's pinned Tunix commit's
+source rather than assumed from an example notebook (see `grpo/run.py`'s
+module docstring), but nothing here has been run on a TPU yet — the
+tracking repo's `GRPO.md` is the runbook for the first run, including the
+checks that confirm the API assumptions and the Qwen2 LoRA-export gap above
+against whatever Tunix version is actually installed before spending chip
+time. Same restriction as everywhere else in this section: the exact Qwen2
+LoRA-merge export path is unverified, so this recipe's `export.enabled`
+defaults to `false`.
 
 ## Tests
 

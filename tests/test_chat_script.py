@@ -413,8 +413,8 @@ def test_load_runtime_wires_qwen2_5_into_the_four_chip_mesh(monkeypatch):
     fake_sampler_lib.Sampler = sampler
     fake_mesh_utils: Any = ModuleType("tunix.utils.mesh")
     fake_mesh_utils.create_mesh = create_mesh
-    fake_training_run: Any = ModuleType("open_r1_tpu.training.run")
-    fake_training_run._create_model = create_model
+    fake_model_loading: Any = ModuleType("open_r1_tpu.model.loading")
+    fake_model_loading.create_model = create_model
     monkeypatch.setattr(
         chat,
         "model_settings_for_path",
@@ -431,7 +431,7 @@ def test_load_runtime_wires_qwen2_5_into_the_four_chip_mesh(monkeypatch):
         "tunix.generate.sampler": fake_sampler_lib,
         "tunix.utils": ModuleType("tunix.utils"),
         "tunix.utils.mesh": fake_mesh_utils,
-        "open_r1_tpu.training.run": fake_training_run,
+        "open_r1_tpu.model.loading": fake_model_loading,
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
 

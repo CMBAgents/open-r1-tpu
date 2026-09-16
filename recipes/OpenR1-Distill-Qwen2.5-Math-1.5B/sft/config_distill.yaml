@@ -74,7 +74,7 @@
 # (loses one example of 93,554), then 16384 (loses 1,450, 1.55%), then 8192
 # (loses 22,951, 24.5%) -- remat_config is already at its most aggressive.
 #
-# EXPORT. src/open_r1_tpu/training/export.py mapped live parameters back to
+# EXPORT. src/open_r1_tpu/model/export.py mapped live parameters back to
 # Hugging Face names for Qwen3 only; a Qwen2 mapping was added for this recipe,
 # covering the two differences (biased q/k/v projections, no q_norm/k_norm) and
 # leaving the lm_head rule unexercised because this model ties its embeddings.

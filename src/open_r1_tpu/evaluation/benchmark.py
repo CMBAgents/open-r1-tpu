@@ -375,7 +375,7 @@ def _run_tunix(
     from tunix.utils import mesh as mesh_utils
 
     from open_r1_tpu.core.config import load_config
-    from open_r1_tpu.training.run import _create_model
+    from open_r1_tpu.model.loading import create_model
 
     config = copy.deepcopy(load_config(sft_config_path))
     model_config = config["model"]
@@ -402,7 +402,7 @@ def _run_tunix(
             )
 
     mesh = mesh_utils.create_mesh(mesh_shape, axis_names)
-    model, tokenizer_path = _create_model(config, mesh)
+    model, tokenizer_path = create_model(config, mesh)
     tokenizer_config = dict(config["tokenizer"])
     tokenizer_config["tokenizer_path"] = model_path
     tokenizer = model_utils.create_tokenizer(tokenizer_config, tokenizer_path)

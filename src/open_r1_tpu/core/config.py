@@ -170,7 +170,7 @@ def validate_config(config: dict[str, Any]) -> None:
     # Imported here so the data module stays out of this module's import
     # graph; both checks are cheap and catch a recipe that would otherwise
     # filter every example and train on an empty dataset.
-    from open_r1_tpu.training.data import (
+    from open_r1_tpu.sft.data import (
         OVERLENGTH_POLICIES,
         message_schema_from_config,
     )

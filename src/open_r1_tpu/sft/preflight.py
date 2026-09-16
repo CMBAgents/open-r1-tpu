@@ -9,11 +9,11 @@ from importlib import metadata
 from typing import Any
 
 from open_r1_tpu.core.config import load_config, read_prompt_file
-from open_r1_tpu.training.data import (
+from open_r1_tpu.model.export import safetensors_entry_fn
+from open_r1_tpu.sft.data import (
     encode_reasoning_example,
     message_schema_from_config,
 )
-from open_r1_tpu.training.export import safetensors_entry_fn
 
 DEFAULT_CONFIG = "recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml"
 
@@ -127,7 +127,7 @@ def main() -> None:
         )
 
     # Export runs after the last training step, so an unsupported combination
-    # discovered there costs the whole run. Check the same branch _export_model
+    # discovered there costs the whole run. Check the same branch export_model
     # will take: a LoRA run merges adapters through Tunix, a full fine-tune
     # walks live parameters through this repository's own mapping.
     if config.get("export", {}).get("enabled", False):

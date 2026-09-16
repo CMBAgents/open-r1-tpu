@@ -1,6 +1,6 @@
 """Preflight the evaluation stack before committing TPU time to a benchmark.
 
-The training preflight in `open_r1_tpu.training.preflight` validates the
+The training preflight in `open_r1_tpu.sft.preflight` validates the
 Tunix/JAX stack. This
 validates the serving side: the exact LightEval dependency stack, the pinned
 vLLM container image, the exported checkpoint it will be pointed at, and the

@@ -1,4 +1,4 @@
-"""Reasoning-trace normalization, tokenization, packing, and loading."""
+"""Reasoning-trace normalization, tokenization, packing, and loading for SFT."""
 
 from __future__ import annotations
 
@@ -11,6 +11,11 @@ from typing import Any
 import numpy as np
 
 from open_r1_tpu.core.config import read_prompt_file
+from open_r1_tpu.model.tokenizing import (
+    assistant_closing_ids,
+    find_subsequence,
+    render_ids,
+)
 
 
 @dataclass(frozen=True)
@@ -130,96 +135,6 @@ def prepare_messages(
     return messages
 
 
-def _as_token_ids(value: Any) -> list[int]:
-    # Recent Transformers versions return BatchEncoding, which implements the
-    # mapping protocol but is not necessarily a plain dict.
-    if isinstance(value, Mapping):
-        value = value.get("input_ids")
-    if hasattr(value, "tolist"):
-        value = value.tolist()
-    if value and isinstance(value[0], list):
-        if len(value) != 1:
-            raise ValueError("chat template unexpectedly returned a token batch")
-        value = value[0]
-    if not isinstance(value, list) or not all(
-        isinstance(token, int) for token in value
-    ):
-        raise ValueError("chat template did not return a list of token IDs")
-    return value
-
-
-def _render_ids(
-    tokenizer: Any,
-    messages: list[dict[str, str]],
-    *,
-    add_generation_prompt: bool,
-) -> list[int]:
-    return _as_token_ids(
-        tokenizer.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=add_generation_prompt,
-        )
-    )
-
-
-# Keyed by id(tokenizer); the tokenizer itself is stored alongside the ids so
-# the key cannot be recycled while the cache entry is alive.
-_closing_ids_cache: dict[int, tuple[Any, list[int]]] = {}
-
-
-def _assistant_closing_ids(tokenizer: Any) -> list[int]:
-    """Derive the token sequence that terminates every rendered assistant turn.
-
-    Two single-turn probe conversations whose assistant replies differ only in
-    their final character are rendered; the longest common token suffix is the
-    template's closing sequence (``<|im_end|>\\n`` for Qwen-style templates).
-    """
-    cached = _closing_ids_cache.get(id(tokenizer))
-    if cached is not None and cached[0] is tokenizer:
-        return cached[1]
-    probes = []
-    for filler in ("0", "1"):
-        probes.append(
-            _render_ids(
-                tokenizer,
-                [
-                    {"role": "user", "content": "probe"},
-                    {"role": "assistant", "content": filler},
-                ],
-                add_generation_prompt=False,
-            )
-        )
-    first, second = probes
-    length = 0
-    limit = min(len(first), len(second))
-    while length < limit and first[-1 - length] == second[-1 - length]:
-        length += 1
-    if length == 0:
-        raise ValueError("chat template has no fixed assistant closing sequence")
-    closing = first[len(first) - length :]
-    _closing_ids_cache[id(tokenizer)] = (tokenizer, closing)
-    return closing
-
-
-def assistant_turn_end_id(tokenizer: Any) -> int:
-    """The first token of the sequence that closes every assistant turn.
-
-    This is the token a chat model must emit for generation to stop (Qwen's
-    ``<|im_end|>``). Base-model generation configs name a different EOS, and a
-    stop *string* for it never matches under serving defaults that strip
-    special tokens from decoded text, so servers need it as a token-level EOS.
-    """
-    return _assistant_closing_ids(tokenizer)[0]
-
-
-def _find_subsequence(haystack: list[int], needle: list[int], start: int) -> int | None:
-    for position in range(start, len(haystack) - len(needle) + 1):
-        if haystack[position : position + len(needle)] == needle:
-            return position
-    return None
-
-
 def _assistant_turn_spans(
     tokenizer: Any, messages: list[dict[str, str]], full_ids: list[int]
 ) -> list[tuple[int, int]] | None:
@@ -233,7 +148,7 @@ def _assistant_turn_spans(
     sequence that terminates every assistant message. Any mismatch returns None
     so the example is dropped rather than trained with a wrong mask.
     """
-    closing = _assistant_closing_ids(tokenizer)
+    closing = assistant_closing_ids(tokenizer)
     spans: list[tuple[int, int]] = []
     previous_end = 0
     for index, message in enumerate(messages):
@@ -241,7 +156,7 @@ def _assistant_turn_spans(
             continue
         if index == 0:
             return None
-        prefix = _render_ids(tokenizer, messages[:index], add_generation_prompt=True)
+        prefix = render_ids(tokenizer, messages[:index], add_generation_prompt=True)
         start = len(prefix)
         if start < previous_end or start >= len(full_ids):
             return None
@@ -250,7 +165,7 @@ def _assistant_turn_spans(
         if index == len(messages) - 1:
             end = len(full_ids)
         else:
-            found = _find_subsequence(full_ids, closing, start)
+            found = find_subsequence(full_ids, closing, start)
             if found is None:
                 return None
             end = found + len(closing)
@@ -333,7 +248,7 @@ def encode_reasoning_example(
         return None
 
     try:
-        full_ids = _render_ids(tokenizer, messages, add_generation_prompt=False)
+        full_ids = render_ids(tokenizer, messages, add_generation_prompt=False)
     except (TypeError, ValueError):
         return None
 
@@ -363,7 +278,7 @@ def encode_reasoning_example(
                 return None
             prompt_length = min(spans[-1][0], length)
         else:
-            prompt_ids = _render_ids(
+            prompt_ids = render_ids(
                 tokenizer, messages[:-1], add_generation_prompt=True
             )
             if (

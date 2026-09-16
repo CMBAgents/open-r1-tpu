@@ -5,7 +5,7 @@ import types
 import numpy as np
 import pytest
 
-from open_r1_tpu.training.export import (
+from open_r1_tpu.model.export import (
     SAFETENSORS_ENTRY_FNS,
     collect_safetensors_state,
     qwen2_safetensors_entry,

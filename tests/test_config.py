@@ -3,11 +3,11 @@ from pathlib import Path
 import pytest
 
 from open_r1_tpu.core.config import load_config, parse_override
-from open_r1_tpu.training.run import (
-    _absolute_checkpoint_dir,
-    _metrics_logger_options,
-    _SteppedTrainingMetricsBackend,
-    _wandb_backend_kwargs,
+from open_r1_tpu.model.loading import absolute_checkpoint_dir
+from open_r1_tpu.model.metrics import (
+    SteppedTrainingMetricsBackend,
+    metrics_logger_options,
+    wandb_backend_kwargs,
 )
 
 RECIPE = (
@@ -225,12 +225,12 @@ def test_invalid_mesh_is_rejected():
 def test_wandb_can_be_disabled_for_local_runs():
     config = load_config(RECIPE, ["training.wandb.enabled=false"])
     assert config["training"]["wandb"]["enabled"] is False
-    assert _wandb_backend_kwargs(config) == {"mode": "disabled"}
+    assert wandb_backend_kwargs(config) == {"mode": "disabled"}
 
 
 def test_wandb_backend_receives_run_metadata_and_resolved_config():
     config = load_config(RECIPE, ["training.wandb.entity=my-team"])
-    kwargs = _wandb_backend_kwargs(config)
+    kwargs = wandb_backend_kwargs(config)
 
     assert kwargs["entity"] == "my-team"
     assert kwargs["group"] == "qwen3-1.7b-reasoning-distillation"
@@ -253,7 +253,7 @@ def test_wandb_adapter_filters_unstepped_and_non_training_metrics():
             self.closed = True
 
     recording_backend = RecordingBackend()
-    backend = _SteppedTrainingMetricsBackend(recording_backend)
+    backend = SteppedTrainingMetricsBackend(recording_backend)
 
     backend.log_scalar("/train/loss", 1.25, step=3)
     backend.log_scalar("/eval/loss", 1.5, step=3)
@@ -284,7 +284,7 @@ def test_metrics_options_use_custom_backends():
         WandbBackend = Backend
 
     config = load_config(RECIPE)
-    options = _metrics_logger_options(config, FakeMetricsLogger)
+    options = metrics_logger_options(config, FakeMetricsLogger)
     factories = options.kwargs["backend_kwargs"]["custom_backend"]
 
     assert len(factories) == 2
@@ -292,10 +292,10 @@ def test_metrics_options_use_custom_backends():
         "log_dir": config["training"]["metrics_log_dir"],
         "flush_every_n_steps": config["training"]["flush_every_n_steps"],
     }
-    assert isinstance(factories[1](), _SteppedTrainingMetricsBackend)
+    assert isinstance(factories[1](), SteppedTrainingMetricsBackend)
 
     disabled_config = load_config(RECIPE, ["training.wandb.enabled=false"])
-    disabled_options = _metrics_logger_options(disabled_config, FakeMetricsLogger)
+    disabled_options = metrics_logger_options(disabled_config, FakeMetricsLogger)
     disabled_factories = disabled_options.kwargs["backend_kwargs"]["custom_backend"]
     assert len(disabled_factories) == 1
 
@@ -315,17 +315,15 @@ def test_invalid_wandb_config_is_rejected(override, error):
 def test_relative_checkpoint_dir_is_made_absolute():
     # Orbax raises "Checkpoint path should be absolute" for a relative
     # directory, which the recipe uses by default.
-    resolved = _absolute_checkpoint_dir("artifacts/run/checkpoints")
+    resolved = absolute_checkpoint_dir("artifacts/run/checkpoints")
     assert Path(resolved).is_absolute()
     assert resolved.endswith("artifacts/run/checkpoints")
 
 
 def test_absolute_and_remote_checkpoint_dirs_are_preserved():
-    assert _absolute_checkpoint_dir("/data/run/checkpoints") == (
-        "/data/run/checkpoints"
-    )
+    assert absolute_checkpoint_dir("/data/run/checkpoints") == ("/data/run/checkpoints")
     # Resolving a URI against the working directory would corrupt the scheme.
-    assert _absolute_checkpoint_dir("gs://bucket/run/checkpoints") == (
+    assert absolute_checkpoint_dir("gs://bucket/run/checkpoints") == (
         "gs://bucket/run/checkpoints"
     )
 
@@ -333,7 +331,7 @@ def test_absolute_and_remote_checkpoint_dirs_are_preserved():
 def test_default_recipe_checkpoint_dir_resolves_to_an_absolute_path():
     config = load_config(RECIPE)
     assert Path(
-        _absolute_checkpoint_dir(config["training"]["checkpoint_dir"])
+        absolute_checkpoint_dir(config["training"]["checkpoint_dir"])
     ).is_absolute()
 
 

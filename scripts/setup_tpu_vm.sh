@@ -161,7 +161,7 @@ cat <<NEXT
 
   # 3. Preflight, then launch. See "Quick start on a TPU VM" in README.md for
   #    the local-input overrides both commands need after step 2.
-  python -m open_r1_tpu.training.preflight
+  python -m open_r1_tpu.sft.preflight
   scripts/run_sft_tpu.sh training.project_name="\${WANDB_PROJECT}"
 NEXT
 
