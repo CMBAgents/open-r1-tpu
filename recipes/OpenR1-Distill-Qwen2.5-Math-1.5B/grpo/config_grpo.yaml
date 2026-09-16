@@ -1,13 +1,14 @@
 # GRPO on top of run-3 LR-2e-4's terminal SFT checkpoint (6710), on one v6e-1
-# chip. Read GRPO.md at the repository root before running this: it has the
-# staging, preflight, and smoke-test steps this recipe assumes are already
-# done, and the reasoning behind the exploratory step budget below.
+# chip. This recipe assumes the merged SFT export and the prompt set are
+# already staged on local disk (the model and dataset sections say where)
+# and that a short smoke run has been measured before max_steps below is
+# trusted; the reasoning behind the exploratory step budget is further down.
 #
-# WHY GRPO NOW, NOT MORE SFT. Tier 1 MATH-500 diagnosis (STATUS.md,
-# EVAL_RESULTS.md 2026-09-05): checkpoint 6710 scores 0.833 +/- 0.011,
-# already past the DeepSeek-R1-Distill-Qwen-1.5B control's 0.798 +/- 0.013 on
-# the same protocol, with truncation down to 7.4%. LOG.md's 2026-09-04
-# "Truncation diagnosed" entry found 83-91% of remaining truncations are
+# WHY GRPO NOW, NOT MORE SFT. Tier 1 MATH-500 diagnosis (2026-09-05):
+# checkpoint 6710 scores 0.833 +/- 0.011, already past the
+# DeepSeek-R1-Distill-Qwen-1.5B control's 0.798 +/- 0.013 on the same
+# protocol, with truncation down to 7.4%. Classifying the remaining
+# truncated completions (2026-09-04) found 83-91% of them are
 # verbatim repetition loops, not genuinely hard problems (that rate is a flat
 # 3.2-4.0%, matching DeepSeek's own 3.8%) -- and 43% of loop-truncated
 # completions already contain the gold answer before the loop starts. GRPO's
@@ -44,8 +45,8 @@
 # commit rather than assumed from either notebook).
 #
 # STEP BUDGET IS A STARTING POINT, NOT A MEASURED ONE. Nothing about this
-# recipe's wall-clock or peak HBM has been run on a TPU. GRPO.md's smoke test
-# (a handful of steps, HBM sampler running) is the gate before committing to
+# recipe's wall-clock or peak HBM has been run on a TPU. A smoke test (a
+# handful of steps, HBM sampler running) is the gate before committing to
 # max_steps below for a real run -- mirroring the SFT recipe's own "measure
 # it in a short run" convention.
 model:
@@ -87,28 +88,47 @@ tokenizer:
   chat_template: null
 
 dataset:
-  # Same staged corpus and file glob as the SFT recipe
-  # (recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/sft/config_distill.yaml), read
-  # via its problem/answer columns instead of its pre-rendered messages
-  # column -- see grpo/data.py's module docstring for why reusing
-  # this corpus introduces no new eval-contamination question beyond what
-  # the SFT stage already accepted.
+  # open-r1/DAPO-Math-17k-Processed, `en` config: 14,116 deduplicated
+  # English competition problems (DAPO, arXiv 2503.14476), every gold answer
+  # a bare integer. Chosen over the SFT corpus (OpenR1-Math-220k) for three
+  # reasons. (1) A GRPO prompt set the actor has never been trained on:
+  # checkpoint 6710 spent six epochs imitating that corpus's traces, so its
+  # rollouts on those prompts would collapse toward one memorised answer per
+  # group, and GRPO's advantage is the within-group *variance*. (2) Integer
+  # gold answers, which grpo/rewards.py's deliberately loose normaliser
+  # compares exactly; the SFT corpus's answers are heterogeneous LaTeX.
+  # (3) It is the prompt set Open-R1's own GRPO recipes use, so the choice
+  # needs no corpus argument of its own. `prompt` is the bare problem text
+  # (no instruction wrapper -- the processed set strips DAPO's "Answer:"
+  # boilerplate), so the system prompt below is the only format instruction
+  # the actor sees, exactly as at SFT and eval time.
+  #
+  # Read from Parquet staged on the VM's local disk, not from the Hub:
+  #   ./scripts/copy_gcs_bucket_data.sh --dataset DAPO-Math-17k-Processed
+  # The bucket is deployment-specific and stays in $GCS_BUCKET. To fall back
+  # to the Hub, override dataset.name=open-r1/DAPO-Math-17k-Processed
+  # dataset.config=en dataset.data_files=null.
   name: parquet
   config: null
   train_split: train
-  data_files: data/OpenR1-Math-220k/data/train-*.parquet
-  question_column: problem
-  answer_column: answer
+  # Only the `en` config's single shard. The repository's `all` config is
+  # `en` plus 3,282 Chinese-language prompts (`cn`); this actor's system
+  # prompt and SFT corpus are English.
+  data_files: data/DAPO-Math-17k-Processed/en/train-*.parquet
+  question_column: prompt
+  answer_column: solution
   # Rollouts per step = batch_size * grpo.num_generations = 4 * 4 = 16,
   # each up to rollout.max_tokens_to_generate tokens. Measure actual
-  # wall-clock in GRPO.md's smoke test before trusting this for a full run.
+  # wall-clock in a smoke test before trusting this for a full run.
   batch_size: 4
   # Filters a row whose rendered prompt (system prompt + problem, no
-  # solution) exceeds rollout.max_prompt_length -- almost none of this
-  # corpus's *problem statements* are long; it is the *solutions* that run
-  # to 25k+ tokens (see the SFT recipe's corpus-length census), and this
-  # dataset never reads the solution column at all.
+  # solution) exceeds rollout.max_prompt_length. Prompts here are short:
+  # median 243 characters, 99th percentile 875, longest 3,190 -- so this
+  # drops at most a handful of rows.
   max_prompt_length: 512
+  # 14,116 prompts / batch_size 4 = 3,529 steps per epoch, far more than
+  # training.max_steps; the epoch count only needs to keep the iterator
+  # from running dry.
   num_train_epochs: 20
   max_examples: null
   eval_fraction: 0.0
@@ -195,9 +215,10 @@ export:
   # this recipe's actor is Qwen2.5-Math. Flipping export.enabled without
   # also setting i_have_verified_qwen2_lora_export would spend the whole
   # training run's TPU time then fail on the very last step; validate_grpo_
-  # config refuses that combination outright. See GRPO.md for how to check,
-  # and for the LoRA checkpoint (training.checkpoint_dir) that is the
-  # durable training artifact either way.
+  # config refuses that combination outright. Check on the VM whether
+  # tunix.models.automodel's params module for this model exposes that
+  # function; the LoRA checkpoint (training.checkpoint_dir) is the durable
+  # training artifact either way.
   enabled: false
   i_have_verified_qwen2_lora_export: false
   overwrite: true

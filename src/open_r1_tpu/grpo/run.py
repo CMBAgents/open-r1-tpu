@@ -5,9 +5,9 @@ Run with::
   python -m open_r1_tpu.grpo.run --config \
     recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/grpo/config_grpo.yaml
 
-See ``GRPO.md`` at the repository root for prerequisites (the merged SFT
-export must exist and be staged), staging steps, and a preflight checklist --
-this module performs no preflight of its own, matching
+Prerequisites: the merged SFT export and the prompt corpus must already be
+staged on local disk (the recipe's model and dataset sections say where).
+This module performs no preflight of its own, matching
 ``sft.run``/``sft.preflight``'s split.
 
 Design, verified directly against this project's pinned Tunix commit
@@ -159,8 +159,7 @@ def validate_grpo_config(config: dict[str, Any]) -> None:
             "section: Tunix's merged-LoRA exporter is confirmed for Qwen3 "
             "only, and this recipe's model is Qwen2. Until then, the "
             "Tunix/Orbax LoRA checkpoint under training.checkpoint_dir "
-            "(actor/<step>/model_params) is the durable artifact; see "
-            "GRPO.md."
+            "(actor/<step>/model_params) is the durable artifact."
         )
 
 

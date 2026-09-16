@@ -1180,14 +1180,16 @@ actor/reference loading, the RL cluster, the GRPO learner),
 loading) and `src/open_r1_tpu/grpo/rewards.py` (format and correctness
 reward functions; a repetition-penalty reward is deferred to keep this a
 core GRPO implementation first), driven by
-`recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/grpo/config_grpo.yaml`. Its API
+`recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/grpo/config_grpo.yaml`. The
+prompt set is `open-r1/DAPO-Math-17k-Processed` (`en` config, staged with
+`./scripts/copy_gcs_bucket_data.sh --dataset DAPO-Math-17k-Processed`), not
+the SFT corpus: the recipe's `dataset` comment explains why. Its API
 usage was verified directly against this project's pinned Tunix commit's
 source rather than assumed from an example notebook (see `grpo/run.py`'s
-module docstring), but nothing here has been run on a TPU yet — the
-tracking repo's `GRPO.md` is the runbook for the first run, including the
-checks that confirm the API assumptions and the Qwen2 LoRA-export gap above
-against whatever Tunix version is actually installed before spending chip
-time. Same restriction as everywhere else in this section: the exact Qwen2
+module docstring), but nothing here has been run on a TPU yet. Before
+spending chip time, confirm those API assumptions and the Qwen2 LoRA-export
+gap above against whatever Tunix version is actually installed, then measure
+a short smoke run. Same restriction as everywhere else in this section: the exact Qwen2
 LoRA-merge export path is unverified, so this recipe's `export.enabled`
 defaults to `false`.
 

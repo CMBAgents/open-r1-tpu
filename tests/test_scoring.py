@@ -284,7 +284,7 @@ def test_doc_from_item_rejects_metadata_missing_query():
 
 @pytest.mark.integration
 def test_doc_from_item_coerces_non_string_expected_output_to_str():
-    """Regression guard for the AIME24 card run (LOG.md 2026-09-15): Langfuse's
+    """Regression guard for the AIME24 card run (2026-09-15): Langfuse's
     `expected_output` field is `Any`, and round-tripping a gold string through
     it silently turns a round-trip-safe numeric string into a JSON number
     (`"204"` comes back as `204`) while a non-round-trip-safe one (`"025"`)

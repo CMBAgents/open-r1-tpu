@@ -8,13 +8,14 @@ of the source row for the reward functions in
 here, the bare gold answer. There is nothing to tokenize or pack here: Tunix's
 rollout takes prompt strings and tokenizes them itself.
 
-Reuses ``open-r1/OpenR1-Math-220k``'s ``default`` config -- the exact corpus
-``recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/sft`` trained on, already staged on
-the training VM -- but reads its ``problem``/``answer`` columns directly
-rather than the pre-rendered ``messages`` column the SFT recipe uses. Any
-eval-benchmark contamination in that corpus is an existing, already-accepted
-risk from the SFT stage (see LOG.md's training-data audit), not something new
-this module introduces.
+The recipe (``recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/grpo``) reads
+``open-r1/DAPO-Math-17k-Processed``'s ``en`` config: one ``prompt`` string
+(the bare problem, no instruction wrapper) and one ``solution`` string (a
+bare integer) per row, named via ``dataset.question_column`` and
+``dataset.answer_column`` so any two-column prompt/gold corpus can be
+substituted by override. It is deliberately *not* the SFT corpus: the actor
+has already imitated those traces for six epochs, and GRPO's signal is the
+within-group variance of rollouts, which memorised prompts collapse.
 """
 
 from __future__ import annotations

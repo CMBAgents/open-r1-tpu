@@ -25,7 +25,7 @@ Gemma's ``<reasoning>``/``<answer>`` tags:
   with partial credit for a close numeric match.
 
 A third, repetition-penalty reward (suppressing the verbatim-loop truncation
-failure mode LOG.md's 2026-09-04 "Truncation diagnosed" entry describes) is
+failure mode seen in the SFT checkpoints' evaluation completions) is
 deliberately deferred rather than built here, to keep this first pipeline to
 a core GRPO implementation. Revisit once format/correctness rewards alone
 have been run and measured.

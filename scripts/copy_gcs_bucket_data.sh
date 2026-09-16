@@ -26,7 +26,8 @@ repository's ignored models/ and data/ directories.
   --dataset NAME         Dataset directory name. Defaults to $GCS_DATASET, or
                          Mixture-of-Thoughts. Also accepts smoltalk, the
                          instruction-tuning corpus, its smol-smoltalk variant,
-                         and OpenR1-Math-220k, the math reasoning corpus.
+                         OpenR1-Math-220k, the math reasoning corpus, and
+                         DAPO-Math-17k-Processed, the GRPO prompt set.
 
 Objects are read from datasets/NAME and written to data/NAME. Override the
 layout with $GCS_MODEL_PREFIX, $GCS_DATA_PREFIX, and $GCS_DATA_GLOB.
@@ -71,6 +72,8 @@ case "${DATASET}" in
   # and `all` views cover the same problems, so a wider glob would train on
   # duplicates.
   OpenR1-Math-220k) DATA_GLOB="${GCS_DATA_GLOB:-data/train-*.parquet}" ;;
+  # Only the English config. `all` is `en` plus the Chinese `cn` prompts.
+  DAPO-Math-17k-Processed) DATA_GLOB="${GCS_DATA_GLOB:-en/train-*.parquet}" ;;
   *) DATA_GLOB="${GCS_DATA_GLOB:-*.parquet}" ;;
 esac
 

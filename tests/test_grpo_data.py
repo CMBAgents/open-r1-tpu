@@ -155,14 +155,14 @@ def test_load_grpo_prompts_forwards_name_and_data_files(monkeypatch):
         {
             "name": "parquet",
             "config": None,
-            "data_files": "data/OpenR1-Math-220k/data/train-*.parquet",
+            "data_files": "data/DAPO-Math-17k-Processed/en/train-*.parquet",
             "train_split": "train",
             "batch_size": 2,
         },
         FakeTokenizer(),
     )
     assert captured["name"] == "parquet"
-    assert captured["data_files"] == "data/OpenR1-Math-220k/data/train-*.parquet"
+    assert captured["data_files"] == "data/DAPO-Math-17k-Processed/en/train-*.parquet"
     assert captured["split"] == "train"
 
 
