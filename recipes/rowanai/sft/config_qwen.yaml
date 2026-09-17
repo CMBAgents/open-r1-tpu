@@ -16,8 +16,8 @@ model:
   rope_theta: 300000
   mesh:
     shape:
-    - 2
-    - 2
+    - 1
+    - 1
     axis_names:
     - fsdp
     - tp

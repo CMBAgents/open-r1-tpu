@@ -9,9 +9,9 @@ or Hugging Face. The preparation manifest belongs beside private artifacts.
 Both arms retain the successful full-SFT optimizer: Adam, LR 2e-4, warmup
 3%, cosine floor 10%, betas 0.9/0.999, epsilon 1e-8, zero weight decay, gradient
 clip 0.2, decoder rematerialization, flash attention, and assistant-only loss.
-The target is four v6e chips with `[fsdp, tp] = [2, 2]`. TPU preflight and a
+The target is one v6e chip with `[fsdp, tp] = [1, 1]`. TPU preflight and a
 four-update smoke (including checkpoint and merged export) are required on an
-idle four-chip VM before full training; CPU checks do not establish TPU memory
+idle one-chip VM before full training; CPU checks do not establish TPU memory
 or compilation compatibility.
 
 The matched protocol is:
