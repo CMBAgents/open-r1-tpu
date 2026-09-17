@@ -8,6 +8,7 @@ import pytest
 from open_r1_tpu.model.export import (
     SAFETENSORS_ENTRY_FNS,
     collect_safetensors_state,
+    llama_safetensors_entry,
     qwen2_safetensors_entry,
     qwen3_safetensors_entry,
     safetensors_entry_fn,
@@ -16,8 +17,8 @@ from open_r1_tpu.model.export import (
 
 EMBED, HEADS, KV_HEADS, HEAD_DIM, INTER, VOCAB = 8, 4, 2, 3, 10, 16
 
-ENTRY_FNS = [qwen2_safetensors_entry, qwen3_safetensors_entry]
-ENTRY_FN_IDS = ["qwen2", "qwen3"]
+ENTRY_FNS = [qwen2_safetensors_entry, qwen3_safetensors_entry, llama_safetensors_entry]
+ENTRY_FN_IDS = ["qwen2", "qwen3", "llama"]
 
 
 def _loader_transform(hf_tensor, permute, reshape):

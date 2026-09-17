@@ -155,6 +155,14 @@ def validate_config(config: dict[str, Any]) -> None:
             "training.gradient_accumulation_steps must be a positive integer"
         )
 
+    stop_strings = config.get("export", {}).get("stop_strings")
+    if stop_strings is not None and (
+        not isinstance(stop_strings, list)
+        or not stop_strings
+        or any(not isinstance(value, str) or not value for value in stop_strings)
+    ):
+        raise ValueError("export.stop_strings must be a nonempty list of strings")
+
     wandb = config["training"].get("wandb", {})
     if not isinstance(wandb, dict):
         raise ValueError("training.wandb must be a configuration mapping")

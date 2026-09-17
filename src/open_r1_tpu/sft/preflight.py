@@ -141,7 +141,10 @@ def main() -> None:
                 errors.append("the installed Tunix model lacks merged-LoRA export")
         else:
             try:
-                safetensors_entry_fn(str(config["model"]["model_name"]))
+                safetensors_entry_fn(
+                    str(config["model"]["model_name"]),
+                    config["model"].get("architecture"),
+                )
             except NotImplementedError as exc:
                 errors.append(str(exc))
 
@@ -149,10 +152,12 @@ def main() -> None:
     print(f"Devices ({len(devices)}): {devices}")
     if encoded is not None:
         print(
-            "Qwen chat template: "
+            "Chat template: "
             f"{encoded.prompt_length} prompt tokens, "
             f"{int(encoded.input_mask.sum())} supervised tokens"
         )
+    if config.get("export", {}).get("stop_strings"):
+        print(f"Inference stop strings: {config['export']['stop_strings']}")
     if errors:
         raise SystemExit("TPU preflight failed:\n- " + "\n- ".join(errors))
     print("TPU preflight passed.")

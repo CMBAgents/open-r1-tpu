@@ -1223,3 +1223,11 @@ pre-commit run --all-files
 
 Pyright reports the TPU-only imports as warnings off target, so the same checks
 pass on a laptop and on the TPU VM.
+
+## Local base-model comparison
+
+The [rowanai SFT comparison](recipes/rowanai/README.md) uses matched examples
+and updates for a private local Llama checkpoint and the Qwen RoPE-300k base.
+Rowanai uses ChatML encoded with its unchanged vocabulary; Qwen retains its
+native template. Multi-token turn endings are exported as stop strings.
+Model and data files stay in ignored directories and private GCS storage.

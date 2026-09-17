@@ -21,6 +21,10 @@ def create_model(config: dict[str, Any], mesh: Any) -> tuple[Any, str]:
     from tunix.models import automodel
 
     model_config = _model_config(config)
+    if model_config.get("architecture") == "llama":
+        from open_r1_tpu.model.llama import create_llama_model
+
+        return create_llama_model(model_config, mesh)
     if model_config["model_source"] != "local":
         return model_utils.create_model(model_config, config["tokenizer"], mesh)
 
