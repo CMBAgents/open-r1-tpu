@@ -1,0 +1,114 @@
+# Third coherence-iteration recipe, derived from config_rowanai_v2.yaml (the
+# best of the epoch sweep so far: 5 epochs undertrained/looped everywhere, 20
+# epochs (v3) overfit into loops and garbled short outputs, 10 epochs (v2) was
+# the sweet spot). This keeps 10 epochs and changes the other lever the goal
+# suggested: max_grad_norm 0.2 -> 1.0. 0.2 is an unusually tight clip; relaxing
+# it tests whether it was still constraining optimisation even at the epoch
+# count that otherwise worked best. Output to artifacts/rowanai-iterate/v4/,
+# leaving v2, v3 and the matched comparison intact.
+model:
+  model_name: rowanai
+  model_id: rowanai
+  model_source: local
+  model_path: models/rowanai
+  model_download_path: /tmp/open-r1-tpu/models/rowanai
+  intermediate_ckpt_dir: /tmp/open-r1-tpu/intermediate_ckpt/rowanai
+  rng_seed: 42
+  model_display: false
+  dtype: bfloat16
+  load_dtype: bfloat16
+  remat_config: DECODER
+  use_flash_attention: true
+  flash_attention_block_size: 1024
+  rope_theta: 50000
+  mesh:
+    shape:
+    - 1
+    - 1
+    axis_names:
+    - fsdp
+    - tp
+  architecture: llama
+tokenizer:
+  tokenizer_path: models/rowanai
+  tokenizer_type: huggingface
+  add_bos: false
+  add_eos: false
+  # ChatML markers use existing ordinary tokens; vocabulary and weights stay fixed.
+  chat_template: "{% for message in messages %}{{ '<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>\\n' }}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}"
+dataset:
+  name: json
+  config: null
+  train_split: train
+  data_files: data/rowanai/train.jsonl
+  messages_column: messages
+  batch_size: 2
+  max_length: 3072
+  packing: false
+  num_train_epochs: 10
+  max_examples: null
+  eval_fraction: 0.05
+  eval_max_examples: 64
+  seed: 42
+  assistant_only_loss: true
+  require_reasoning_tags: false
+  reasoning_start: <think>
+  reasoning_end: </think>
+  system_prompt_file: null
+optimizer:
+  learning_rate: 0.0002
+  warmup_ratio: 0.03
+  min_lr_ratio: 0.1
+  b1: 0.9
+  b2: 0.999
+  eps: 1.0e-08
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+training:
+  max_steps: 1346
+  gradient_accumulation_steps: 8
+  eval_every_n_steps: 200
+  checkpoint_dir: artifacts/rowanai-iterate/v4/checkpoints
+  checkpointing_options:
+    save_interval_steps: 200
+    max_to_keep: 3
+    enable_async_checkpointing: false
+    timeout_secs: 1200
+  metrics_log_dir: artifacts/rowanai-iterate/v4/logs
+  project_name: open-r1-tpu
+  run_name: rowanai-iterate-v4
+  flush_every_n_steps: 10
+  wandb:
+    enabled: true
+    entity: null
+    mode: online
+    group: rowanai-iterate
+    job_type: sft
+    tags:
+    - tpu
+    - sft
+    - full-finetune
+    - rowanai
+    - iterate-v4
+    resume: allow
+    save_code: false
+  transcripts:
+    enabled: false
+    every_n_steps: 250
+    max_new_tokens: 512
+    temperature: 0.0
+    seed: 42
+    log_to_wandb: true
+    output_path: artifacts/rowanai-iterate/v4/transcripts.jsonl
+    prompts: null
+    cache_size: null
+    max_prompt_length: null
+  data_sharding_axis:
+  - fsdp
+  max_inflight_computations: 1
+export:
+  # Match the whole delimiter; its first token alone is not an EOS token.
+  stop_strings: ['<|im_end|>']
+  enabled: true
+  overwrite: false
+  output_dir: artifacts/rowanai-iterate/v4/merged
