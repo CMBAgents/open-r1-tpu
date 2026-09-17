@@ -75,3 +75,27 @@ merged exports are synced after a successful run. If a run fails, save its
 local log to GCS and record its exact command, step, last checkpoint and failure
 before resuming. A re-run against an existing GCS checkpoint prefix resumes;
 use a new prefix for an independent experiment.
+
+## rowanai coherence follow-up (branch `rowanai`)
+
+`config_rowanai.yaml` above (5 epochs, matched to Qwen for the comparison) is
+undertrained for standalone chat use: greedy decoding degenerates into
+repetition loops on most prompts. `config_rowanai_v{2,3,4}.yaml` sweep
+training epochs and gradient clipping on the same base/data/tokenizer to fix
+that, writing to `artifacts/rowanai-iterate/v{2,3,4}/` so the matched
+comparison above is never touched. Findings, in order:
+
+- v2 (10 epochs, `max_grad_norm 0.2`): removes almost all repetition loops
+  seen at 5 epochs.
+- v3 (20 epochs, same clip): a regression — loops reappear and off-domain
+  replies get more garbled. The epoch/coherence relationship is non-monotonic.
+- **v4 (10 epochs, `max_grad_norm 1.0`) is the best checkpoint found**: no
+  long repetition loops across a 10-prompt in-domain/out-of-domain test set,
+  lower held-out eval loss than v2 (2.66 vs 2.75), and at least one fully
+  correct worked solution. Use `artifacts/rowanai-iterate/v4/merged` for any
+  standalone rowanai chat/inference work, not the matched-comparison export.
+
+Remaining limitation: prompts far from the pre-1905 worked-mathematics corpus
+(general trivia, creative writing) still get short non-answers or a fluently
+regurgitated but off-topic memorized passage rather than a real answer. That
+looks like the corpus's narrow scope, not a fixable training hyperparameter.
