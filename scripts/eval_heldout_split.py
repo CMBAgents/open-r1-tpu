@@ -206,6 +206,9 @@ def main() -> None:
 
     prompts = [render(tokenizer, row["messages"][0]["content"]) for row in rows]
     completions: list[str] = []
+    # When the turn ends on a token id the sampler consumes it, so the marker
+    # never reaches the text and stopping has to be read off the token count.
+    generated: list[int] = []
     with tunix_mesh_context(mesh):
         for start in range(0, len(prompts), args.batch_size):
             batch = prompts[start : start + args.batch_size]
@@ -224,13 +227,17 @@ def main() -> None:
                 pad_output=False,
             )
             completions.extend(output.text[:wanted])
+            generated.extend(len(list(ids)) for ids in output.tokens[:wanted])
             done = min(start + args.batch_size, len(prompts))
             print(
                 f"  {done}/{len(prompts)} in {time.monotonic() - started:.0f}s",
                 flush=True,
             )
 
-    return report(args, rows, completions, started)
+    flags = None
+    if eos_tokens is not None:
+        flags = [count < args.max_new_tokens for count in generated]
+    return report(args, rows, completions, started, stopped_flags=flags)
 
 
 def report(
@@ -243,9 +250,9 @@ def report(
 ) -> None:
     """Score the completions, write the records, and print the summary.
 
-    ``stopped_flags`` carries the turn-end verdicts forward when re-scoring:
-    the saved completions were already cut, so it cannot be recovered from the
-    text.
+    ``stopped_flags`` overrides the verdict read from the text: a model that
+    stops on a token id leaves no marker to find, and a re-scored completion
+    was cut when it was written.
     """
     from open_r1_tpu.sft.heldout_match import (
         is_gradable,
@@ -255,10 +262,9 @@ def report(
 
     records = []
     for index, (row, completion) in enumerate(zip(rows, completions, strict=True)):
-        if stopped_flags is None:
-            text, stopped = cut_at_turn_end(completion)
-        else:
-            text, stopped = completion, stopped_flags[index]
+        text, stopped = cut_at_turn_end(completion)
+        if stopped_flags is not None:
+            stopped = stopped_flags[index]
         gold = row["messages"][1]["content"]
         gradable = is_gradable(row)
         records.append(
