@@ -331,6 +331,7 @@ def test_model_settings_are_derived_from_the_local_config(tmp_path):
     assert chat.model_settings_for_path(str(tmp_path)) == (
         "qwen2.5-math-1.5b",
         2,
+        None,
     )
 
 
@@ -342,6 +343,41 @@ def test_model_settings_accept_an_explicit_name_when_source_metadata_is_missing(
     assert chat.model_settings_for_path(str(tmp_path), "qwen2.5-math-1.5b") == (
         "qwen2.5-math-1.5b",
         2,
+        None,
+    )
+
+
+def test_a_re_based_rope_theta_is_read_from_the_export_and_served(tmp_path):
+    # Tunix takes rope_theta from its registered config for the model name, so
+    # a base re-based to a different theta would otherwise be served at the
+    # stock value and answer badly with nothing to say why.
+    (tmp_path / "config.json").write_text(
+        '{"_name_or_path":"Qwen/Qwen2.5-Math-1.5B","num_key_value_heads":2,'
+        '"rope_theta":300000}',
+        encoding="utf-8",
+    )
+
+    assert chat.model_settings_for_path(str(tmp_path)) == (
+        "qwen2.5-math-1.5b",
+        2,
+        300000.0,
+    )
+    served = chat.model_config(
+        str(tmp_path),
+        0,
+        use_flash_attention=False,
+        model_name="qwen2.5-math-1.5b",
+        mesh_shape=(1, 1),
+        rope_theta=300000.0,
+    )
+    assert served["rope_theta"] == 300000.0
+    # A config that does not name one must not invent a value.
+    assert "rope_theta" not in chat.model_config(
+        str(tmp_path),
+        0,
+        use_flash_attention=False,
+        model_name="qwen2.5-math-1.5b",
+        mesh_shape=(1, 1),
     )
 
 
@@ -418,7 +454,7 @@ def test_load_runtime_wires_qwen2_5_into_the_four_chip_mesh(monkeypatch):
     monkeypatch.setattr(
         chat,
         "model_settings_for_path",
-        lambda *_args: ("qwen2.5-math-1.5b", 2),
+        lambda *_args: ("qwen2.5-math-1.5b", 2, 300000.0),
     )
 
     for name, module in {
@@ -462,6 +498,7 @@ def test_load_runtime_wires_qwen2_5_into_the_four_chip_mesh(monkeypatch):
                     use_flash_attention=False,
                     model_name="qwen2.5-math-1.5b",
                     mesh_shape=(2, 2),
+                    rope_theta=300000.0,
                 )
             },
             "tokenizer": chat.tokenizer_config("/models/base"),

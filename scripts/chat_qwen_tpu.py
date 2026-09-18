@@ -219,6 +219,7 @@ def model_config(
     model_name: str,
     mesh_shape: tuple[int, int],
     lora_config: dict[str, Any] | None = None,
+    rope_theta: float | None = None,
 ) -> dict[str, Any]:
     """Return the inference-safe subset of the detected Qwen TPU settings."""
     config: dict[str, Any] = {
@@ -241,6 +242,8 @@ def model_config(
         "flash_attention_block_size": FLASH_ATTENTION_BLOCK_SIZE,
         "mesh": {"shape": list(mesh_shape), "axis_names": ["fsdp", "tp"]},
     }
+    if rope_theta is not None:
+        config["rope_theta"] = rope_theta
     if lora_config:
         # Adapters must be restored into the same geometry they were trained
         # under, so this is read from the recipe rather than given its own
@@ -251,13 +254,18 @@ def model_config(
 
 def model_settings_for_path(
     model_path: str, model_name_override: str | None = None
-) -> tuple[str, int]:
-    """Read the Tunix model name and tensor-parallel width from ``config.json``.
+) -> tuple[str, int, float | None]:
+    """Read the Tunix model name, tensor-parallel width and RoPE theta.
 
     ``_name_or_path`` is the source model id that Hugging Face preserves in a
     local config. Tunix uses its lowercase final path component as its model
     name. An explicit ``--model-name`` handles exported configs that omit the
     source id without introducing architecture-specific defaults here.
+
+    ``rope_theta`` is returned because Tunix takes it from its own registered
+    config for the model name, not from the export. A model whose base was
+    re-based to a different theta would otherwise be served at the stock value
+    and answer badly, with nothing in the output to say why.
     """
     config_path = Path(model_path) / "config.json"
     if not config_path.is_file():
@@ -283,7 +291,18 @@ def model_settings_for_path(
             f"Local model config {config_path} has invalid num_key_value_heads: "
             f"{num_kv_heads!r}"
         )
-    return source_name.rsplit("/", maxsplit=1)[-1].lower(), num_kv_heads
+    rope_theta = config.get("rope_theta")
+    if rope_theta is not None and (
+        not isinstance(rope_theta, (int, float)) or rope_theta <= 0
+    ):
+        raise ValueError(
+            f"Local model config {config_path} has invalid rope_theta: {rope_theta!r}"
+        )
+    return (
+        source_name.rsplit("/", maxsplit=1)[-1].lower(),
+        num_kv_heads,
+        float(rope_theta) if rope_theta is not None else None,
+    )
 
 
 def recipe_restore_settings(recipe_path: str) -> tuple[dict[str, Any] | None, str]:
@@ -575,7 +594,7 @@ def load_runtime(
     from tunix.generate import sampler as sampler_lib
     from tunix.utils import mesh as mesh_utils
 
-    model_name, num_kv_heads = model_settings_for_path(
+    model_name, num_kv_heads, rope_theta = model_settings_for_path(
         args.model_path, getattr(args, "model_name", None)
     )
     mesh_shape = mesh_shape_for_devices(tuple(jax.devices()), num_kv_heads)
@@ -600,6 +619,7 @@ def load_runtime(
             model_name=model_name,
             mesh_shape=mesh_shape,
             lora_config=lora_config,
+            rope_theta=rope_theta,
         ),
         "tokenizer": tokenizer_config(args.model_path),
     }
