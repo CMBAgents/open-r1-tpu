@@ -116,7 +116,9 @@ def test_is_gradable(gold: str, extraction_type: str, expected: bool) -> None:
     [
         ("15.", "15 cents.", True),  # a terse answer may omit the unit
         ("148.", "148 acres.", True),
+        ("15 ct.", "15 cents.", True),  # or abbreviate it
         ("15 dollars.", "15 cents.", False),  # but may not contradict it
+        ("20 bu.", "20 bl.", False),  # bushels are not barrels
         ("2", "$\\sqrt{2}$.", False),  # a root changes the value, not the unit
         ("8.", "8%.", False),
     ],

@@ -82,6 +82,8 @@ _UNIT_SYNONYMS = {
     "rods": "rd",
     "acres": "acre",
     "cents": "cent",
+    "ct": "cent",
+    "cts": "cent",
     "dollars": "dollar",
     "hour": "hr",
     "hours": "hr",
