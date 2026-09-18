@@ -5,6 +5,11 @@ Standalone, no history file: each prompt is a single fresh turn. Prints raw
 token ids for the templated prompt, the generated reply ids, and the top-5
 next-token logits at the first generation step, so we can see whether the
 model is actually conditioning on the prompt at all.
+
+Pass ``--float32`` for a Qwen2.5 export. Those carry attention biases in the
+hundreds, which overflow the plain attention path in bfloat16 and turn the
+logits non-finite, so greedy decoding returns token id 0 over and over. A
+bias-free Llama such as rowanai is unaffected and stays on the default.
 """
 
 import sys
@@ -29,11 +34,14 @@ PROMPTS = [
 
 
 def main():
-    model_dir = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_MODEL_DIR
-    quick = len(sys.argv) > 2 and sys.argv[2] == "--quick"
-    print(f"MODEL_DIR={model_dir} quick={quick}")
+    flags = {arg for arg in sys.argv[1:] if arg.startswith("--")}
+    positional = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
+    model_dir = positional[0] if positional else DEFAULT_MODEL_DIR
+    quick = "--quick" in flags
+    dtype = torch.float32 if "--float32" in flags else torch.bfloat16
+    print(f"MODEL_DIR={model_dir} quick={quick} dtype={dtype}")
     tokenizer = AutoTokenizer.from_pretrained(model_dir)
-    model = AutoModelForCausalLM.from_pretrained(model_dir, dtype=torch.bfloat16)
+    model = AutoModelForCausalLM.from_pretrained(model_dir, dtype=dtype)
     model.eval()
 
     print(
