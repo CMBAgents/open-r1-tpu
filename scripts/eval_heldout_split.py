@@ -53,6 +53,17 @@ def parse_args() -> argparse.Namespace:
             "without taking the chip again"
         ),
     )
+    parser.add_argument(
+        "--dtype",
+        default="float32",
+        help=(
+            "compute and load dtype for generation. float32 by default because "
+            "Qwen2.5-Math carries attention biases up to 21.5 (and weights to "
+            "402), which overflow the plain attention path in bfloat16: the "
+            "logits go non-finite and argmax returns token 0, so the "
+            "completion decodes as a run of '!'"
+        ),
+    )
     parser.add_argument("--max-new-tokens", type=int, default=512)
     parser.add_argument("--max-prompt-length", type=int, default=512)
     parser.add_argument("--batch-size", type=int, default=8)
@@ -90,9 +101,11 @@ def load_runtime(args: argparse.Namespace) -> tuple[Any, Any, Any]:
     model_config["model_source"] = "local"
     model_config["model_path"] = args.model_path
     # Rematerialisation only pays off in training, and flash attention is not
-    # needed at these lengths.
+    # needed at these lengths. Generation runs in float32: see --dtype.
     model_config["remat_config"] = "NONE"
     model_config["use_flash_attention"] = False
+    model_config["dtype"] = args.dtype
+    model_config["load_dtype"] = args.dtype
     model_config.pop("lora_config", None)
 
     mesh_config = model_config["mesh"]
@@ -186,7 +199,7 @@ def main() -> None:
         print(f"re-scoring {len(completions)} saved completions", flush=True)
         return report(args, rows, completions, started, stopped_flags=flags)
 
-    print(f"Loading {args.model_path} ...", flush=True)
+    print(f"Loading {args.model_path} in {args.dtype} ...", flush=True)
     mesh, tokenizer, sampler = load_runtime(args)
     eos_tokens = turn_end_ids(tokenizer)
     print(f"Turn-end token ids: {eos_tokens or 'none (cutting by string)'}", flush=True)
@@ -291,6 +304,14 @@ def report(
             print(f"    {domain}: {sum(hits)}/{len(hits)}")
     print(f"stopped at turn end: {stopped}/{len(records)}")
     print(f"completion chars: median {chars[len(chars) // 2]}, max {chars[-1]}")
+    # A completion of one repeated character means the logits went non-finite
+    # and argmax fell back to token 0. Silent when it happens, so say it loudly.
+    degenerate = sum(1 for r in records if len(set(r["completion"])) == 1)
+    if degenerate:
+        print(
+            f"WARNING: {degenerate}/{len(records)} completions are a single "
+            "repeated character; the generation is numerically broken"
+        )
 
 
 if __name__ == "__main__":
