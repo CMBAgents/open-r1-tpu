@@ -40,15 +40,27 @@ TURN_END = "<|im_end|>"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--recipe", required=True, help="the arm's SFT recipe")
-    parser.add_argument("--model-path", required=True, help="merged export dir")
+    parser.add_argument("--recipe", help="the arm's SFT recipe")
+    parser.add_argument("--model-path", help="merged export dir")
     parser.add_argument("--test-file", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--rescore",
+        action="store_true",
+        help=(
+            "re-score the completions already in --output instead of "
+            "generating, so a scoring change can be applied to a finished run "
+            "without taking the chip again"
+        ),
+    )
     parser.add_argument("--max-new-tokens", type=int, default=512)
     parser.add_argument("--max-prompt-length", type=int, default=512)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--limit", type=int, default=None, help="first N rows only")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not args.rescore and not (args.recipe and args.model_path):
+        parser.error("--recipe and --model-path are required unless --rescore")
+    return args
 
 
 @contextmanager
@@ -150,12 +162,6 @@ def cut_at_turn_end(text: str) -> tuple[str, bool]:
 
 def main() -> None:
     args = parse_args()
-    from open_r1_tpu.sft.heldout_match import (
-        is_gradable,
-        matches_lenient,
-        matches_strict,
-    )
-
     rows = [
         json.loads(line)
         for line in Path(args.test_file).read_text(encoding="utf-8").splitlines()
@@ -165,6 +171,21 @@ def main() -> None:
         rows = rows[: args.limit]
     print(f"{len(rows)} held-out rows from {args.test_file}", flush=True)
 
+    started = time.monotonic()
+    if args.rescore:
+        previous = [
+            json.loads(line)
+            for line in Path(args.output).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        if [record["id"] for record in previous] != [row["id"] for row in rows]:
+            raise SystemExit(f"{args.output} does not line up with {args.test_file}")
+        # Already cut at the turn-end marker when it was written.
+        completions = [record["completion"] for record in previous]
+        flags = [bool(record["stopped_at_turn_end"]) for record in previous]
+        print(f"re-scoring {len(completions)} saved completions", flush=True)
+        return report(args, rows, completions, started, stopped_flags=flags)
+
     print(f"Loading {args.model_path} ...", flush=True)
     mesh, tokenizer, sampler = load_runtime(args)
     eos_tokens = turn_end_ids(tokenizer)
@@ -172,7 +193,6 @@ def main() -> None:
 
     prompts = [render(tokenizer, row["messages"][0]["content"]) for row in rows]
     completions: list[str] = []
-    started = time.monotonic()
     with tunix_mesh_context(mesh):
         for start in range(0, len(prompts), args.batch_size):
             batch = prompts[start : start + args.batch_size]
@@ -197,9 +217,35 @@ def main() -> None:
                 flush=True,
             )
 
+    return report(args, rows, completions, started)
+
+
+def report(
+    args: argparse.Namespace,
+    rows: list[dict[str, Any]],
+    completions: list[str],
+    started: float,
+    *,
+    stopped_flags: list[bool] | None = None,
+) -> None:
+    """Score the completions, write the records, and print the summary.
+
+    ``stopped_flags`` carries the turn-end verdicts forward when re-scoring:
+    the saved completions were already cut, so it cannot be recovered from the
+    text.
+    """
+    from open_r1_tpu.sft.heldout_match import (
+        is_gradable,
+        matches_lenient,
+        matches_strict,
+    )
+
     records = []
-    for row, completion in zip(rows, completions, strict=True):
-        text, stopped = cut_at_turn_end(completion)
+    for index, (row, completion) in enumerate(zip(rows, completions, strict=True)):
+        if stopped_flags is None:
+            text, stopped = cut_at_turn_end(completion)
+        else:
+            text, stopped = completion, stopped_flags[index]
         gold = row["messages"][1]["content"]
         gradable = is_gradable(row)
         records.append(
@@ -236,7 +282,7 @@ def main() -> None:
         by_domain[record["domain"]].append(int(bool(record["correct_strict"])))
 
     print(f"\nwrote {out_path}")
-    print(f"generated {len(records)} rows in {time.monotonic() - started:.0f}s")
+    print(f"scored {len(records)} rows in {time.monotonic() - started:.0f}s")
     print(f"gradable: {len(graded)}/{len(records)}")
     if graded:
         print(f"  strict  {strict}/{len(graded)} = {100 * strict / len(graded):.1f}%")

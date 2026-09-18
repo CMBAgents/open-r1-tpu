@@ -109,3 +109,37 @@ def test_final_line_skips_a_trailing_line_without_digits() -> None:
 )
 def test_is_gradable(gold: str, extraction_type: str, expected: bool) -> None:
     assert is_gradable(row(gold, extraction_type=extraction_type)) is expected
+
+
+@pytest.mark.parametrize(
+    ("completion", "gold", "expected"),
+    [
+        ("15.", "15 cents.", True),  # a terse answer may omit the unit
+        ("148.", "148 acres.", True),
+        ("15 dollars.", "15 cents.", False),  # but may not contradict it
+        ("2", "$\\sqrt{2}$.", False),  # a root changes the value, not the unit
+        ("8.", "8%.", False),
+    ],
+)
+def test_strict_tolerates_a_missing_unit_but_not_a_wrong_one(
+    completion: str, gold: str, expected: bool
+) -> None:
+    assert matches_strict(completion, gold) is expected
+
+
+def test_lenient_is_a_superset_of_strict() -> None:
+    # Working before the answer inserts numbers between the gold's values, so
+    # lenient counts occurrences rather than looking for an unbroken run.
+    cases = [
+        ("working 5 then 9\n15.", "15 cents."),
+        ("4 hr. 44 min. 16 sec.", "4 hr. 44 min. 16 sec."),
+        ("8695.", "8695."),
+    ]
+    for completion, gold in cases:
+        assert matches_strict(completion, gold)
+        assert matches_lenient(completion, gold)
+
+
+def test_is_gradable_rejects_an_equation_whose_exponents_read_as_values() -> None:
+    equation = "$$ = \\frac{x^2}{b^2 - x^2} + \\frac{y^2}{b^2} = 1. $$"
+    assert not is_gradable(row(equation, extraction_type="answer_only"))

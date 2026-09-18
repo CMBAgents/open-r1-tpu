@@ -21,6 +21,7 @@ Units are kept as comparison tokens, so ``8%`` never matches ``8``.
 
 from __future__ import annotations
 
+import collections
 import re
 import unicodedata
 from fractions import Fraction
@@ -63,6 +64,9 @@ _THOUSANDS = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")
 _FILLER = {"and", "or", "the", "is", "are", "a", "an", "of", "ans"}
 # Macros that change a value rather than its presentation.
 _VALUE_MACROS = ("sqrt", "pi", "infty", "log", "ln", "sin", "cos", "tan", "deg")
+# Tokens that change the value rather than naming its unit; a prediction may
+# omit "cents" but may not omit a square root or a percent sign.
+_VALUE_TOKENS = {"%", *_VALUE_MACROS}
 
 # Folded so that a prediction saying "feet" matches a gold saying "ft."
 _UNIT_SYNONYMS = {
@@ -274,34 +278,37 @@ def matches_strict(completion: str, gold: str) -> bool:
     if normalise(candidate) == normalise(gold):
         return True
     gold_units, candidate_units = _units(gold), _units(candidate)
-    # A percentage is a different quantity from a bare number, so it has to
-    # agree in both directions. Currency and unit names do not: the gold writes
-    # them out and a terse model is allowed to omit them.
-    if ("%" in gold_units) != ("%" in candidate_units):
+    # A percentage, a square root and the like change the value rather than
+    # naming its unit, so these have to agree in both directions.
+    if gold_units & _VALUE_TOKENS != candidate_units & _VALUE_TOKENS:
         return False
-    if gold_units and not gold_units <= candidate_units:
+    # Otherwise the prediction only has to avoid *contradicting* the gold's
+    # units. An answer key writes "15 cents." where a terse model says "15.",
+    # and marking that wrong would measure verbosity rather than arithmetic --
+    # but "15 dollars." names a different quantity and is still rejected.
+    if gold_units and candidate_units and not (gold_units & candidate_units):
         return False
     return _values_agree(numbers(candidate), numbers(gold))
 
 
 def matches_lenient(completion: str, gold: str) -> bool:
-    """The gold's values appear somewhere in the completion, in order."""
+    """The gold's values appear anywhere in the completion.
+
+    Strictly looser than :func:`matches_strict`, so the gap between the two is
+    only ever answer discipline. Working before the answer adds numbers in
+    between, so this counts occurrences rather than looking for a run.
+    """
     if not gold or not gold.strip():
         return False
+    if matches_strict(completion, gold):
+        return True
     gold_values = numbers(gold)
     if not gold_values:
         return normalise(gold) in normalise(completion)
-    found = numbers(completion or "")
-    if not found:
-        return False
-    # Subsequence search: the gold's values in order, anywhere in the text.
-    position = 0
-    for value in gold_values:
-        while position < len(found) and found[position] != value:
-            position += 1
-        if position == len(found):
+    available = collections.Counter(numbers(completion or ""))
+    for value, wanted in collections.Counter(gold_values).items():
+        if available[value] < wanted:
             return False
-        position += 1
     return True
 
 
@@ -320,6 +327,10 @@ def is_gradable(row: dict[str, Any]) -> bool:
     if len(gold) > MAX_GRADABLE_GOLD_CHARS or "\n" in gold:
         return False
     if not re.search(r"\d", gold):
+        return False
+    # An equation or a powered expression is a worked result, not an answer-key
+    # entry: its exponents read as values and would be compared as answers.
+    if "=" in gold or "^" in gold:
         return False
     if _PROSE.search(gold):
         return False
