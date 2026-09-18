@@ -81,7 +81,6 @@ training:
     - tpu
     - sft
     - full-finetune
-    - pre1905
     - rowanai
     resume: allow
     save_code: false

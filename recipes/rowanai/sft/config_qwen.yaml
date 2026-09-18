@@ -79,7 +79,6 @@ training:
     - tpu
     - sft
     - full-finetune
-    - pre1905
     - qwen
     resume: allow
     save_code: false
