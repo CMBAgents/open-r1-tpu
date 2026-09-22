@@ -37,8 +37,9 @@ and so each is unit-testable on its own without a rollout.
 
 from __future__ import annotations
 
+import functools
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 REASONING_START = "<think>"
@@ -191,3 +192,49 @@ def correctness_reward(
 
 
 DEFAULT_REWARD_FNS = (format_reward, correctness_reward)
+
+RewardFn = Callable[..., list[float]]
+
+
+def truncate_at_stop_strings(text: str, stop_strings: Sequence[str]) -> str:
+    """Cut ``text`` at the earliest occurrence of any stop string."""
+    end = len(text)
+    for stop in stop_strings:
+        index = text.find(stop)
+        if index != -1:
+            end = min(end, index)
+    return text[:end]
+
+
+def with_completion_stop_strings(
+    reward_fns: Sequence[RewardFn], stop_strings: Sequence[str] | None
+) -> list[RewardFn]:
+    """Wrap reward functions so each scores completions cut at a stop string.
+
+    For a model whose assistant turn-end marker is not a single token (the
+    local ``rowanai`` base spells ``<|im_end|>`` with seven ordinary tokens)
+    the rollout cannot stop on the marker, so a completion carries whatever
+    the model wrote after it. Scoring only the text before the marker keeps
+    the reward about the answer the model actually gave. Each wrapper keeps
+    the wrapped function's ``__name__`` because Tunix's reward manager logs
+    per-function metrics under it. With no stop strings the functions are
+    returned as they are.
+    """
+    if not stop_strings:
+        return list(reward_fns)
+    stops = list(stop_strings)
+    wrapped: list[RewardFn] = []
+    for reward_fn in reward_fns:
+
+        def wrapper(
+            prompts: Sequence[str],
+            completions: Sequence[str],
+            *,
+            _reward_fn: RewardFn = reward_fn,
+            **extra: Any,
+        ) -> list[float]:
+            cut = [truncate_at_stop_strings(text, stops) for text in completions]
+            return _reward_fn(prompts=prompts, completions=cut, **extra)
+
+        wrapped.append(functools.wraps(reward_fn)(wrapper))
+    return wrapped

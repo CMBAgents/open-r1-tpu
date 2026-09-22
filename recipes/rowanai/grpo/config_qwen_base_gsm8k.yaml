@@ -1,0 +1,127 @@
+# GRPO on the raw Qwen2.5-1.5B base (the general-purpose base, not the Math
+# model; no SFT first), prompts from the pre-1905-safe GSM8K subset, k = 8
+# rollouts per prompt, one v6e-1 chip. The comparison arm to
+# config_rowanai_gsm8k.yaml: same data, rewards, LoRA, optimizer, budget and
+# rollout settings; only the model and tokenizer sections differ.
+#
+# STARTING POINT IS THE RAW BASE. The model section is config_qwen_base_clean
+# _v4_worked.yaml's plus the LoRA adapter: actor and frozen KL reference are
+# both models/Qwen2.5-1.5B, loaded twice. To start from the worked-solution
+# SFT export instead, override
+# model.model_path=artifacts/rowanai-clean-worked/v4-qwen-base/merged.
+#
+# STOPPING. Unlike rowanai, this base has <|im_end|> as a real special token
+# and ships its own ChatML template, so the default stop token
+# (assistant_turn_end_id) is right and no rollout override is needed.
+#
+# See config_rowanai_gsm8k.yaml's header for the prompt set and the budget.
+model:
+  model_name: qwen2.5-1.5b
+  model_id: Qwen/Qwen2.5-1.5B
+  model_source: local
+  model_path: models/Qwen2.5-1.5B
+  model_download_path: /tmp/open-r1-tpu/models/Qwen2.5-1.5B
+  intermediate_ckpt_dir: /tmp/open-r1-tpu/intermediate_ckpt/qwen-base-grpo
+  rng_seed: 42
+  model_display: false
+  dtype: bfloat16
+  load_dtype: bfloat16
+  remat_config: DECODER
+  use_flash_attention: true
+  flash_attention_block_size: 1024
+  rope_theta: 1000000
+  lora_config:
+    module_path: ".*q_proj|.*k_proj|.*v_proj|.*o_proj|.*gate_proj|.*up_proj|.*down_proj"
+    rank: 64
+    alpha: 64.0
+  mesh:
+    shape: [1, 1]
+    axis_names: [fsdp, tp]
+
+tokenizer:
+  tokenizer_path: models/Qwen2.5-1.5B
+  tokenizer_type: huggingface
+  add_bos: false
+  add_eos: false
+  # The base ships its own ChatML template and real <|im_start|>/<|im_end|>
+  # special tokens; the system prompt below replaces its default one.
+  chat_template: null
+
+dataset:
+  name: json
+  config: null
+  train_split: train
+  data_files: data/gsm8k-pre1905/train.jsonl
+  question_column: prompt
+  answer_column: solution
+  batch_size: 4
+  max_prompt_length: 512
+  num_train_epochs: 5
+  max_examples: null
+  # 2% of the prompts are split off (seed below) and capped at 64: the eval
+  # set Tunix samples every training.eval_every_n_steps. The other 829-row
+  # test.jsonl stays untouched for the final held-out score.
+  eval_fraction: 0.02
+  eval_max_examples: 64
+  seed: 42
+  system_prompt_file: recipes/rowanai/grpo/system_prompt.txt
+
+optimizer:
+  learning_rate: 1.0e-5
+  warmup_ratio: 0.1
+  min_lr_ratio: 0.0
+  b1: 0.9
+  b2: 0.99
+  eps: 1.0e-8
+  weight_decay: 0.1
+  max_grad_norm: 0.1
+
+training:
+  max_steps: 500
+  checkpoint_dir: artifacts/rowanai-grpo-gsm8k/v1-qwen-base/checkpoints
+  checkpointing_options:
+    save_interval_steps: 50
+    max_to_keep: 4
+    enable_async_checkpointing: false
+    timeout_secs: 1200
+  # Every 100 steps (and at step 0): 64 eval prompts x 8 rollouts = 512
+  # completions per eval, about 16 training steps' worth of generation each
+  # time. Their reward means go to W&B under the eval mode and the text goes
+  # to eval_rollouts_path, one JSON line per completion.
+  eval_every_n_steps: 100
+  eval_rollouts_path: artifacts/rowanai-grpo-gsm8k/v1-qwen-base/eval_rollouts.jsonl
+  metrics_log_dir: artifacts/rowanai-grpo-gsm8k/v1-qwen-base/logs
+  project_name: open-r1-tpu
+  run_name: rowanai-grpo-gsm8k-v1-qwen-base
+  flush_every_n_steps: 5
+  wandb:
+    enabled: true
+    entity: null
+    mode: online
+    group: rowanai-grpo-gsm8k
+    job_type: grpo
+    tags: [tpu, grpo, rl, qwen, general-base, gsm8k, v6e-1]
+    resume: allow
+    save_code: false
+  offload_to_cpu: false
+
+grpo:
+  # k = 8 rollouts per prompt.
+  num_generations: 8
+  num_iterations: 1
+  beta: 0.08
+  epsilon: 0.2
+
+rollout:
+  max_prompt_length: 512
+  max_tokens_to_generate: 1024
+  kv_cache_size: 1792
+  temperature: 0.9
+  top_p: 1.0
+  top_k: 50
+
+export:
+  enabled: false
+  i_have_verified_qwen2_lora_export: false
+  overwrite: true
+  output_dir: artifacts/rowanai-grpo-gsm8k/v1-qwen-base/merged

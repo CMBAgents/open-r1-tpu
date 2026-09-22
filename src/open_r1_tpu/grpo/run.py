@@ -29,20 +29,41 @@ policy updates against (README's "Checkpoints and GRPO handoff" section).
 Both loads go through ``model.loading.create_model``, the same helper
 ``sft.run.run`` uses for SFT, so a change to how this project loads a local
 safetensors checkpoint cannot drift between the two training stages.
+
+Generation stops on the first token of the tokenizer's assistant turn-end
+sequence (Qwen's ``<|im_end|>``) unless the recipe sets
+``rollout.eos_token_ids``. That override exists for a model whose turn-end
+marker is spelled with ordinary tokens (the local ``rowanai`` Llama base:
+``<|im_end|>`` is seven tokens starting with ``<``, ID 29, which would also
+stop generation at the ``<`` of ``<think>``). Tunix's sampler matches single
+token IDs only, so such a model stops on its document EOS instead, and
+``rollout.completion_stop_strings`` cuts each completion at the first
+occurrence of the marker before the reward functions see it.
+
+With ``dataset.eval_fraction`` set, Tunix samples the held-out prompts every
+``training.eval_every_n_steps`` (including step 0) and logs their reward
+means under the eval mode, but throws the completion text away. When
+``training.eval_rollouts_path`` is set, every eval completion is appended to
+that JSONL file with its prompt, gold answer and per-function rewards, so how
+the model is responding can be read, not just scored.
 """
 
 from __future__ import annotations
 
 import argparse
 import copy
+import json
 import logging
 import math
+import os
+import threading
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from open_r1_tpu.core.config import load_config
 from open_r1_tpu.core.logging import LOG_LEVELS, configure_logging
 from open_r1_tpu.grpo.data import load_grpo_prompts
-from open_r1_tpu.grpo.rewards import DEFAULT_REWARD_FNS
+from open_r1_tpu.grpo.rewards import DEFAULT_REWARD_FNS, with_completion_stop_strings
 from open_r1_tpu.model.export import export_model
 from open_r1_tpu.model.loading import absolute_checkpoint_dir, create_model
 from open_r1_tpu.model.metrics import metrics_logger_options
@@ -119,6 +140,16 @@ def validate_grpo_config(config: dict[str, Any]) -> None:
         raise ValueError("training.max_steps must be a positive integer")
     if not isinstance(config["training"].get("checkpoint_dir"), str):
         raise ValueError("training.checkpoint_dir must be a string path")
+    eval_rollouts_path = config["training"].get("eval_rollouts_path")
+    if eval_rollouts_path is not None and (
+        not isinstance(eval_rollouts_path, str) or not eval_rollouts_path
+    ):
+        raise ValueError("training.eval_rollouts_path must be a non-empty string")
+    if eval_rollouts_path and not float(config["dataset"].get("eval_fraction", 0.0)):
+        raise ValueError(
+            "training.eval_rollouts_path needs dataset.eval_fraction > 0: "
+            "there are no eval rollouts to record otherwise"
+        )
 
     rollout = config["rollout"]
     for key in ("max_prompt_length", "max_tokens_to_generate", "kv_cache_size"):
@@ -136,6 +167,28 @@ def validate_grpo_config(config: dict[str, Any]) -> None:
         raise ValueError(
             "rollout.kv_cache_size must be at least "
             "max_prompt_length + max_tokens_to_generate"
+        )
+
+    eos_token_ids = rollout.get("eos_token_ids")
+    if eos_token_ids is not None and (
+        not isinstance(eos_token_ids, list)
+        or not eos_token_ids
+        or any(
+            isinstance(token, bool) or not isinstance(token, int) or token < 0
+            for token in eos_token_ids
+        )
+    ):
+        raise ValueError(
+            "rollout.eos_token_ids must be a non-empty list of non-negative integers"
+        )
+    stop_strings = rollout.get("completion_stop_strings")
+    if stop_strings is not None and (
+        not isinstance(stop_strings, list)
+        or not stop_strings
+        or any(not isinstance(value, str) or not value for value in stop_strings)
+    ):
+        raise ValueError(
+            "rollout.completion_stop_strings must be a non-empty list of strings"
         )
 
     grpo = config["grpo"]
@@ -161,6 +214,58 @@ def validate_grpo_config(config: dict[str, Any]) -> None:
             "Tunix/Orbax LoRA checkpoint under training.checkpoint_dir "
             "(actor/<step>/model_params) is the durable artifact."
         )
+
+
+def build_rollout_recorder(
+    path: str, reward_fns: Sequence[Callable[..., list[float]]]
+) -> Callable[..., int]:
+    """Return ``record(prompts, completions, rewards, step, mode, **columns)``.
+
+    Each call appends one JSON line per completion to ``path``: the step and
+    mode, the rendered prompt, every extra dataset column Tunix handed the
+    reward manager (``question`` and ``answer`` here), the raw completion,
+    the summed reward Tunix used, and each reward function's own score under
+    its ``__name__`` (recomputed on the strings; the functions are pure and
+    cheap). Kept free of Tunix so it is unit-testable; ``run`` wires it into
+    the learner's eval path.
+    """
+    lock = threading.Lock()
+
+    def record(
+        prompts: Sequence[str],
+        completions: Sequence[str],
+        rewards: Sequence[float],
+        step: int | None,
+        mode: str,
+        **columns: Any,
+    ) -> int:
+        columns = {
+            key: list(value)
+            for key, value in columns.items()
+            if isinstance(value, (list, tuple)) and len(value) == len(completions)
+        }
+        per_fn = {
+            fn.__name__: fn(prompts=prompts, completions=completions, **columns)
+            for fn in reward_fns
+        }
+        rows = []
+        for index, (prompt, completion) in enumerate(
+            zip(prompts, completions, strict=True)
+        ):
+            row = {"step": step, "mode": mode, "prompt": prompt}
+            row.update({key: value[index] for key, value in columns.items()})
+            row["completion"] = completion
+            row["reward"] = float(rewards[index])
+            row["rewards"] = {
+                name: float(scores[index]) for name, scores in per_fn.items()
+            }
+            rows.append(json.dumps(row, ensure_ascii=False))
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        with lock, open(path, "a", encoding="utf-8") as handle:
+            handle.write("\n".join(rows) + "\n")
+        return len(rows)
+
+    return record
 
 
 def run(config: dict[str, Any]) -> None:
@@ -198,7 +303,13 @@ def run(config: dict[str, Any]) -> None:
     tokenizer = model_utils.create_tokenizer(config["tokenizer"], tokenizer_path)
     if config["tokenizer"].get("chat_template"):
         tokenizer.tokenizer.chat_template = config["tokenizer"]["chat_template"]
-    eos_token_id = assistant_turn_end_id(tokenizer)
+    rollout = config["rollout"]
+    eos_token_ids = [int(token) for token in rollout.get("eos_token_ids") or ()] or [
+        assistant_turn_end_id(tokenizer)
+    ]
+    reward_fns = with_completion_stop_strings(
+        DEFAULT_REWARD_FNS, rollout.get("completion_stop_strings")
+    )
 
     train_ds, eval_ds = load_grpo_prompts(config["dataset"], tokenizer)
 
@@ -209,7 +320,6 @@ def run(config: dict[str, Any]) -> None:
     )
     metrics = metrics_logger_options(config, metrics_logger)
 
-    rollout = config["rollout"]
     cluster_config = rl_cluster_lib.ClusterConfig(
         role_to_mesh={
             rl_cluster_lib.Role.ACTOR: mesh,
@@ -239,7 +349,7 @@ def run(config: dict[str, Any]) -> None:
             temperature=float(rollout.get("temperature", 0.9)),
             top_p=rollout.get("top_p"),
             top_k=rollout.get("top_k"),
-            eos_tokens=[eos_token_id],
+            eos_tokens=eos_token_ids,
         ),
     )
 
@@ -257,19 +367,51 @@ def run(config: dict[str, Any]) -> None:
         tokenizer=tokenizer,
         cluster_config=cluster_config,
     )
-    grpo_trainer = GRPOLearner(
+    eval_rollouts_path = training.get("eval_rollouts_path")
+    if eval_rollouts_path:
+        record = build_rollout_recorder(eval_rollouts_path, reward_fns)
+
+        class RecordingGRPOLearner(GRPOLearner):
+            """GRPOLearner that keeps the text of every eval completion.
+
+            ``RLLearner._compute_rewards(prompts, completions, mode, step=None,
+            **columns)`` is the one place in the pinned Tunix that sees the
+            completion strings together with the mode, so it is the seam
+            used; the pinned commit's signature is mirrored exactly and
+            checked at import by the smoke test.
+            """
+
+            def _compute_rewards(self, prompts, completions, mode, step=None, **kw):
+                rewards = super()._compute_rewards(
+                    prompts, completions, mode, step=step, **kw
+                )
+                if str(getattr(mode, "name", mode)).upper().endswith("EVAL"):
+                    if step is None:
+                        step = int(self.rl_engine.actor_trainer.train_steps)
+                    record(prompts, completions, list(rewards), step, "eval", **kw)
+                return rewards
+
+        learner_cls: type[GRPOLearner] = RecordingGRPOLearner
+    else:
+        learner_cls = GRPOLearner
+
+    grpo_trainer = learner_cls(
         rl_engine=rl_cluster,
         algo_config=grpo_config,
-        reward_fns=list(DEFAULT_REWARD_FNS),
+        reward_fns=reward_fns,
     )
 
     LOGGER.info(
-        "Starting GRPO: model=%s mesh=%s max_steps=%d num_generations=%d beta=%s",
+        "Starting GRPO: model=%s mesh=%s max_steps=%d num_generations=%d beta=%s "
+        "eos_token_ids=%s completion_stop_strings=%s eval_rollouts_path=%s",
         config["model"]["model_id"],
         mesh_shape,
         max_steps,
         grpo_config.num_generations,
         grpo_config.beta,
+        eos_token_ids,
+        rollout.get("completion_stop_strings"),
+        eval_rollouts_path,
     )
     # Same reason as sft.run.run: Tunix 0.1.8's PeftTrainer (which
     # GRPOLearner's actor update goes through) still reads JAX's legacy

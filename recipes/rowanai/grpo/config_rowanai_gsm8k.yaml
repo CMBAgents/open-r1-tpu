@@ -1,0 +1,155 @@
+# GRPO on the raw rowanai base (no SFT first), prompts from the pre-1905-safe
+# GSM8K subset, k = 8 rollouts per prompt, one v6e-1 chip.
+#
+# STARTING POINT IS THE RAW BASE. The model section is config_rowanai_clean_v4
+# _worked.yaml's, plus the LoRA adapter the GRPO actor trains: the actor and
+# the frozen KL reference are both models/rowanai, the pre-1905 Llama base,
+# loaded twice. The base has never seen ChatML, <think> tags or \boxed{}, so
+# the format reward has to teach the shape from nothing (R1-Zero style). To
+# start from the worked-solution SFT export instead, which already writes
+# ChatML turns, override model.model_path=artifacts/rowanai-clean-worked/v4-rowanai/merged
+# (staged from gs://.../artifacts/rowanai-clean-worked/v4-rowanai/merged);
+# nothing else changes.
+#
+# PROMPT SET. data/gsm8k-pre1905/train.jsonl: the 4,760 GSM8K train problems
+# that survived the anachronism filter (cars, phones, pizza and the like are
+# gone), two columns: prompt (the bare question) and solution (the bare gold
+# integer from GSM8K's "#### N" line, thousands separators removed, which
+# grpo/rewards.py's exact string match needs). test.jsonl (829 rows) is the
+# held-out set for evaluation afterwards and is not read here.
+#
+# STOPPING. rowanai's <|im_end|> is seven ordinary tokens starting with "<"
+# (ID 29), and Tunix's sampler stops on single token IDs only. The default
+# stop token, assistant_turn_end_id, would be that "<" and would also end
+# generation at the "<" of <think>. So the rollout stops on the document EOS
+# (<|endoftext|>, ID 0) or the token cap, and completion_stop_strings cuts
+# each completion at <|im_end|> before scoring, so a model that learns to
+# close its turn is not marked down for what follows.
+#
+# BUDGET. 4 prompts x 8 rollouts = 32 sequences per step, each up to 1,024
+# new tokens (GSM8K working is short; the DAPO recipe's 4,096 is far more than
+# needed and would quarter the batch that fits). 4,760 / 4 = 1,190 steps per
+# epoch, so max_steps 500 is under half an epoch. Nothing here has been timed
+# or measured for HBM on a chip: the smoke test in the runbook is the gate.
+model:
+  model_name: rowanai
+  model_id: rowanai
+  model_source: local
+  model_path: models/rowanai
+  model_download_path: /tmp/open-r1-tpu/models/rowanai
+  intermediate_ckpt_dir: /tmp/open-r1-tpu/intermediate_ckpt/rowanai-grpo
+  rng_seed: 42
+  model_display: false
+  dtype: bfloat16
+  load_dtype: bfloat16
+  remat_config: DECODER
+  use_flash_attention: true
+  flash_attention_block_size: 1024
+  rope_theta: 50000
+  lora_config:
+    module_path: ".*q_proj|.*k_proj|.*v_proj|.*o_proj|.*gate_proj|.*up_proj|.*down_proj"
+    rank: 64
+    alpha: 64.0
+  mesh:
+    shape: [1, 1]
+    axis_names: [fsdp, tp]
+  architecture: llama
+
+tokenizer:
+  tokenizer_path: models/rowanai
+  tokenizer_type: huggingface
+  add_bos: false
+  add_eos: false
+  # ChatML markers use existing ordinary tokens; vocabulary and weights stay fixed.
+  chat_template: "{% for message in messages %}{{ '<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>\\n' }}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}"
+
+dataset:
+  name: json
+  config: null
+  train_split: train
+  data_files: data/gsm8k-pre1905/train.jsonl
+  question_column: prompt
+  answer_column: solution
+  batch_size: 4
+  # Drops a row whose rendered prompt (system prompt + question) exceeds
+  # rollout.max_prompt_length. GSM8K questions are short; expect no drops.
+  max_prompt_length: 512
+  num_train_epochs: 5
+  max_examples: null
+  # 2% of the prompts are split off (seed below) and capped at 64: the eval
+  # set Tunix samples every training.eval_every_n_steps. The other 829-row
+  # test.jsonl stays untouched for the final held-out score.
+  eval_fraction: 0.02
+  eval_max_examples: 64
+  seed: 42
+  system_prompt_file: recipes/rowanai/grpo/system_prompt.txt
+
+optimizer:
+  # Above the DAPO recipe's 3e-6: that actor already wrote the format and
+  # only had its policy reshaped, while this LoRA has to move a raw base to a
+  # new output shape within a few hundred steps. Clip and decay as there.
+  learning_rate: 1.0e-5
+  warmup_ratio: 0.1
+  min_lr_ratio: 0.0
+  b1: 0.9
+  b2: 0.99
+  eps: 1.0e-8
+  weight_decay: 0.1
+  max_grad_norm: 0.1
+
+training:
+  max_steps: 500
+  checkpoint_dir: artifacts/rowanai-grpo-gsm8k/v1-rowanai/checkpoints
+  checkpointing_options:
+    save_interval_steps: 50
+    max_to_keep: 4
+    enable_async_checkpointing: false
+    timeout_secs: 1200
+  # Every 100 steps (and at step 0): 64 eval prompts x 8 rollouts = 512
+  # completions per eval, about 16 training steps' worth of generation each
+  # time. Their reward means go to W&B under the eval mode and the text goes
+  # to eval_rollouts_path, one JSON line per completion.
+  eval_every_n_steps: 100
+  eval_rollouts_path: artifacts/rowanai-grpo-gsm8k/v1-rowanai/eval_rollouts.jsonl
+  metrics_log_dir: artifacts/rowanai-grpo-gsm8k/v1-rowanai/logs
+  project_name: open-r1-tpu
+  run_name: rowanai-grpo-gsm8k-v1-rowanai
+  flush_every_n_steps: 5
+  wandb:
+    enabled: true
+    entity: null
+    mode: online
+    group: rowanai-grpo-gsm8k
+    job_type: grpo
+    tags: [tpu, grpo, rl, rowanai, gsm8k, v6e-1]
+    resume: allow
+    save_code: false
+  offload_to_cpu: false
+
+grpo:
+  # k = 8 rollouts per prompt.
+  num_generations: 8
+  num_iterations: 1
+  beta: 0.08
+  epsilon: 0.2
+
+rollout:
+  max_prompt_length: 512
+  max_tokens_to_generate: 1024
+  # At least max_prompt_length + max_tokens_to_generate, plus 256 headroom.
+  kv_cache_size: 1792
+  temperature: 0.9
+  top_p: 1.0
+  top_k: 50
+  # See STOPPING in the header: document EOS, not the first token of <|im_end|>.
+  eos_token_ids: [0]
+  completion_stop_strings: ['<|im_end|>']
+
+export:
+  # The LoRA checkpoint under training.checkpoint_dir is the artifact; the
+  # merged-LoRA exporter is unverified for this model family (see the
+  # validator's message if you flip this).
+  enabled: false
+  i_have_verified_qwen2_lora_export: false
+  overwrite: true
+  output_dir: artifacts/rowanai-grpo-gsm8k/v1-rowanai/merged

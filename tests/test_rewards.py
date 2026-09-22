@@ -140,3 +140,50 @@ def test_correctness_reward_rejects_mismatched_lengths():
 
     with pytest.raises(ValueError):
         correctness_reward(["p", "p"], ["a", "b"], ["only one gold"])
+
+
+# ---------------------------------------------------------------------------
+# with_completion_stop_strings
+# ---------------------------------------------------------------------------
+
+
+def test_truncate_at_stop_strings_cuts_at_earliest_match():
+    from open_r1_tpu.grpo.rewards import truncate_at_stop_strings
+
+    text = "<think>x</think>\\boxed{4}<|im_end|>\n<|im_start|>user\nmore"
+    assert (
+        truncate_at_stop_strings(text, ["<|im_end|>"]) == "<think>x</think>\\boxed{4}"
+    )
+    assert truncate_at_stop_strings(text, ["<|im_start|>", "<|im_end|>"]) == (
+        "<think>x</think>\\boxed{4}"
+    )
+    assert truncate_at_stop_strings("no marker", ["<|im_end|>"]) == "no marker"
+
+
+def test_with_completion_stop_strings_scores_only_the_text_before_the_marker():
+    from open_r1_tpu.grpo.rewards import with_completion_stop_strings
+
+    good = "<think>2+2</think>\\boxed{4}"
+    # After the marker: a second <think> and a wrong boxed answer, which
+    # would ruin both rewards if scored.
+    tail = "<|im_end|>\n<|im_start|>assistant\n<think>again</think>\\boxed{9}"
+    wrapped = with_completion_stop_strings(
+        [format_reward, correctness_reward], ["<|im_end|>"]
+    )
+    assert [fn.__name__ for fn in wrapped] == ["format_reward", "correctness_reward"]
+    scores = [
+        fn(prompts=["p"], completions=[good + tail], answer=["4"])[0] for fn in wrapped
+    ]
+    assert scores == [3.0, 3.0]
+    raw = [
+        fn(prompts=["p"], completions=[good + tail], answer=["4"])[0]
+        for fn in (format_reward, correctness_reward)
+    ]
+    assert raw != [3.0, 3.0]
+
+
+def test_with_completion_stop_strings_without_stops_returns_the_functions_unchanged():
+    from open_r1_tpu.grpo.rewards import with_completion_stop_strings
+
+    assert with_completion_stop_strings([format_reward], None) == [format_reward]
+    assert with_completion_stop_strings([format_reward], []) == [format_reward]
