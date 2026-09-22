@@ -34,6 +34,14 @@ def parse_args() -> argparse.Namespace:
         "--step", type=int, required=True, help="checkpoint step to restore"
     )
     parser.add_argument("--output", required=True, help="merged export directory")
+    parser.add_argument(
+        "--checkpoint-dir",
+        default=None,
+        help=(
+            "Checkpoint root to restore from, overriding the recipe's "
+            "training.checkpoint_dir."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -82,7 +90,7 @@ def main() -> None:
     print(f"Loading base model from {config['model']['model_path']} ...", flush=True)
     model, local_model_path = create_model(config, mesh)
 
-    checkpoint_dir = config["training"]["checkpoint_dir"]
+    checkpoint_dir = args.checkpoint_dir or config["training"]["checkpoint_dir"]
     print(f"Restoring step {args.step} from {checkpoint_dir} ...", flush=True)
     restored = restore_checkpoint(model, checkpoint_dir, args.step)
     print(f"Restored full model parameters from step {restored}.", flush=True)
