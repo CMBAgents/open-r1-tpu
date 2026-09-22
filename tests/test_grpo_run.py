@@ -187,10 +187,20 @@ def test_rowanai_gsm8k_recipe_stops_on_document_eos_not_the_turn_marker():
 
 def test_qwen_gsm8k_recipe_uses_the_general_purpose_base_with_its_own_template():
     config = load_config(GSM8K_RECIPES["qwen"], [], validator=validate_grpo_config)
-    assert config["model"]["model_path"] == "models/Qwen2.5-1.5B"
+    assert config["model"]["model_id"] == "Qwen/Qwen2.5-1.5B"
     assert config["model"]["rope_theta"] == 1000000
     assert config["tokenizer"]["chat_template"] is None
     assert "eos_token_ids" not in config["rollout"]
+
+
+@pytest.mark.parametrize("arm", sorted(GSM8K_RECIPES))
+def test_gsm8k_recipes_start_from_the_worked_solution_sft_export(arm):
+    config = load_config(GSM8K_RECIPES[arm], [], validator=validate_grpo_config)
+    expected = {"rowanai": "v4-rowanai", "qwen": "v4-qwen-base"}[arm]
+    assert (
+        config["model"]["model_path"]
+        == f"artifacts/rowanai-clean-worked/{expected}/merged"
+    )
 
 
 # ---------------------------------------------------------------------------

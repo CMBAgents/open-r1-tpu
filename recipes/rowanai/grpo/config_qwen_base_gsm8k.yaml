@@ -1,14 +1,16 @@
-# GRPO on the raw Qwen2.5-1.5B base (the general-purpose base, not the Math
-# model; no SFT first), prompts from the pre-1905-safe GSM8K subset, k = 8
+# GRPO on the Qwen2.5-1.5B general-purpose base (not the Math model) after
+# the worked-solution SFT, prompts from the pre-1905-safe GSM8K subset, k = 8
 # rollouts per prompt, one v6e-1 chip. The comparison arm to
 # config_rowanai_gsm8k.yaml: same data, rewards, LoRA, optimizer, budget and
 # rollout settings; only the model and tokenizer sections differ.
 #
-# STARTING POINT IS THE RAW BASE. The model section is config_qwen_base_clean
-# _v4_worked.yaml's plus the LoRA adapter: actor and frozen KL reference are
-# both models/Qwen2.5-1.5B, loaded twice. To start from the worked-solution
-# SFT export instead, override
-# model.model_path=artifacts/rowanai-clean-worked/v4-qwen-base/merged.
+# STARTING POINT IS THE SFT EXPORT. The model section is
+# config_qwen_base_clean_v4_worked.yaml's plus the LoRA adapter, pointed at
+# that recipe's merged export (staged from
+# gs://open-r1-tpu-rowan/artifacts/rowanai-clean-worked/v4-qwen-base/merged).
+# Actor and frozen KL reference are both that export, loaded twice. A smoke
+# from the raw base produced only noise, so the base is not a useful start;
+# override model.model_path=models/Qwen2.5-1.5B to try it anyway.
 #
 # STOPPING. Unlike rowanai, this base has <|im_end|> as a real special token
 # and ships its own ChatML template, so the default stop token
@@ -19,7 +21,7 @@ model:
   model_name: qwen2.5-1.5b
   model_id: Qwen/Qwen2.5-1.5B
   model_source: local
-  model_path: models/Qwen2.5-1.5B
+  model_path: artifacts/rowanai-clean-worked/v4-qwen-base/merged
   model_download_path: /tmp/open-r1-tpu/models/Qwen2.5-1.5B
   intermediate_ckpt_dir: /tmp/open-r1-tpu/intermediate_ckpt/qwen-base-grpo
   rng_seed: 42

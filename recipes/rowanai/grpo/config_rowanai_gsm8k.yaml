@@ -1,15 +1,14 @@
-# GRPO on the raw rowanai base (no SFT first), prompts from the pre-1905-safe
-# GSM8K subset, k = 8 rollouts per prompt, one v6e-1 chip.
+# GRPO on the rowanai model after the worked-solution SFT, prompts from the
+# pre-1905-safe GSM8K subset, k = 8 rollouts per prompt, one v6e-1 chip.
 #
-# STARTING POINT IS THE RAW BASE. The model section is config_rowanai_clean_v4
-# _worked.yaml's, plus the LoRA adapter the GRPO actor trains: the actor and
-# the frozen KL reference are both models/rowanai, the pre-1905 Llama base,
-# loaded twice. The base has never seen ChatML, <think> tags or \boxed{}, so
-# the format reward has to teach the shape from nothing (R1-Zero style). To
-# start from the worked-solution SFT export instead, which already writes
-# ChatML turns, override model.model_path=artifacts/rowanai-clean-worked/v4-rowanai/merged
-# (staged from gs://.../artifacts/rowanai-clean-worked/v4-rowanai/merged);
-# nothing else changes.
+# STARTING POINT IS THE SFT EXPORT. The model section is
+# config_rowanai_clean_v4_worked.yaml's plus the LoRA adapter the GRPO actor
+# trains, pointed at that recipe's merged export (staged from
+# gs://open-r1-tpu-rowan/artifacts/rowanai-clean-worked/v4-rowanai/merged).
+# It already writes ChatML turns with <think> and \boxed{}. The actor and the
+# frozen KL reference are both that export, loaded twice. The raw pre-1905
+# base has never seen ChatML, so it is not a useful start; override
+# model.model_path=models/rowanai to try it anyway.
 #
 # PROMPT SET. data/gsm8k-pre1905/train.jsonl: the 4,760 GSM8K train problems
 # that survived the anachronism filter (cars, phones, pizza and the like are
@@ -35,7 +34,7 @@ model:
   model_name: rowanai
   model_id: rowanai
   model_source: local
-  model_path: models/rowanai
+  model_path: artifacts/rowanai-clean-worked/v4-rowanai/merged
   model_download_path: /tmp/open-r1-tpu/models/rowanai
   intermediate_ckpt_dir: /tmp/open-r1-tpu/intermediate_ckpt/rowanai-grpo
   rng_seed: 42
