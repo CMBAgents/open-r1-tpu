@@ -1,0 +1,115 @@
+# Same as config_qwen_base_clean_v4.yaml (10 epochs, LR 2e-4, max_grad_norm
+# 1.0, microbatch 2, accumulation 8, 5% held-out eval) except for the
+# dataset: the worked-solution corpus, cor_training_clean_v4_worked.jsonl,
+# where the 1,189 previously bare-answer rows now carry full worked
+# solutions instead. Also raises checkpointing_options.max_to_keep so
+# beginning/middle checkpoints survive to the end of the run for later
+# export and held-out evaluation.
+model:
+  model_name: qwen2.5-1.5b
+  model_id: Qwen/Qwen2.5-1.5B
+  model_source: local
+  model_path: models/Qwen2.5-1.5B
+  model_download_path: /tmp/open-r1-tpu/models/Qwen2.5-1.5B
+  intermediate_ckpt_dir: /tmp/open-r1-tpu/intermediate_ckpt/qwen-base
+  rng_seed: 42
+  model_display: false
+  dtype: bfloat16
+  load_dtype: bfloat16
+  remat_config: DECODER
+  use_flash_attention: true
+  flash_attention_block_size: 1024
+  rope_theta: 1000000
+  mesh:
+    shape:
+    - 1
+    - 1
+    axis_names:
+    - fsdp
+    - tp
+tokenizer:
+  tokenizer_path: models/Qwen2.5-1.5B
+  tokenizer_type: huggingface
+  add_bos: false
+  add_eos: false
+  # The base ships its own ChatML template and real <|im_start|>/<|im_end|>
+  # special tokens; each base is used the way it was pretrained, as in the
+  # earlier maths arm.
+  chat_template: null
+dataset:
+  name: json
+  config: null
+  train_split: train
+  data_files: data/rowanai/train_clean_v4_worked.jsonl
+  messages_column: messages
+  batch_size: 2
+  max_length: 3072
+  packing: false
+  num_train_epochs: 10
+  max_examples: null
+  eval_fraction: 0.05
+  eval_max_examples: 64
+  seed: 42
+  assistant_only_loss: true
+  require_reasoning_tags: false
+  reasoning_start: <think>
+  reasoning_end: </think>
+  system_prompt_file: null
+optimizer:
+  learning_rate: 0.0002
+  warmup_ratio: 0.03
+  min_lr_ratio: 0.1
+  b1: 0.9
+  b2: 0.999
+  eps: 1.0e-08
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+training:
+  max_steps: 1263
+  gradient_accumulation_steps: 8
+  eval_every_n_steps: 200
+  checkpoint_dir: artifacts/rowanai-clean-worked/v4-qwen-base/checkpoints
+  checkpointing_options:
+    save_interval_steps: 200
+    max_to_keep: 10
+    enable_async_checkpointing: false
+    timeout_secs: 1200
+  metrics_log_dir: artifacts/rowanai-clean-worked/v4-qwen-base/logs
+  project_name: open-r1-tpu
+  run_name: rowanai-clean-worked-v4-qwen-base
+  flush_every_n_steps: 10
+  wandb:
+    enabled: true
+    entity: null
+    mode: online
+    group: rowanai-clean-worked
+    job_type: sft
+    tags:
+    - tpu
+    - sft
+    - full-finetune
+    - qwen
+    - iterate-v4
+    - general-base
+    resume: allow
+    save_code: false
+  transcripts:
+    enabled: false
+    every_n_steps: 250
+    max_new_tokens: 512
+    temperature: 0.0
+    seed: 42
+    log_to_wandb: true
+    output_path: artifacts/rowanai-clean-worked/v4-qwen-base/transcripts.jsonl
+    prompts: null
+    cache_size: null
+    max_prompt_length: null
+  data_sharding_axis:
+  - fsdp
+  max_inflight_computations: 1
+export:
+  # No stop_strings: <|im_end|> is a real token here, and the exporter writes it
+  # as a token-level EOS ahead of the base's document EOS, <|endoftext|>.
+  enabled: true
+  overwrite: false
+  output_dir: artifacts/rowanai-clean-worked/v4-qwen-base/merged
