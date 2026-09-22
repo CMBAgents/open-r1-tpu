@@ -248,6 +248,46 @@ def test_rollout_recorder_writes_one_line_per_completion(tmp_path):
     assert len(path.read_text().splitlines()) == 3
 
 
+def test_rollout_recorder_accepts_numpy_columns(tmp_path):
+    """Tunix passes dataset columns as numpy arrays, not lists."""
+    import json
+
+    import numpy as np
+
+    from open_r1_tpu.grpo.rewards import DEFAULT_REWARD_FNS
+    from open_r1_tpu.grpo.run import build_rollout_recorder
+
+    path = tmp_path / "eval_rollouts.jsonl"
+    record = build_rollout_recorder(str(path), DEFAULT_REWARD_FNS)
+    n = record(
+        np.array(["p1", "p2"]),
+        np.array(["<think>2+2</think>\\boxed{4}", "no idea"]),
+        [6.0, -2.5],
+        0,
+        "eval",
+        question=np.array(["q1", "q2"]),
+        answer=np.array(["4", "7"]),
+        a_scalar=np.int64(3),
+    )
+    assert n == 2
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    assert rows[0]["answer"] == "4" and rows[0]["question"] == "q1"
+    assert rows[0]["rewards"]["correctness_reward"] == 3.0
+    assert rows[1]["rewards"]["correctness_reward"] == 0.0
+    assert "a_scalar" not in rows[0]
+
+
+@pytest.mark.parametrize("arm", sorted(GSM8K_RECIPES))
+def test_gsm8k_recipes_flash_block_divides_prompt_length(arm):
+    """Splash attention requires the block size to divide the query length."""
+    config = load_config(GSM8K_RECIPES[arm], [], validator=validate_grpo_config)
+    block = config["model"]["flash_attention_block_size"]
+    prompt_len = config["rollout"]["max_prompt_length"]
+    total_len = prompt_len + config["rollout"]["max_tokens_to_generate"]
+    assert prompt_len % block == 0
+    assert total_len % block == 0
+
+
 @pytest.mark.parametrize("arm", sorted(GSM8K_RECIPES))
 def test_gsm8k_recipes_record_a_64_prompt_eval_split(arm):
     config = load_config(GSM8K_RECIPES[arm], [], validator=validate_grpo_config)

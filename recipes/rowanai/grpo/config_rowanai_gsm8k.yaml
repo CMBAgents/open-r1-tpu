@@ -44,7 +44,9 @@ model:
   load_dtype: bfloat16
   remat_config: DECODER
   use_flash_attention: true
-  flash_attention_block_size: 1024
+  # Must divide every query sequence length the kernel sees, including
+  # the rollout prefill at rollout.max_prompt_length (512).
+  flash_attention_block_size: 512
   rope_theta: 50000
   lora_config:
     module_path: ".*q_proj|.*k_proj|.*v_proj|.*o_proj|.*gate_proj|.*up_proj|.*down_proj"

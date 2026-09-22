@@ -216,6 +216,23 @@ def validate_grpo_config(config: dict[str, Any]) -> None:
         )
 
 
+def _is_per_completion_column(value: Any, width: int) -> bool:
+    """True when ``value`` is one entry per completion.
+
+    Tunix hands the reward manager its extra dataset columns as numpy
+    arrays, not lists, so this tests for a sized non-string sequence of the
+    right length rather than for ``list``/``tuple``. Getting this wrong
+    drops the column silently and the reward functions are then called
+    without the argument they need.
+    """
+    if isinstance(value, (str, bytes, dict)):
+        return False
+    try:
+        return len(value) == width
+    except TypeError:
+        return False
+
+
 def build_rollout_recorder(
     path: str, reward_fns: Sequence[Callable[..., list[float]]]
 ) -> Callable[..., int]:
@@ -242,7 +259,7 @@ def build_rollout_recorder(
         columns = {
             key: list(value)
             for key, value in columns.items()
-            if isinstance(value, (list, tuple)) and len(value) == len(completions)
+            if _is_per_completion_column(value, len(completions))
         }
         per_fn = {
             fn.__name__: fn(prompts=prompts, completions=completions, **columns)
