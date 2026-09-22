@@ -37,7 +37,11 @@ def llama_dimensions(hf: dict[str, Any]) -> dict[str, Any]:
 
 
 def create_llama_model(model_config: dict[str, Any], mesh: Any) -> tuple[Any, str]:
-    """Create a full-fine-tune Llama model from local safetensors only."""
+    """Create a Llama model from local safetensors only.
+
+    Returns the base model. ``model.loading.create_model`` adds the LoRA
+    adapter afterwards when the recipe sets ``lora_config``.
+    """
     import jax
     import jax.numpy as jnp
     from flax import nnx
@@ -47,8 +51,6 @@ def create_llama_model(model_config: dict[str, Any], mesh: Any) -> tuple[Any, st
 
     if model_config.get("model_source") != "local":
         raise ValueError("Llama checkpoints must be staged locally")
-    if model_config.get("lora_config"):
-        raise ValueError("The local Llama path currently supports full fine-tuning")
     path = Path(model_config["model_path"]).expanduser().resolve()
     dimensions = llama_dimensions(json.loads((path / "config.json").read_text()))
     if (

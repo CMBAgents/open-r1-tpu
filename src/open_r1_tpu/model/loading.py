@@ -24,7 +24,18 @@ def create_model(config: dict[str, Any], mesh: Any) -> tuple[Any, str]:
     if model_config.get("architecture") == "llama":
         from open_r1_tpu.model.llama import create_llama_model
 
-        return create_llama_model(model_config, mesh)
+        if model_config.get("lora_config") and config.get("export", {}).get(
+            "enabled", False
+        ):
+            # Fail before training rather than after: there is no merged-LoRA
+            # exporter for the local Llama path.
+            raise NotImplementedError(
+                "Merged-LoRA export is not implemented for the local Llama "
+                "path. Set export.enabled=false; the Orbax LoRA checkpoint is "
+                "the artifact."
+            )
+        model, path = create_llama_model(model_config, mesh)
+        return _maybe_apply_lora(model, mesh, model_config), path
     if model_config["model_source"] != "local":
         return model_utils.create_model(model_config, config["tokenizer"], mesh)
 
@@ -78,14 +89,25 @@ def create_model(config: dict[str, Any], mesh: Any) -> tuple[Any, str]:
             mesh,
             dtype=load_dtype,
         )
-    if model_config.get("lora_config"):
-        model = model_utils.apply_lora_to_model(
-            model,
-            mesh,
-            model_config["lora_config"],
-            rng_seed=int(model_config.get("rng_seed", 0)),
-        )
-    return model, str(local_path)
+    return _maybe_apply_lora(model, mesh, model_config), str(local_path)
+
+
+def _maybe_apply_lora(model: Any, mesh: Any, model_config: dict[str, Any]) -> Any:
+    """Wrap ``model`` with the recipe's LoRA adapter, if it asks for one.
+
+    Shared by the Tunix-native and local Llama paths, so both get the same
+    adapter placement and seeding.
+    """
+    if not model_config.get("lora_config"):
+        return model
+    from tunix.cli.utils import model as model_utils
+
+    return model_utils.apply_lora_to_model(
+        model,
+        mesh,
+        model_config["lora_config"],
+        rng_seed=int(model_config.get("rng_seed", 0)),
+    )
 
 
 def absolute_checkpoint_dir(checkpoint_dir: str) -> str:
