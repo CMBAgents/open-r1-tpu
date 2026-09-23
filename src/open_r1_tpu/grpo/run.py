@@ -63,7 +63,10 @@ from typing import Any
 from open_r1_tpu.core.config import load_config
 from open_r1_tpu.core.logging import LOG_LEVELS, configure_logging
 from open_r1_tpu.grpo.data import load_grpo_prompts
-from open_r1_tpu.grpo.rewards import DEFAULT_REWARD_FNS, with_completion_stop_strings
+from open_r1_tpu.grpo.rewards import (
+    reward_fns_from_names,
+    with_completion_stop_strings,
+)
 from open_r1_tpu.model.export import export_model
 from open_r1_tpu.model.loading import absolute_checkpoint_dir, create_model
 from open_r1_tpu.model.metrics import metrics_logger_options
@@ -192,6 +195,15 @@ def validate_grpo_config(config: dict[str, Any]) -> None:
         )
 
     grpo = config["grpo"]
+    reward_names = grpo.get("reward_functions")
+    if reward_names is not None:
+        if (
+            not isinstance(reward_names, list)
+            or not reward_names
+            or any(not isinstance(name, str) for name in reward_names)
+        ):
+            raise ValueError("grpo.reward_functions must be a non-empty list of names")
+        reward_fns_from_names(reward_names)  # raises on an unknown name
     for key in ("num_generations", "num_iterations"):
         value = grpo.get(key)
         if not isinstance(value, int) or value <= 0:
@@ -325,7 +337,8 @@ def run(config: dict[str, Any]) -> None:
         assistant_turn_end_id(tokenizer)
     ]
     reward_fns = with_completion_stop_strings(
-        DEFAULT_REWARD_FNS, rollout.get("completion_stop_strings")
+        reward_fns_from_names(config["grpo"].get("reward_functions")),
+        rollout.get("completion_stop_strings"),
     )
 
     train_ds, eval_ds = load_grpo_prompts(config["dataset"], tokenizer)

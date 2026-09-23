@@ -5,7 +5,7 @@
 # config_rowanai_clean_v4_worked.yaml's plus the LoRA adapter the GRPO actor
 # trains, pointed at that recipe's merged export (staged from
 # gs://open-r1-tpu-rowan/artifacts/rowanai-clean-worked/v4-rowanai/merged).
-# It already writes ChatML turns with <think> and \boxed{}. The actor and the
+# It already writes ChatML turns and worked solutions. The actor and the
 # frozen KL reference are both that export, loaded twice. The raw pre-1905
 # base has never seen ChatML, so it is not a useful start; override
 # model.model_path=models/rowanai to try it anyway.
@@ -13,8 +13,7 @@
 # PROMPT SET. data/gsm8k-pre1905/train.jsonl: the 4,760 GSM8K train problems
 # that survived the anachronism filter (cars, phones, pizza and the like are
 # gone), two columns: prompt (the bare question) and solution (the bare gold
-# integer from GSM8K's "#### N" line, thousands separators removed, which
-# grpo/rewards.py's exact string match needs). test.jsonl (829 rows) is the
+# integer from GSM8K's "#### N" line, thousands separators removed). test.jsonl (829 rows) is the
 # held-out set for evaluation afterwards and is not read here.
 #
 # STOPPING. rowanai's <|im_end|> is seven ordinary tokens starting with "<"
@@ -86,9 +85,9 @@ dataset:
   system_prompt_file: recipes/rowanai/grpo/system_prompt.txt
 
 optimizer:
-  # Above the DAPO recipe's 3e-6: that actor already wrote the format and
-  # only had its policy reshaped, while this LoRA has to move a raw base to a
-  # new output shape within a few hundred steps. Clip and decay as there.
+  # Above the DAPO recipe's 3e-6, chosen when this arm started from the raw
+  # base; kept for the SFT start until a run says otherwise. Clip and decay
+  # as there.
   learning_rate: 1.0e-5
   warmup_ratio: 0.1
   min_lr_ratio: 0.0
@@ -128,6 +127,11 @@ training:
   offload_to_cpu: false
 
 grpo:
+  # Correctness only: 1.0 when the final number (a \boxed{} answer if there
+  # is one, else the last number written) equals the gold integer, else 0.0.
+  # No format reward: the worked-solution SFT writes prose solutions without
+  # <think> tags, and only the answer matters for now.
+  reward_functions: [answer_correctness_reward]
   # k = 8 rollouts per prompt.
   num_generations: 8
   num_iterations: 1

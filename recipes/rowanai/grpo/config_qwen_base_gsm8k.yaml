@@ -110,6 +110,11 @@ training:
   offload_to_cpu: false
 
 grpo:
+  # Correctness only: 1.0 when the final number (a \boxed{} answer if there
+  # is one, else the last number written) equals the gold integer, else 0.0.
+  # No format reward: the worked-solution SFT writes prose solutions without
+  # <think> tags, and only the answer matters for now.
+  reward_functions: [answer_correctness_reward]
   # k = 8 rollouts per prompt.
   num_generations: 8
   num_iterations: 1

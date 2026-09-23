@@ -203,6 +203,24 @@ def test_gsm8k_recipes_start_from_the_worked_solution_sft_export(arm):
     )
 
 
+@pytest.mark.parametrize("arm", sorted(GSM8K_RECIPES))
+def test_gsm8k_recipes_reward_answer_correctness_only(arm):
+    config = load_config(GSM8K_RECIPES[arm], [], validator=validate_grpo_config)
+    assert config["grpo"]["reward_functions"] == ["answer_correctness_reward"]
+    prompt = Path(config["dataset"]["system_prompt_file"]).read_text()
+    assert "<think>" not in prompt and "boxed" not in prompt
+
+
+@pytest.mark.parametrize("names", [["nope"], [], "answer_correctness_reward"])
+def test_grpo_reward_functions_are_validated(names):
+    with pytest.raises(ValueError):
+        load_config(
+            GSM8K_RECIPES["qwen"],
+            [f"grpo.reward_functions={names!r}"],
+            validator=validate_grpo_config,
+        )
+
+
 # ---------------------------------------------------------------------------
 # training.eval_rollouts_path and the rollout recorder
 # ---------------------------------------------------------------------------

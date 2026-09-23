@@ -30,7 +30,12 @@ deliberately deferred rather than built here, to keep this first pipeline to
 a core GRPO implementation. Revisit once format/correctness rewards alone
 have been run and measured.
 
-The two are independent reward_fns (not folded into one), so a recipe can
+``answer_correctness_reward`` is a third, format-free option: 1.0 when the
+final number (boxed if present, else the last number written) equals gold,
+else 0.0. A recipe picks its rewards by name with ``grpo.reward_functions``;
+without it, ``DEFAULT_REWARD_FNS`` (format plus correctness) is used.
+
+The rewards are independent reward_fns (not folded into one), so a recipe can
 scale or drop either of them by omitting it from ``grpo_run``'s reward list,
 and so each is unit-testable on its own without a rollout.
 """
@@ -191,7 +196,83 @@ def correctness_reward(
     return scores
 
 
+# A plain decimal number, thousands separators allowed. The look-behind stops
+# the minus in "8-3" being read as a sign, so that span yields 8 and 3.
+_NUMBER = re.compile(r"(?<!\d)-?\d[\d,]*(?:\.\d+)?")
+
+
+def extract_final_number(text: str) -> str | None:
+    """The completion's final answer: a boxed answer if any, else the last number.
+
+    For a model that writes free-form worked solutions rather than a fixed
+    answer shape, the last number is the conventional GSM8K fallback (the
+    "flexible extract" of common harnesses). ``\\boxed{}`` still wins when
+    present, so a model that learns to box its answer is read exactly.
+    """
+    boxed = extract_boxed_answer(text)
+    if boxed is not None:
+        return boxed
+    numbers = _NUMBER.findall(text)
+    return numbers[-1] if numbers else None
+
+
+def _plain_number(value: str) -> float | None:
+    return _as_float(_normalize_answer(value).replace(",", ""))
+
+
+def answer_correctness_reward(
+    prompts: Sequence[str], completions: Sequence[str], answer: Sequence[str], **_: Any
+) -> list[float]:
+    """1.0 when the final number equals the gold number, else 0.0.
+
+    No format requirement and no partial credit: only whether the answer is
+    right. The final number is read by :func:`extract_final_number`; gold
+    and prediction are compared as numbers, so ``20,000``, ``$20000`` and
+    ``20000.00`` all match a gold of ``20000``.
+    """
+    if len(completions) != len(answer):
+        raise ValueError(
+            f"completions ({len(completions)}) and answer ({len(answer)}) "
+            "must have matching length"
+        )
+    scores: list[float] = []
+    for completion, gold in zip(completions, answer, strict=True):
+        predicted = extract_final_number(completion)
+        gold_value = _plain_number(str(gold)) if gold else None
+        pred_value = _plain_number(predicted) if predicted is not None else None
+        correct = (
+            gold_value is not None
+            and pred_value is not None
+            and abs(pred_value - gold_value) < 1e-6
+        )
+        scores.append(1.0 if correct else 0.0)
+    return scores
+
+
 DEFAULT_REWARD_FNS = (format_reward, correctness_reward)
+
+REWARD_FNS_BY_NAME = {
+    fn.__name__: fn
+    for fn in (format_reward, correctness_reward, answer_correctness_reward)
+}
+
+
+def reward_fns_from_names(names: Sequence[str] | None) -> tuple:
+    """The reward functions a recipe's ``grpo.reward_functions`` names.
+
+    ``None`` keeps :data:`DEFAULT_REWARD_FNS`, so recipes written before the
+    option existed are unchanged.
+    """
+    if names is None:
+        return DEFAULT_REWARD_FNS
+    unknown = [name for name in names if name not in REWARD_FNS_BY_NAME]
+    if unknown:
+        raise ValueError(
+            f"Unknown reward function(s) {unknown}; "
+            f"choose from {sorted(REWARD_FNS_BY_NAME)}"
+        )
+    return tuple(REWARD_FNS_BY_NAME[name] for name in names)
+
 
 RewardFn = Callable[..., list[float]]
 

@@ -3,6 +3,8 @@ needed, so these run in every environment this repository's tests already
 run in (see AGENTS.md: "this container has no project deps").
 """
 
+import pytest
+
 from open_r1_tpu.grpo.rewards import (
     answers_match,
     correctness_reward,
@@ -187,3 +189,65 @@ def test_with_completion_stop_strings_without_stops_returns_the_functions_unchan
 
     assert with_completion_stop_strings([format_reward], None) == [format_reward]
     assert with_completion_stop_strings([format_reward], []) == [format_reward]
+
+
+# ---------------------------------------------------------------------------
+# answer_correctness_reward: correctness only, no format requirement
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("so the total is 18 dollars.", "18"),
+        ("First 3 + 4 = 7, then 7 x 2 = 14.\nThe answer is 14", "14"),
+        ("He earns $20,000 in all.", "20,000"),
+        ("working 12 and 30 ... \\boxed{42} then 99", "42"),
+        ("8-3 leaves 5", "5"),
+        ("a debt of -7 remains", "-7"),
+        ("no digits here", None),
+    ],
+)
+def test_extract_final_number(text, expected):
+    from open_r1_tpu.grpo.rewards import extract_final_number
+
+    assert extract_final_number(text) == expected
+
+
+def test_answer_correctness_reward_scores_only_the_final_answer():
+    from open_r1_tpu.grpo.rewards import answer_correctness_reward
+
+    completions = [
+        "The baker earned 453 x 12 = 5436 and 126 x 7 = 882, so 6318.",
+        "He had $20,000.",
+        "The answer is 20000.00",
+        "<think>2+2</think>\\boxed{5}",
+        "The answer is 6318, I think; check: 6317",
+        "no number at all",
+    ]
+    gold = ["6318", "20000", "20000", "4", "6318", "4"]
+    assert answer_correctness_reward(
+        prompts=[""] * 6, completions=completions, answer=gold
+    ) == [1.0, 1.0, 1.0, 0.0, 0.0, 0.0]
+
+
+def test_answer_correctness_reward_rejects_mismatched_lengths():
+    from open_r1_tpu.grpo.rewards import answer_correctness_reward
+
+    with pytest.raises(ValueError, match="matching length"):
+        answer_correctness_reward(prompts=["p"], completions=["1"], answer=[])
+
+
+def test_reward_fns_from_names():
+    from open_r1_tpu.grpo.rewards import (
+        DEFAULT_REWARD_FNS,
+        answer_correctness_reward,
+        reward_fns_from_names,
+    )
+
+    assert reward_fns_from_names(None) == DEFAULT_REWARD_FNS
+    assert reward_fns_from_names(["answer_correctness_reward"]) == (
+        answer_correctness_reward,
+    )
+    with pytest.raises(ValueError, match="Unknown reward"):
+        reward_fns_from_names(["nope"])
