@@ -154,6 +154,26 @@ def validate_grpo_config(config: dict[str, Any]) -> None:
             "there are no eval rollouts to record otherwise"
         )
 
+    training = config["training"]
+    for key in (
+        "mini_batch_size",
+        "train_micro_batch_size",
+        "rollout_micro_batch_size",
+        "compute_logps_micro_batch_size",
+    ):
+        value = training.get(key)
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+        ):
+            raise ValueError(f"training.{key} must be a positive integer")
+    mini_batch = training.get("mini_batch_size", batch_size)
+    train_micro = training.get("train_micro_batch_size", batch_size)
+    if mini_batch % train_micro:
+        raise ValueError(
+            "training.train_micro_batch_size must divide training.mini_batch_size "
+            "(dataset.batch_size by default)"
+        )
+
     rollout = config["rollout"]
     for key in ("max_prompt_length", "max_tokens_to_generate", "kv_cache_size"):
         value = rollout.get(key)
@@ -365,7 +385,16 @@ def run(config: dict[str, Any]) -> None:
             mini_batch_size=int(
                 training.get("mini_batch_size", config["dataset"]["batch_size"])
             ),
-            train_micro_batch_size=int(config["dataset"]["batch_size"]),
+            # Prompts per forward/backward pass. Below the batch size, Tunix
+            # accumulates gradients; this is what bounds the logits memory
+            # (sequences x length x vocabulary) for a large-vocabulary model.
+            train_micro_batch_size=int(
+                training.get("train_micro_batch_size", config["dataset"]["batch_size"])
+            ),
+            rollout_micro_batch_size=training.get("rollout_micro_batch_size"),
+            compute_logps_micro_batch_size=training.get(
+                "compute_logps_micro_batch_size"
+            ),
             metrics_logging_options=metrics,
             checkpoint_root_directory=absolute_checkpoint_dir(
                 training["checkpoint_dir"]

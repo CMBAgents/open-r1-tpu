@@ -235,6 +235,32 @@ def test_grpo_reward_functions_are_validated(names):
         )
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        ["training.train_micro_batch_size=0"],
+        ["training.train_micro_batch_size=3"],
+        ["training.rollout_micro_batch_size=-1"],
+        ["training.compute_logps_micro_batch_size=true"],
+    ],
+)
+def test_grpo_micro_batch_sizes_are_validated(overrides):
+    with pytest.raises(ValueError, match="micro_batch_size"):
+        load_config(GSM8K_RECIPES["qwen"], overrides, validator=validate_grpo_config)
+
+
+def test_grpo_micro_batch_sizes_accept_a_divisor():
+    config = load_config(
+        GSM8K_RECIPES["qwen"],
+        [
+            "training.train_micro_batch_size=1",
+            "training.compute_logps_micro_batch_size=1",
+        ],
+        validator=validate_grpo_config,
+    )
+    assert config["training"]["train_micro_batch_size"] == 1
+
+
 # ---------------------------------------------------------------------------
 # training.eval_rollouts_path and the rollout recorder
 # ---------------------------------------------------------------------------
