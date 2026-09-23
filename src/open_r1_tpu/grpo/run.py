@@ -154,6 +154,14 @@ def validate_grpo_config(config: dict[str, Any]) -> None:
             "there are no eval rollouts to record otherwise"
         )
 
+    eval_batch_size = config["dataset"].get("eval_batch_size")
+    if eval_batch_size is not None and (
+        isinstance(eval_batch_size, bool)
+        or not isinstance(eval_batch_size, int)
+        or eval_batch_size <= 0
+    ):
+        raise ValueError("dataset.eval_batch_size must be a positive integer")
+
     training = config["training"]
     for key in (
         "mini_batch_size",

@@ -213,3 +213,23 @@ def test_load_grpo_prompts_splits_off_an_eval_fraction(monkeypatch):
     assert len(train_ds.rows) == 8
     assert len(eval_ds.rows) == 2
     assert calls == [True, False]
+
+
+def test_load_grpo_prompts_uses_a_separate_eval_batch_size(monkeypatch):
+    rows = [{"problem": f"q{i}", "answer": "4"} for i in range(10)]
+    monkeypatch.setitem(
+        sys.modules,
+        "datasets",
+        SimpleNamespace(load_dataset=lambda *a, **k: FakeHFDataset(rows)),
+    )
+    sizes = []
+
+    def fake_build(source, *, to_record, batch_size, seed, shuffle, num_epochs):
+        sizes.append((shuffle, batch_size))
+        return source
+
+    monkeypatch.setattr(grpo_data, "build_grain_prompt_batches", fake_build)
+    config = {"name": "parquet", "config": None, "batch_size": 4, "eval_fraction": 0.2}
+    grpo_data.load_grpo_prompts(config, FakeTokenizer())
+    grpo_data.load_grpo_prompts(config | {"eval_batch_size": 1}, FakeTokenizer())
+    assert sizes == [(True, 4), (False, 4), (True, 4), (False, 1)]

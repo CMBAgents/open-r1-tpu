@@ -186,20 +186,28 @@ def load_grpo_prompts(config: dict[str, Any], tokenizer: Any) -> tuple[Any, Any]
         system_prompt=system_prompt,
         max_prompt_length=config.get("max_prompt_length"),
     )
-    common = {
-        "to_record": to_record,
-        "batch_size": int(config["batch_size"]),
-        "seed": int(config.get("seed", 42)),
-    }
+    common = {"to_record": to_record, "seed": int(config.get("seed", 42))}
+    batch_size = int(config["batch_size"])
+    # Tunix scores each eval batch's rollouts in one un-micro-batched pass
+    # (the actor trainer's eval loss), so a large-vocabulary model can need a
+    # smaller eval batch than its training batch.
+    eval_batch_size = int(config.get("eval_batch_size") or batch_size)
 
     train_ds = build_grain_prompt_batches(
         train_source,
         shuffle=True,
         num_epochs=int(config.get("num_train_epochs", 1)),
+        batch_size=batch_size,
         **common,
     )
     eval_ds = (
-        build_grain_prompt_batches(eval_source, shuffle=False, num_epochs=1, **common)
+        build_grain_prompt_batches(
+            eval_source,
+            shuffle=False,
+            num_epochs=1,
+            batch_size=eval_batch_size,
+            **common,
+        )
         if eval_source is not None
         else None
     )
