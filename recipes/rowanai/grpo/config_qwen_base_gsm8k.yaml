@@ -67,6 +67,9 @@ dataset:
   # test.jsonl stays untouched for the final held-out score.
   eval_fraction: 0.02
   eval_max_examples: 64
+  # Tunix scores each eval batch's 4 x 8 rollouts in one pass; with Qwen's
+  # ~152k vocabulary that needed 33.88 GiB. One prompt per eval batch fits.
+  eval_batch_size: 1
   seed: 42
   system_prompt_file: recipes/rowanai/grpo/system_prompt.txt
 
@@ -81,11 +84,18 @@ optimizer:
   max_grad_norm: 0.1
 
 training:
+  # Batch 4 at 19.26 GiB peak: rollouts for all 4 prompts at once, logits
+  # (training and log-probs) one prompt (8 sequences) at a time.
+  train_micro_batch_size: 1
+  compute_logps_micro_batch_size: 1
+  rollout_micro_batch_size: 4
   max_steps: 500
   checkpoint_dir: artifacts/rowanai-grpo-gsm8k/v1-qwen-base/checkpoints
   checkpointing_options:
     save_interval_steps: 50
-    max_to_keep: 4
+    # Keep all ten: the GCS sync runs every 20 minutes, and with 4 kept the
+    # rowanai run deleted checkpoints 50-150 before they were synced.
+    max_to_keep: 10
     enable_async_checkpointing: false
     timeout_secs: 1200
   # Every 100 steps (and at step 0): 64 eval prompts x 8 rollouts = 512

@@ -102,7 +102,9 @@ training:
   checkpoint_dir: artifacts/rowanai-grpo-gsm8k/v1-rowanai/checkpoints
   checkpointing_options:
     save_interval_steps: 50
-    max_to_keep: 4
+    # Keep all ten: the GCS sync runs every 20 minutes, and with 4 kept the
+    # rowanai run deleted checkpoints 50-150 before they were synced.
+    max_to_keep: 10
     enable_async_checkpointing: false
     timeout_secs: 1200
   # Every 100 steps (and at step 0): 64 eval prompts x 8 rollouts = 512
