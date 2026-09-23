@@ -164,6 +164,10 @@ def test_gsm8k_recipe_loads_with_k_8_on_one_device(arm):
 def test_gsm8k_arms_differ_only_in_model_tokenizer_and_output_paths():
     rowanai = load_config(GSM8K_RECIPES["rowanai"], [], validator=validate_grpo_config)
     qwen = load_config(GSM8K_RECIPES["qwen"], [], validator=validate_grpo_config)
+    # eval_batch_size only changes how the same eval prompts are batched
+    # (a memory setting for Qwen's larger vocabulary), not what is evaluated.
+    for config in (rowanai, qwen):
+        config["dataset"].pop("eval_batch_size", None)
     for section in ("dataset", "optimizer", "grpo"):
         assert rowanai[section] == qwen[section], section
     for key in (
