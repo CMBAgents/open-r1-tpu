@@ -1,14 +1,14 @@
 # GRPO on the rowanai model after the worked-solution SFT, prompts from the
 # pre-1905-safe GSM8K subset, k = 8 rollouts per prompt, one v6e-1 chip.
 #
-# STARTING POINT IS THE SFT EXPORT. The model section is
+# STARTING POINT IS THE FORMAT SFT EXPORT. The model section is
 # config_rowanai_clean_v4_worked.yaml's plus the LoRA adapter the GRPO actor
-# trains, pointed at that recipe's merged export (staged from
-# gs://open-r1-tpu-rowan/artifacts/rowanai-clean-worked/v4-rowanai/merged).
-# It already writes ChatML turns and worked solutions. The actor and the
-# frozen KL reference are both that export, loaded twice. The raw pre-1905
-# base has never seen ChatML, so it is not a useful start; override
-# model.model_path=models/rowanai to try it anyway.
+# trains, pointed at the merged export of
+# recipes/rowanai/sft/config_rowanai_gsm8k_format.yaml (staged from
+# gs://open-r1-tpu-rowan/artifacts/rowanai-gsm8k-format/v1/merged). That SFT
+# ran on top of the worked-solution export and taught the "Answer: N" last
+# line the reward reads, plus <|endoftext|> after <|im_end|> so rollouts stop.
+# The actor and the frozen KL reference are both that export, loaded twice.
 #
 # PROMPT SET. data/gsm8k-pre1905/train.jsonl: the 4,760 GSM8K train problems
 # that survived the anachronism filter (cars, phones, pizza and the like are
@@ -33,7 +33,7 @@ model:
   model_name: rowanai
   model_id: rowanai
   model_source: local
-  model_path: artifacts/rowanai-clean-worked/v4-rowanai/merged
+  model_path: artifacts/rowanai-gsm8k-format/v1/merged
   model_download_path: /tmp/open-r1-tpu/models/rowanai
   intermediate_ckpt_dir: /tmp/open-r1-tpu/intermediate_ckpt/rowanai-grpo
   rng_seed: 42

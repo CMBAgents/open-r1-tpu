@@ -194,13 +194,27 @@ def test_qwen_gsm8k_recipe_uses_the_general_purpose_base_with_its_own_template()
 
 
 @pytest.mark.parametrize("arm", sorted(GSM8K_RECIPES))
-def test_gsm8k_recipes_start_from_the_worked_solution_sft_export(arm):
+def test_gsm8k_recipes_start_from_an_sft_export(arm):
     config = load_config(GSM8K_RECIPES[arm], [], validator=validate_grpo_config)
-    expected = {"rowanai": "v4-rowanai", "qwen": "v4-qwen-base"}[arm]
-    assert (
-        config["model"]["model_path"]
-        == f"artifacts/rowanai-clean-worked/{expected}/merged"
-    )
+    expected = {
+        "rowanai": "artifacts/rowanai-gsm8k-format/v1/merged",
+        "qwen": "artifacts/rowanai-clean-worked/v4-qwen-base/merged",
+    }[arm]
+    assert config["model"]["model_path"] == expected
+
+
+def test_rowanai_format_sft_feeds_the_grpo_recipe():
+    """The format SFT must share GRPO's prompt and end turns with EOS."""
+    sft = load_config("recipes/rowanai/sft/config_rowanai_gsm8k_format.yaml")
+    grpo = load_config(GSM8K_RECIPES["rowanai"], [], validator=validate_grpo_config)
+    assert sft["export"]["enabled"]
+    assert sft["export"]["output_dir"] == grpo["model"]["model_path"]
+    assert sft["dataset"]["system_prompt_file"] == grpo["dataset"]["system_prompt_file"]
+    template = sft["tokenizer"]["chat_template"]
+    assert "'<|im_end|>' }}{% if message['role'] == 'assistant' %}" in template
+    assert "{{ '<|endoftext|>' }}" in template
+    worked = "artifacts/rowanai-clean-worked/v4-rowanai/merged"
+    assert sft["model"]["model_path"] == worked
 
 
 @pytest.mark.parametrize("arm", sorted(GSM8K_RECIPES))
