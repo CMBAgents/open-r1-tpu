@@ -20,7 +20,7 @@
 # as before.
 #
 # BUDGET. 3 epochs at LR 5e-5 (a format change on an already-tuned model, not
-# new knowledge); max_steps is derived from the data size.
+# new knowledge): 159 optimizer steps of 16 examples.
 model:
   model_name: rowanai
   model_id: rowanai
@@ -80,7 +80,8 @@ optimizer:
   weight_decay: 0.0
   max_grad_norm: 1.0
 training:
-  max_steps: null
+  # 894 rows, 5% (45) held out: 849 // 2 microbatches x 3 epochs // 8 = 159.
+  max_steps: 159
   gradient_accumulation_steps: 8
   eval_every_n_steps: 25
   checkpoint_dir: artifacts/rowanai-gsm8k-format/v1/checkpoints
