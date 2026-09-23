@@ -62,6 +62,7 @@ from typing import Any
 
 from open_r1_tpu.core.config import load_config
 from open_r1_tpu.core.logging import LOG_LEVELS, configure_logging
+from open_r1_tpu.grpo.behaviour import build_behaviour_metric_fn
 from open_r1_tpu.grpo.data import load_grpo_prompts
 from open_r1_tpu.grpo.rewards import (
     reward_fns_from_names,
@@ -273,6 +274,66 @@ def _is_per_completion_column(value: Any, width: int) -> bool:
         return False
 
 
+def build_eval_table_logger(
+    max_chars: int = 4000,
+) -> tuple[Callable[..., None], Callable[[], None]]:
+    """Return ``(add, flush)`` that log each eval's rollouts as a W&B table.
+
+    Tunix scores eval rollouts one eval batch at a time, so ``add`` collects
+    rows until a call arrives for a different step, then logs the finished
+    step as ``eval/rollouts`` (step, question, gold answer, completion,
+    reward) against the run's ``global_step`` axis. ``flush`` logs whatever
+    is pending; call it once training returns. Without an active W&B run
+    both are no-ops.
+    """
+    rows: list[list[Any]] = []
+    state: dict[str, int | None] = {"step": None}
+
+    def flush() -> None:
+        if not rows:
+            return
+        try:
+            import wandb
+        except ImportError:
+            rows.clear()
+            return
+        if wandb.run is not None:
+            table = wandb.Table(
+                columns=["step", "question", "answer", "completion", "reward"],
+                data=list(rows),
+            )
+            wandb.run.log({"eval/rollouts": table, "global_step": state["step"]})
+        rows.clear()
+
+    def add(
+        step: int,
+        completions: Sequence[str],
+        rewards: Sequence[float],
+        **columns: Any,
+    ) -> None:
+        if state["step"] is not None and step != state["step"]:
+            flush()
+        state["step"] = step
+        width = len(completions)
+        question = answer = None
+        if _is_per_completion_column(columns.get("question"), width):
+            question = list(columns["question"])
+        if _is_per_completion_column(columns.get("answer"), width):
+            answer = list(columns["answer"])
+        for index, completion in enumerate(completions):
+            rows.append(
+                [
+                    step,
+                    str(question[index]) if question else "",
+                    str(answer[index]) if answer else "",
+                    str(completion)[:max_chars],
+                    float(rewards[index]),
+                ]
+            )
+
+    return add, flush
+
+
 def build_rollout_recorder(
     path: str, reward_fns: Sequence[Callable[..., list[float]]]
 ) -> Callable[..., int]:
@@ -435,6 +496,8 @@ def run(config: dict[str, Any]) -> None:
         cluster_config=cluster_config,
     )
     eval_rollouts_path = training.get("eval_rollouts_path")
+    wandb_enabled = bool(training.get("wandb", {}).get("enabled", False))
+    table_add, table_flush = build_eval_table_logger()
     if eval_rollouts_path:
         record = build_rollout_recorder(eval_rollouts_path, reward_fns)
 
@@ -456,6 +519,11 @@ def run(config: dict[str, Any]) -> None:
                     if step is None:
                         step = int(self.rl_engine.actor_trainer.train_steps)
                     record(prompts, completions, list(rewards), step, "eval", **kw)
+                    if wandb_enabled:
+                        table_add(step, completions, list(rewards), **kw)
+                elif wandb_enabled:
+                    # First training rollout after an eval: that eval is done.
+                    table_flush()
                 return rewards
 
         learner_cls: type[GRPOLearner] = RecordingGRPOLearner
@@ -466,6 +534,13 @@ def run(config: dict[str, Any]) -> None:
         rl_engine=rl_cluster,
         algo_config=grpo_config,
         reward_fns=reward_fns,
+        # behaviour/* and signal/* per step, train and eval, next to Tunix's
+        # own rewards/*, completions/* and actor/* metrics.
+        metric_fns=[
+            build_behaviour_metric_fn(
+                grpo_config.num_generations, rollout.get("completion_stop_strings")
+            )
+        ],
     )
 
     LOGGER.info(
@@ -485,6 +560,7 @@ def run(config: dict[str, Any]) -> None:
     # thread-local physical mesh, so jax.set_mesh(mesh) alone is not enough.
     with mesh:
         grpo_trainer.train(train_ds, eval_ds)
+    table_flush()
 
     if config["model"].get("model_source") == "huggingface":
         local_model_path = config["model"].get("model_download_path")
