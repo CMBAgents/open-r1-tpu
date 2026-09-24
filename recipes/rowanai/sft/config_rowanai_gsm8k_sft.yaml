@@ -1,0 +1,130 @@
+# SFT on the real GSM8K train split, restricted to the questions the
+# anachronism filter kept, starting from the format SFT export
+# (config_rowanai_gsm8k_format.yaml's merged output). The format SFT taught
+# the answer shape and a clean stop on synthetic problems; this run supervises
+# GSM8K's own working.
+#
+# DATA. data/gsm8k-pre1905-sft/train.jsonl: the 4,760 GSM8K train problems that
+# survived the pre-1905 filter (cars, phones, pizza and the like are gone).
+# Each assistant turn is GSM8K's reference working with the "<<48/2=24>>"
+# calculator annotations removed and the "#### N" line rewritten as
+# "Answer: N", thousands separators dropped: the same last line the format
+# SFT taught and the GRPO reward reads. The 829-row test split is not read
+# here; it is scored afterwards with scripts/eval_gsm8k.py.
+#
+# PROMPT AND STOPPING. As in the format SFT: the system prompt is
+# recipes/rowanai/grpo/system_prompt.txt, and the chat template writes
+# <|endoftext|> (ID 0) straight after each assistant <|im_end|>, so the model
+# keeps stopping on the one token the sampler can stop on.
+#
+# BUDGET. 3 epochs at LR 5e-5, the format SFT's rate on the same model and
+# answer shape, now with five times the data. Answers are at most 262 tokens
+# in this tokenizer, so max_length 1024 drops nothing.
+model:
+  model_name: rowanai
+  model_id: rowanai
+  model_source: local
+  model_path: artifacts/rowanai-gsm8k-format/v1/merged
+  model_download_path: /tmp/open-r1-tpu/models/rowanai
+  intermediate_ckpt_dir: /tmp/open-r1-tpu/intermediate_ckpt/rowanai-gsm8k-sft
+  rng_seed: 42
+  model_display: false
+  dtype: bfloat16
+  load_dtype: bfloat16
+  remat_config: DECODER
+  use_flash_attention: true
+  flash_attention_block_size: 1024
+  rope_theta: 50000
+  mesh:
+    shape:
+    - 1
+    - 1
+    axis_names:
+    - fsdp
+    - tp
+  architecture: llama
+tokenizer:
+  tokenizer_path: models/rowanai
+  tokenizer_type: huggingface
+  add_bos: false
+  add_eos: false
+  # ChatML markers use existing ordinary tokens; vocabulary and weights stay fixed.
+  chat_template: "{% for message in messages %}{{ '<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>' }}{% if message['role'] == 'assistant' %}{{ '<|endoftext|>' }}{% else %}{{ '\\n' }}{% endif %}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}"
+dataset:
+  name: json
+  config: null
+  train_split: train
+  data_files: data/gsm8k-pre1905-sft/train.jsonl
+  messages_column: messages
+  batch_size: 2
+  max_length: 1024
+  packing: false
+  num_train_epochs: 3
+  max_examples: null
+  eval_fraction: 0.05
+  eval_max_examples: 64
+  seed: 42
+  assistant_only_loss: true
+  require_reasoning_tags: false
+  reasoning_start: <think>
+  reasoning_end: </think>
+  system_prompt_file: recipes/rowanai/grpo/system_prompt.txt
+optimizer:
+  learning_rate: 5.0e-05
+  warmup_ratio: 0.03
+  min_lr_ratio: 0.1
+  b1: 0.9
+  b2: 0.999
+  eps: 1.0e-08
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+training:
+  # 4,760 rows, 5% (238) held out: 4,522 x 3 epochs // 2 microbatches // 8 = 847.
+  max_steps: 847
+  gradient_accumulation_steps: 8
+  eval_every_n_steps: 50
+  checkpoint_dir: artifacts/rowanai-gsm8k-sft/v1/checkpoints
+  checkpointing_options:
+    # One checkpoint per epoch (282.6 steps); the final step is saved too.
+    save_interval_steps: 283
+    max_to_keep: 4
+    enable_async_checkpointing: false
+    timeout_secs: 1200
+  metrics_log_dir: artifacts/rowanai-gsm8k-sft/v1/logs
+  project_name: open-r1-tpu
+  run_name: rowanai-gsm8k-sft-v1
+  flush_every_n_steps: 10
+  wandb:
+    enabled: true
+    entity: null
+    mode: online
+    group: rowanai-gsm8k-sft
+    job_type: sft
+    tags:
+    - tpu
+    - sft
+    - full-finetune
+    - rowanai
+    - gsm8k-sft
+    resume: allow
+    save_code: false
+  transcripts:
+    enabled: false
+    every_n_steps: 250
+    max_new_tokens: 512
+    temperature: 0.0
+    seed: 42
+    log_to_wandb: true
+    output_path: artifacts/rowanai-gsm8k-sft/v1/transcripts.jsonl
+    prompts: null
+    cache_size: null
+    max_prompt_length: null
+  data_sharding_axis:
+  - fsdp
+  max_inflight_computations: 1
+export:
+  # Match the whole delimiter; its first token alone is not an EOS token.
+  stop_strings: ['<|im_end|>']
+  enabled: true
+  overwrite: false
+  output_dir: artifacts/rowanai-gsm8k-sft/v1/merged
