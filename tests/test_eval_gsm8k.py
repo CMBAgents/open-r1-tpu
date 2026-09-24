@@ -75,3 +75,20 @@ def test_gsm8k_sft_continues_from_the_format_sft_with_its_prompt_and_template():
         fmt["export"]["output_dir"],
     }
     assert len(outputs) == 3
+
+
+def test_qwen_control_matches_the_rowanai_arm_except_model_and_outputs():
+    rowanai = load_config(SFT_RECIPE)
+    qwen = load_config("recipes/rowanai/sft/config_qwen_base_gsm8k_sft.yaml")
+    assert qwen["dataset"] == rowanai["dataset"]
+    assert qwen["optimizer"] == rowanai["optimizer"]
+    for key in ("max_steps", "gradient_accumulation_steps", "eval_every_n_steps"):
+        assert qwen["training"][key] == rowanai["training"][key]
+    assert qwen["model"]["model_path"] == "models/Qwen2.5-1.5B"
+    assert qwen["tokenizer"]["chat_template"] is None
+    assert "stop_strings" not in qwen["export"]
+    paths = [
+        (arm["training"]["checkpoint_dir"], arm["export"]["output_dir"])
+        for arm in (rowanai, qwen)
+    ]
+    assert not set(paths[0]) & set(paths[1])
