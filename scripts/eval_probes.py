@@ -1,18 +1,27 @@
 #!/usr/bin/env python3
-"""Score a base model on a few-shot probe suite of one-step reasoning tasks.
+"""Score a base model on a plain-text probe suite: multiple choice and text.
 
-Each probe row is a plain-text few-shot context ending in a query stem, a list
-of candidate continuations (each starting with a space) and the index of the
-correct one. No chat template or system prompt is applied: this measures what
-pretraining alone gives the base model. Two readings per row:
+Each probe row is a plain-text context and one or more continuations (each
+starting with a space). No chat template or system prompt is applied: this
+measures what pretraining alone gives the base model. The context may hold
+worked examples (a few-shot suite) or none (a zero-shot, next-token suite).
 
-- Multiple choice, by likelihood: the summed log-probability of each option's
-  tokens after the context. ``acc`` picks the highest sum; ``acc_norm``
-  divides by the option's length in bytes first, so a longer option is not
-  penalised for having more tokens (lm-evaluation-harness's two readings).
+Multiple-choice rows (``kind`` "choice", the default) have several options and
+the index of the correct one. Three readings:
+
+- By likelihood: the summed log-probability of each option's tokens after the
+  context. ``acc`` picks the highest sum; ``acc_norm`` divides by the option's
+  length in bytes first, so a longer option is not penalised for having more
+  tokens (lm-evaluation-harness's two readings).
+- By rank: where the correct option's first token ranks among every token the
+  model could produce next (``top1``, ``top5``). This needs no wrong options.
 - Greedy continuation, for rows marked ``generate``: the first line of up to
-  --max-new-tokens greedy tokens must start with the gold answer (a number
-  must match exactly, so 150 does not count for 15).
+  --max-new-tokens greedy tokens must start with the gold answer, or with any
+  wording in the row's ``accept`` list (a number must match exactly, so 150
+  does not count for 15).
+
+Text rows (``kind`` "text") have one option, the text to score. They report
+its bits per byte, which compares models with different tokenisers.
 
 Option tokens are found by tokenising the context and context+option and
 taking the common prefix, so the scored span is exactly what the model would
@@ -21,11 +30,12 @@ with the option, and the summary counts such options as
 ``boundary_merged_options``.
 
 The probe file is JSONL with ``id``, ``task``, ``family``, ``context``,
-``options``, ``answer``, ``gold`` and ``generate``. The recipe only supplies
-the architecture, RoPE and tokeniser settings for --model-path.
+``options``, ``answer``, ``gold`` and ``generate``, and optionally ``kind``
+and ``accept``. The recipe only supplies the architecture, RoPE and tokeniser
+settings for --model-path.
 
 Usage (from the repo root, with the pinned environment active):
-    python3 scripts/eval_fewshot_probes.py \
+    python3 scripts/eval_probes.py \
         --recipe recipes/rowanai/sft/config_qwen_base_gsm8k_sft.yaml \
         --model-path models/Qwen2.5-1.5B \
         --probes data/fewshot-probes/probes.jsonl \
@@ -36,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 import time
@@ -53,6 +64,9 @@ from eval_gsm8k import wilson_interval  # noqa: E402
 from eval_heldout_split import load_runtime, tunix_mesh_context  # noqa: E402
 
 NUMBER = re.compile(r"-?\d[\d,]*")
+# Padded widths, so the scorer compiles a handful of shapes rather than one per
+# batch, and short batches are not padded to the longest text in the suite.
+WIDTHS = (64, 128, 256, 512, 1024, 2048)
 
 
 def parse_args() -> argparse.Namespace:
@@ -67,6 +81,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-new-tokens", type=int, default=12)
     parser.add_argument("--max-prompt-length", type=int, default=256)
     return parser.parse_args()
+
+
+def is_text(row: dict[str, Any]) -> bool:
+    return row.get("kind") == "text"
 
 
 def option_span(
@@ -84,6 +102,13 @@ def option_span(
     if start < 1 or start >= len(full_ids):
         raise ValueError(f"no scorable option tokens for {option!r}")
     return full_ids, start, start < len(context_ids)
+
+
+def padded_width(length: int) -> int:
+    for width in WIDTHS:
+        if length <= width:
+            return width
+    raise ValueError(f"a {length}-token sequence is longer than {WIDTHS[-1]}")
 
 
 def first_line(text: str) -> str:
@@ -116,17 +141,36 @@ def pick(scores: Sequence[float]) -> int:
 
 
 def score_row(
-    row: dict[str, Any], logprobs: list[float], generation: str | None
+    row: dict[str, Any],
+    logprobs: list[float],
+    generation: str | None,
+    first_ranks: list[int] | None = None,
 ) -> dict[str, Any]:
-    """One output record from the option log-probabilities and continuation."""
+    """One output record from the option log-probabilities and continuation.
+
+    ``first_ranks[i]`` is how many tokens the model rated above option i's
+    first token (0 means it was the model's top choice).
+    """
     options = row["options"]
     lengths = [len(option.encode("utf-8")) for option in options]
-    normed = [lp / n for lp, n in zip(logprobs, lengths, strict=True)]
-    pred, pred_norm = pick(logprobs), pick(normed)
-    record = {
+    record: dict[str, Any] = {
         "id": row["id"],
         "task": row["task"],
         "family": row["family"],
+        "kind": row.get("kind", "choice"),
+    }
+    if is_text(row):
+        (logprob,) = logprobs
+        return {
+            **record,
+            "logprob": logprob,
+            "bytes": lengths[0],
+            "bits_per_byte": -logprob / math.log(2) / lengths[0],
+        }
+    normed = [lp / n for lp, n in zip(logprobs, lengths, strict=True)]
+    pred, pred_norm = pick(logprobs), pick(normed)
+    accept = row.get("accept") or [row["gold"]]
+    record |= {
         "options": options,
         "answer": row["answer"],
         "gold": row["gold"],
@@ -135,10 +179,11 @@ def score_row(
         "pred_norm": pred_norm,
         "correct": pred == row["answer"],
         "correct_norm": pred_norm == row["answer"],
+        "gold_rank": None if first_ranks is None else first_ranks[row["answer"]],
         "generation": generation,
         "gen_correct": None
         if generation is None
-        else generation_correct(generation, row["gold"]),
+        else any(generation_correct(generation, wording) for wording in accept),
     }
     if "middle" in row:
         record["picked_middle"] = options[pred] == row["middle"]
@@ -156,20 +201,40 @@ def accuracy(hits: int, total: int) -> dict[str, Any]:
 
 
 def summarise(records: list[dict[str, Any]], rows: list[dict[str, Any]]) -> dict:
-    """Accuracy per task and per family, with the chance rate beside it."""
+    """Accuracy per task and family beside the chance rate, and bits per byte
+    for text rows. The overall block covers multiple-choice rows only."""
     n_options = {row["id"]: len(row["options"]) for row in rows}
 
     def block(group: list[dict[str, Any]]) -> dict[str, Any]:
-        generated = [r for r in group if r["gen_correct"] is not None]
-        return {
-            "n": len(group),
-            "chance": sum(1 / n_options[r["id"]] for r in group) / len(group),
-            "acc": accuracy(sum(r["correct"] for r in group), len(group)),
-            "acc_norm": accuracy(sum(r["correct_norm"] for r in group), len(group)),
-            "gen": accuracy(sum(r["gen_correct"] for r in generated), len(generated))
-            if generated
-            else None,
-        }
+        out: dict[str, Any] = {"n": len(group)}
+        choice = [r for r in group if r["kind"] != "text"]
+        text = [r for r in group if r["kind"] == "text"]
+        if choice:
+            generated = [r for r in choice if r["gen_correct"] is not None]
+            ranked = [r for r in choice if r["gold_rank"] is not None]
+            out |= {
+                "chance": sum(1 / n_options[r["id"]] for r in choice) / len(choice),
+                "acc": accuracy(sum(r["correct"] for r in choice), len(choice)),
+                "acc_norm": accuracy(
+                    sum(r["correct_norm"] for r in choice), len(choice)
+                ),
+                "gen": accuracy(
+                    sum(r["gen_correct"] for r in generated), len(generated)
+                )
+                if generated
+                else None,
+                "top1": accuracy(sum(r["gold_rank"] == 0 for r in ranked), len(ranked))
+                if ranked
+                else None,
+                "top5": accuracy(sum(r["gold_rank"] < 5 for r in ranked), len(ranked))
+                if ranked
+                else None,
+            }
+        if text:
+            total_bytes = sum(r["bytes"] for r in text)
+            total_bits = sum(-r["logprob"] / math.log(2) for r in text)
+            out |= {"bytes": total_bytes, "bits_per_byte": total_bits / total_bytes}
+        return out
 
     tasks: dict[str, Any] = {}
     for task in dict.fromkeys(r["task"] for r in records):
@@ -179,13 +244,14 @@ def summarise(records: list[dict[str, Any]], rows: list[dict[str, Any]]) -> dict
             family: block([r for r in group if r["family"] == family])
             for family in dict.fromkeys(r["family"] for r in group)
         }
-    return {"overall": block(records), "tasks": tasks}
+    choice = [r for r in records if r["kind"] != "text"]
+    return {"overall": block(choice) if choice else None, "tasks": tasks}
 
 
-def option_logprobs(
+def option_scores(
     args: argparse.Namespace, model: Any, tokenizer: Any, mesh: Any, rows: list
-) -> tuple[list[list[float]], int]:
-    """Summed log-probability of every option of every row, in row order."""
+) -> tuple[list[list[float]], list[list[int]], int]:
+    """Summed log-probability and first-token rank of every option, by row."""
     import jax
     import jax.numpy as jnp
     import numpy as np
@@ -200,11 +266,11 @@ def option_logprobs(
             )
             merged += was_merged
             spans.append((row_index, ids, start))
-    length = -(-max(len(ids) for _, ids, _ in spans) // 32) * 32
-    print(f"{len(spans)} option sequences, padded to {length} tokens", flush=True)
+    longest = max(len(ids) for _, ids, _ in spans)
+    print(f"{len(spans)} option sequences, longest {longest} tokens", flush=True)
 
     @nnx.jit
-    def token_logps(model, tokens, lengths):
+    def token_scores(model, tokens, lengths):
         batch, width = tokens.shape
         positions = jnp.broadcast_to(jnp.arange(width), (batch, width))
         valid = jnp.arange(width)[None, :] < lengths[:, None]
@@ -213,33 +279,44 @@ def option_logprobs(
         logits, _ = model(tokens, positions=positions, cache=None, attention_mask=mask)
         logits = logits[:, :-1].astype(jnp.float32)
         picked = jnp.take_along_axis(logits, tokens[:, 1:, None], axis=-1)[..., 0]
-        return picked - jax.nn.logsumexp(logits, axis=-1)
+        ranks = jnp.sum(logits > picked[..., None], axis=-1)
+        return picked - jax.nn.logsumexp(logits, axis=-1), ranks
 
+    # Batch neighbours of similar length, so each batch pads to a small width.
+    order = sorted(range(len(spans)), key=lambda i: len(spans[i][1]))
     sums = [0.0] * len(spans)
+    ranks = [0] * len(spans)
     started = time.monotonic()
     with tunix_mesh_context(mesh):
-        for first in range(0, len(spans), args.batch_size):
-            batch = spans[first : first + args.batch_size]
-            wanted = len(batch)
-            # Keep one compiled shape: pad the final batch and drop the extras.
-            batch = batch + [batch[-1]] * (args.batch_size - wanted)
-            tokens = np.zeros((args.batch_size, length), dtype=np.int32)
+        for first in range(0, len(order), args.batch_size):
+            chosen = order[first : first + args.batch_size]
+            wanted = len(chosen)
+            # Keep the batch size fixed: pad the final batch and drop the extras.
+            chosen = chosen + [chosen[-1]] * (args.batch_size - wanted)
+            width = padded_width(max(len(spans[i][1]) for i in chosen))
+            tokens = np.zeros((args.batch_size, width), dtype=np.int32)
             lengths = np.zeros((args.batch_size,), dtype=np.int32)
-            for i, (_, ids, _) in enumerate(batch):
-                tokens[i, : len(ids)] = ids
-                lengths[i] = len(ids)
-            logps = np.asarray(
-                token_logps(model, jnp.asarray(tokens), jnp.asarray(lengths))
+            for slot, i in enumerate(chosen):
+                ids = spans[i][1]
+                tokens[slot, : len(ids)] = ids
+                lengths[slot] = len(ids)
+            logps, token_ranks = token_scores(
+                model, jnp.asarray(tokens), jnp.asarray(lengths)
             )
-            for i, (_, ids, start) in enumerate(batch[:wanted]):
+            logps, token_ranks = np.asarray(logps), np.asarray(token_ranks)
+            for slot, i in enumerate(chosen[:wanted]):
+                _, ids, start = spans[i]
                 # logps[t] is log p(token t+1 | tokens 0..t).
-                sums[first + i] = float(logps[i, start - 1 : len(ids) - 1].sum())
+                sums[i] = float(logps[slot, start - 1 : len(ids) - 1].sum())
+                ranks[i] = int(token_ranks[slot, start - 1])
     print(f"scored in {time.monotonic() - started:.0f}s", flush=True)
 
     per_row: list[list[float]] = [[] for _ in rows]
-    for (row_index, _, _), total in zip(spans, sums, strict=True):
+    per_row_ranks: list[list[int]] = [[] for _ in rows]
+    for (row_index, _, _), total, rank in zip(spans, sums, ranks, strict=True):
         per_row[row_index].append(total)
-    return per_row, merged
+        per_row_ranks[row_index].append(rank)
+    return per_row, per_row_ranks, merged
 
 
 def generations(
@@ -247,6 +324,9 @@ def generations(
 ) -> list[str | None]:
     """Greedy continuations for the rows marked ``generate``, else None."""
     wanted_rows = [i for i, row in enumerate(rows) if row["generate"]]
+    out: list[str | None] = [None] * len(rows)
+    if not wanted_rows:
+        return out
     prompts = [rows[i]["context"] for i in wanted_rows]
     longest = max(len(tokenizer.encode(prompt)) for prompt in prompts)
     if longest > args.max_prompt_length:
@@ -254,7 +334,6 @@ def generations(
             f"longest prompt is {longest} tokens, over --max-prompt-length "
             f"{args.max_prompt_length}"
         )
-    out: list[str | None] = [None] * len(rows)
     texts: list[str] = []
     with tunix_mesh_context(mesh):
         for first in range(0, len(prompts), args.gen_batch_size):
@@ -277,6 +356,32 @@ def generations(
     return out
 
 
+def print_summary(summary: dict[str, Any]) -> None:
+    print(
+        f"{'task':<16}{'n':>4}{'chance':>8}{'acc':>7}{'norm':>7}{'top1':>7}{'gen':>7}"
+    )
+    rows = [(t, b) for t, b in summary["tasks"].items() if "acc" in b]
+    if summary["overall"]:
+        rows.append(("overall", summary["overall"]))
+    for task, block in rows:
+        cells = [
+            block[key]["accuracy"] if block.get(key) else None
+            for key in ("acc", "acc_norm", "top1", "gen")
+        ]
+        print(
+            f"{task:<16}{block['n']:>4}{block['chance']:>8.2f}"
+            + "".join(f"{'' if c is None else f'{c:.2f}':>7}" for c in cells)
+        )
+    for task, block in summary["tasks"].items():
+        if "bits_per_byte" not in block:
+            continue
+        for family, part in block["families"].items():
+            print(
+                f"{task}/{family}: {part['bits_per_byte']:.3f} bits per byte "
+                f"over {part['bytes']} bytes"
+            )
+
+
 def main() -> None:
     args = parse_args()
     rows = [
@@ -292,11 +397,13 @@ def main() -> None:
     print(f"First probe:\n{first}", flush=True)
     print(f"Its tokens: {tokenizer.encode(first)}", flush=True)
 
-    logprobs, merged = option_logprobs(args, sampler.transformer, tokenizer, mesh, rows)
+    logprobs, ranks, merged = option_scores(
+        args, sampler.transformer, tokenizer, mesh, rows
+    )
     texts = generations(args, sampler, tokenizer, mesh, rows)
     records = [
-        {"model_path": args.model_path, **score_row(row, lps, text)}
-        for row, lps, text in zip(rows, logprobs, texts, strict=True)
+        {"model_path": args.model_path, **score_row(row, lps, text, rks)}
+        for row, lps, text, rks in zip(rows, logprobs, texts, ranks, strict=True)
     ]
 
     out_path = Path(args.output)
@@ -320,14 +427,7 @@ def main() -> None:
 
     print(f"\nwrote {out_path} and {summary_path}")
     print(f"options merged across the context boundary: {merged}")
-    print(f"{'task':<14}{'n':>4}{'chance':>8}{'acc':>7}{'norm':>7}{'gen':>7}")
-    for task, block in [*summary["tasks"].items(), ("overall", summary["overall"])]:
-        gen = block["gen"]["accuracy"] if block["gen"] else None
-        print(
-            f"{task:<14}{block['n']:>4}{block['chance']:>8.2f}"
-            f"{block['acc']['accuracy']:>7.2f}{block['acc_norm']['accuracy']:>7.2f}"
-            f"{'' if gen is None else f'{gen:.2f}':>7}"
-        )
+    print_summary(summary)
 
 
 if __name__ == "__main__":

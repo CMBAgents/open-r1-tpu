@@ -1,10 +1,11 @@
 import importlib.util
+import math
 from pathlib import Path
 
 import pytest
 
-SCRIPT_PATH = Path(__file__).parents[1] / "scripts" / "eval_fewshot_probes.py"
-SPEC = importlib.util.spec_from_file_location("eval_fewshot_probes", SCRIPT_PATH)
+SCRIPT_PATH = Path(__file__).parents[1] / "scripts" / "eval_probes.py"
+SPEC = importlib.util.spec_from_file_location("eval_probes", SCRIPT_PATH)
 assert SPEC is not None and SPEC.loader is not None
 probes = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(probes)
@@ -116,3 +117,71 @@ def test_summarise_counts_per_task_and_family_with_chance():
     assert summary["tasks"]["b"]["gen"] is None
     assert summary["overall"]["n"] == 3
     assert summary["overall"]["chance"] == pytest.approx((0.5 + 0.5 + 0.25) / 3)
+
+
+def test_padded_width_rounds_up_to_the_next_bucket():
+    assert probes.padded_width(1) == 64
+    assert probes.padded_width(64) == 64
+    assert probes.padded_width(65) == 128
+    with pytest.raises(ValueError):
+        probes.padded_width(5000)
+
+
+def test_generation_accepts_any_listed_wording():
+    probe = {
+        **row("g-01", "geography", "changed", 0, 4),
+        "gold": "St Petersburg",
+        "accept": ["St Petersburg", "St. Petersburg", "Petersburg"],
+    }
+    assert probes.score_row(probe, [-1.0] * 4, " St. Petersburg, on the")["gen_correct"]
+    assert not probes.score_row(probe, [-1.0] * 4, " Moscow.")["gen_correct"]
+
+
+def test_score_row_reads_the_gold_options_first_token_rank():
+    probe = row("a-01", "a", "f", 1, 3)
+    record = probes.score_row(probe, [-1.0, -2.0, -3.0], None, [0, 4, 9])
+    assert record["gold_rank"] == 4
+
+
+def text_row(id_, family, text):
+    return {
+        "id": id_,
+        "task": "prose",
+        "family": family,
+        "kind": "text",
+        "context": "A",
+        "options": [text],
+        "answer": 0,
+        "gold": text,
+        "generate": False,
+    }
+
+
+def test_text_row_reports_bits_per_byte():
+    record = probes.score_row(text_row("p-01", "f", " abcd"), [-math.log(2) * 10], None)
+    assert record["bytes"] == 5
+    assert record["bits_per_byte"] == pytest.approx(2.0)
+    assert "correct" not in record
+
+
+def test_summarise_keeps_text_rows_out_of_accuracy_and_overall():
+    rows = [
+        {**row("c-01", "choice", "f", 0, 2)},
+        {**row("c-02", "choice", "f", 0, 2)},
+        text_row("p-01", "old", " abcd"),
+        text_row("p-02", "old", " efghijklm"),
+    ]
+    records = [
+        probes.score_row(rows[0], [-1.0, -2.0], None, [0, 3]),
+        probes.score_row(rows[1], [-2.0, -1.0], None, [7, 0]),
+        probes.score_row(rows[2], [-math.log(2) * 5], None),
+        probes.score_row(rows[3], [-math.log(2) * 9], None),
+    ]
+    summary = probes.summarise(records, rows)
+    choice = summary["tasks"]["choice"]
+    assert choice["top1"]["correct"] == 1 and choice["top5"]["correct"] == 1
+    prose = summary["tasks"]["prose"]
+    assert "acc" not in prose
+    # 14 bits over 5 + 10 bytes, pooled rather than averaged per row.
+    assert prose["bits_per_byte"] == pytest.approx(14 / 15)
+    assert summary["overall"]["n"] == 2
