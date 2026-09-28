@@ -1168,9 +1168,15 @@ reference fixed at the SFT initialization makes GRPO's KL term constrain policy
 updates relative to the distilled model rather than the original base model.
 
 Merged export currently depends on Tunix's model-specific exporter. The default
-Qwen3 recipe supports it. When changing model families, set
-`export.enabled=false` unless that Tunix params module provides
-`save_lora_merged_model_as_safetensors`.
+Qwen3 recipe supports it. The pinned Tunix has none for Qwen2, so
+`open_r1_tpu.model.export` supplies one on Tunix's generic merge
+(`save_qwen2_lora_merged_model_as_safetensors`, which reuses Qwen3's key rules
+because the two families name and lay out their projections alike). It has not
+yet run on a TPU: `tests/test_qwen2_lora_export.py` checks it against the staged
+Qwen2.5-1.5B base on the VM, and until that passes GRPO recipes keep
+`export.enabled=false` behind `export.i_have_verified_qwen2_lora_export`. For
+other families, set `export.enabled=false` unless that Tunix params module
+provides `save_lora_merged_model_as_safetensors`.
 
 **A GRPO training pipeline is implemented**, targeting
 `OpenR1-Distill-Qwen2.5-Math-1.5B`'s merged SFT export rather than Qwen3:
@@ -1192,6 +1198,30 @@ gap above against whatever Tunix version is actually installed, then measure
 a short smoke run. Same restriction as everywhere else in this section: the exact Qwen2
 LoRA-merge export path is unverified, so this recipe's `export.enabled`
 defaults to `false`.
+
+### A positive control: reproducing SimpleRL-Zoo on Qwen2.5-1.5B
+
+`recipes/Qwen2.5-1.5B-SimpleRL-Zoo/` checks the GRPO pipeline against a
+published RL result. SimpleRL-Zoo (arXiv 2503.18892) trained the Qwen2.5-1.5B
+base with GRPO and a correctness-only reward on 8,523 MATH level 3-5 problems
+and reports GSM8K 55.7 → 74.4 and MATH-500 29.6 → 59.0; their trained model
+is public. A pipeline that works should take the same base most of the way to
+that model when both are scored the same way.
+
+- `grpo/config_grpo.yaml` copies their data, plain-text "Abel" prompt (as a
+  chat template), stop tokens, 1/0 reward (`math_answer_reward`, which reads
+  the answer in their order) and GRPO settings (8 rollouts, temperature 1.0,
+  KL 1e-4 with the low-variance estimator, token-mean loss). It cannot copy
+  their scale: 16 prompts per step on one v6e-1 against their 1,024, LoRA
+  against a full fine-tune, and 2,048 new tokens against 8,192. The header
+  lists every difference, the staging commands, and the gates before the
+  real run.
+- `eval/tier1_core.yaml` scores GSM8K and MATH-500 at their generation
+  settings (temperature 1.0, top-p 0.95, 16,000 tokens), over three seeds.
+  Run it on the base, their checkpoint and this run's export, each staged
+  with `scripts/stage_eval_model.py`. That copies a model directory with the
+  GRPO recipe's chat template and stop tokens, so vLLM serves every model
+  the prompt it was trained on; `eval/base.yaml` has the commands.
 
 ## Tests
 

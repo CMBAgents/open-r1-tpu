@@ -1,0 +1,80 @@
+# Shared by the Qwen2.5-1.5B-SimpleRL-Zoo eval tiers. A tier file `extends`
+# this one and overrides only what differs between tiers.
+#
+# THREE MODELS GO THROUGH THESE TIERS, UNCHANGED BUT FOR server.model_path:
+#
+#   1. the untouched base, Qwen/Qwen2.5-1.5B (the "before" row);
+#   2. the published SimpleRL-Zoo checkpoint,
+#      hkust-nlp/Qwen-2.5-1.5B-SimpleRL-Zoo (the target);
+#   3. the GRPO run in ../grpo, its merged export (the default below).
+#
+# The test of the GRPO run is 3 against 2 under this one protocol. The
+# published numbers (GSM8K 55.7 -> 74.4, MATH-500 29.6 -> 59.0) are the check
+# that the protocol itself is close to theirs.
+#
+# THE PROTOCOL IS SIMPLERL-ZOO'S AS FAR AS THIS STACK ALLOWS. Their 1.5B was
+# trained and scored on a plain-text prompt, "Question:\n{problem}\nAnswer:\n
+# Let's think step by step.\n", with generation stopped at <|endoftext|> and
+# at the tokens "Question", "Answer" and "Problem". Served through the
+# model's usual ChatML template, it would be scored on a prompt it never
+# trained on. So every model is served from a staged copy that carries the
+# GRPO recipe's chat template, which renders that prompt (unwrapping
+# LightEval's own GSM8K and MATH-500 wording back to the bare problem), and
+# its stop tokens as generation_config.json's eos_token_id, which vLLM stops
+# on. Staging also drops any sampling defaults in generation_config.json, so
+# no model is sampled differently from the others. On the VM:
+#
+#   hf download hkust-nlp/Qwen-2.5-1.5B-SimpleRL-Zoo \
+#     --local-dir models/Qwen-2.5-1.5B-SimpleRL-Zoo
+#   for pair in \
+#     models/Qwen2.5-1.5B:models/Qwen2.5-1.5B-eval \
+#     models/Qwen-2.5-1.5B-SimpleRL-Zoo:models/Qwen-2.5-1.5B-SimpleRL-Zoo-eval \
+#     artifacts/Qwen2.5-1.5B-SimpleRL-Zoo/grpo/merged:artifacts/Qwen2.5-1.5B-SimpleRL-Zoo/grpo/merged-eval
+#   do
+#     python scripts/stage_eval_model.py \
+#       --recipe recipes/Qwen2.5-1.5B-SimpleRL-Zoo/grpo/config_grpo.yaml \
+#       --source "${pair%%:*}" --output "${pair##*:}"
+#   done
+#
+# Then run a tier once per model with server.model_path set to its staged
+# directory, and reporting.output_dir and reporting.wandb.run_name set apart.
+#
+# What still differs from theirs: LightEval's scorers, not Qwen2.5-Math's
+# grader; three seeds where they ran one; and their stop strings "Question:"
+# and "Answer:" become the tokens "Question" and "Answer", which also stop a
+# line-initial "Question" or "Answer" without the colon.
+
+server:
+  model_path: artifacts/Qwen2.5-1.5B-SimpleRL-Zoo/grpo/merged-eval
+  served_model_name: null
+  # The Abel template ends an assistant turn with <|endoftext|>, and every
+  # staged generation_config.json lists it first among the stop tokens.
+  turn_end_token: <|endoftext|>
+  serve_command: ["scripts/run_vllm_tpu_container.sh"]
+  host: 127.0.0.1
+  port: 8000
+  tensor_parallel_size: 1
+  startup_timeout_secs: 900
+  # Qwen2.5-1.5B declares a 131072-token context, well above every tier's
+  # window. If the published checkpoint declares less, raise it for that
+  # model only, as recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/eval/base.yaml
+  # does with --hf-overrides.
+  extra_args: []
+  max_concurrency: 8
+  fail_fast_after: 10
+
+reporting:
+  summary_path: null
+  # SimpleRL-Zoo trains no <think> block, so the summary's closure statistics
+  # read zero and mean nothing here. The answer-marker rate (a \boxed{} in
+  # the completion) is the format number to watch: learning to box is part of
+  # what the RL run buys.
+  reasoning_start: <think>
+  reasoning_end: </think>
+  answer_marker: "\\boxed{"
+  wandb:
+    project_name: open-r1-tpu
+    entity: null
+    mode: online
+    job_type: eval
+    run_id: null

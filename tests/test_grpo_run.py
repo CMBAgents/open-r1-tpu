@@ -368,3 +368,119 @@ def test_gsm8k_recipes_record_a_64_prompt_eval_split(arm):
     assert config["dataset"]["eval_max_examples"] == 64
     assert config["training"]["eval_every_n_steps"] == 100
     assert config["training"]["eval_rollouts_path"].endswith("eval_rollouts.jsonl")
+
+
+# ---------------------------------------------------------------------------
+# grpo.loss_agg_mode / grpo.kl_loss_mode
+# ---------------------------------------------------------------------------
+
+
+def test_loss_options_are_optional_and_checked():
+    config = load_config(RECIPE, [], validator=validate_grpo_config)
+    assert "loss_agg_mode" not in config["grpo"]
+    with pytest.raises(ValueError, match="loss_agg_mode"):
+        load_config(
+            RECIPE, ["grpo.loss_agg_mode=token-sum"], validator=validate_grpo_config
+        )
+    with pytest.raises(ValueError, match="kl_loss_mode"):
+        load_config(RECIPE, ["grpo.kl_loss_mode=k3"], validator=validate_grpo_config)
+
+
+# ---------------------------------------------------------------------------
+# The SimpleRL-Zoo positive control
+# ---------------------------------------------------------------------------
+
+SIMPLERL_RECIPE = (
+    Path(__file__).parents[1]
+    / "recipes/Qwen2.5-1.5B-SimpleRL-Zoo/grpo/config_grpo.yaml"
+)
+QWEN25_BASE = Path(__file__).parents[1] / "models/Qwen2.5-1.5B"
+ABEL = "Question:\n{}\nAnswer:\nLet's think step by step.\n"
+
+
+def _render_like_transformers(template, messages):
+    # Transformers renders chat templates in this environment.
+    jinja2 = pytest.importorskip("jinja2")
+    from jinja2.sandbox import ImmutableSandboxedEnvironment
+
+    del jinja2
+    env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True)
+    return env.from_string(template).render(
+        messages=messages, add_generation_prompt=True
+    )
+
+
+def test_simplerl_recipe_matches_the_published_setup():
+    config = load_config(SIMPLERL_RECIPE, [], validator=validate_grpo_config)
+    assert config["model"]["model_path"] == "models/Qwen2.5-1.5B"
+    assert config["dataset"]["data_files"].endswith(
+        "simplelr_abel_level3to5/train.parquet"
+    )
+    assert config["dataset"]["system_prompt_file"] is None
+    assert config["grpo"]["reward_functions"] == ["math_answer_reward"]
+    assert config["grpo"]["num_generations"] == 8
+    assert config["grpo"]["beta"] == 1e-4
+    assert config["grpo"]["loss_agg_mode"] == "token-mean"
+    assert config["grpo"]["kl_loss_mode"] == "low_var_kl"
+    assert config["rollout"]["temperature"] == 1.0
+    assert config["rollout"]["top_p"] == 1.0 and config["rollout"]["top_k"] is None
+    # <|endoftext|>, <|im_end|>, "Question", "Answer", "Problem".
+    assert config["rollout"]["eos_token_ids"] == [151643, 151645, 14582, 16141, 31198]
+    assert config["optimizer"]["min_lr_ratio"] == 1.0
+    assert config["export"]["enabled"] is False
+    block = config["model"]["flash_attention_block_size"]
+    rollout = config["rollout"]
+    assert rollout["max_prompt_length"] % block == 0
+    assert (
+        rollout["max_prompt_length"] + rollout["max_tokens_to_generate"]
+    ) % block == 0
+    assert rollout["kv_cache_size"] >= (
+        rollout["max_prompt_length"] + rollout["max_tokens_to_generate"]
+    )
+
+
+def test_simplerl_chat_template_renders_their_prompt():
+    template = load_config(SIMPLERL_RECIPE, [], validator=validate_grpo_config)[
+        "tokenizer"
+    ]["chat_template"]
+    problem = "Compute $\\sin 315^\\circ$.\n\nGive an exact value."
+    user = [{"role": "user", "content": problem}]
+    assert _render_like_transformers(template, user) == ABEL.format(problem)
+    # LightEval's GSM8K query and MATH-500 instruction are unwrapped.
+    gsm8k = [{"role": "user", "content": "Question: How many?\nAnswer:"}]
+    assert _render_like_transformers(template, gsm8k) == ABEL.format("How many?")
+    math_500 = [
+        {
+            "role": "user",
+            "content": "Solve the following problem. The final line of your "
+            'response MUST be of the following format: "ANSWER: $ANSWER" '
+            "(without quotes) where $ANSWER is the final answer. Think step by "
+            "step before answering.\n\n" + problem,
+        }
+    ]
+    assert _render_like_transformers(template, math_500) == ABEL.format(problem)
+    # A system turn is dropped; an assistant turn ends in <|endoftext|>.
+    turn = [{"role": "system", "content": "s"}, *user]
+    turn.append({"role": "assistant", "content": "1"})
+    assert _render_like_transformers(template, turn) == (
+        ABEL.format(problem) + "1<|endoftext|>"
+    )
+
+
+def test_simplerl_turn_end_is_endoftext_with_the_real_tokenizer():
+    transformers = pytest.importorskip("transformers")
+    if not (QWEN25_BASE / "tokenizer_config.json").is_file():
+        pytest.skip(f"needs the staged Qwen2.5-1.5B tokenizer at {QWEN25_BASE}")
+    from open_r1_tpu.model.tokenizing import assistant_turn_end_id
+
+    config = load_config(SIMPLERL_RECIPE, [], validator=validate_grpo_config)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(QWEN25_BASE)
+    tokenizer.chat_template = config["tokenizer"]["chat_template"]
+    assert assistant_turn_end_id(tokenizer) == 151643
+    assert [tokenizer.decode([i]) for i in config["rollout"]["eos_token_ids"]] == [
+        "<|endoftext|>",
+        "<|im_end|>",
+        "Question",
+        "Answer",
+        "Problem",
+    ]

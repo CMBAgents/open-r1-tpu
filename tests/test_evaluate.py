@@ -16,6 +16,7 @@ DISTILL_DIR = Path(__file__).parents[1] / "recipes/DeepSeek-R1-Distill-Qwen-1.5B
 QWEN25_MATH_DIR = (
     Path(__file__).parents[1] / "recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/eval"
 )
+SIMPLERL_DIR = Path(__file__).parents[1] / "recipes/Qwen2.5-1.5B-SimpleRL-Zoo/eval"
 ALL_TIERS = [
     TIER0,
     TIER1,
@@ -23,6 +24,7 @@ ALL_TIERS = [
     TIER3,
     *sorted(DISTILL_DIR.glob("tier*.yaml")),
     *sorted(QWEN25_MATH_DIR.glob("tier*.yaml")),
+    *sorted(SIMPLERL_DIR.glob("tier*.yaml")),
 ]
 
 
@@ -120,6 +122,22 @@ def test_the_reference_recipes_never_send_a_system_prompt():
     for recipe in DISTILL_TIERS:
         settings = evaluate.resolve_settings(evaluate.load_eval_config(recipe))
         assert settings["system_prompt"] is None, recipe.name
+
+
+def test_the_simplerl_tier_runs_their_generation_settings():
+    # SimpleRL-Zoo scored its trained models at temperature 1.0, top-p 0.95
+    # and 16,000 new tokens, on the plain-text prompt the served chat
+    # template renders, which has no system turn.
+    settings = evaluate.resolve_settings(
+        evaluate.load_eval_config(SIMPLERL_DIR / "tier1_core.yaml")
+    )
+    assert settings["tasks"] == ["gsm8k|0", "math_500|0"]
+    assert settings["temperature"] == 1.0
+    assert settings["top_p"] == 0.95
+    assert settings["max_new_tokens"] == 16000
+    assert settings["system_prompt"] is None
+    assert settings["turn_end_token"] == "<|endoftext|>"
+    assert len(settings["seeds"]) == 3
 
 
 def test_the_reference_tier1_runs_the_comparison_protocol():

@@ -176,6 +176,51 @@ def safetensors_entry_fn(
     return SAFETENSORS_ENTRY_FNS[family]
 
 
+# Merged-LoRA export for Qwen2, which the pinned Tunix's qwen2/params.py does
+# not provide. Tunix's generic saver (tunix.models.safetensors_saver) does the
+# merge; what it needs per family is the adapter path -> safetensors key rule
+# and the transposes, and both are Qwen3's: the two families name their
+# projections identically (the shared rules above) and store them in the same
+# layouts.
+QWEN_LORA_MODULES = (
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+)
+_QWEN_LORA_TRANSPOSE_RULES = dict.fromkeys(QWEN_LORA_MODULES, (1, 0))
+
+
+def qwen_lora_state_key(lora_path: str) -> str:
+    """``layers.0.attn.q_proj`` -> ``model.layers.0.self_attn.q_proj.weight``."""
+    return f"model.{lora_path}.weight".replace(".attn.", ".self_attn.")
+
+
+def save_qwen2_lora_merged_model_as_safetensors(
+    *,
+    local_model_path: str,
+    output_dir: str,
+    lora_model: Any,
+    rank: int,
+    alpha: float,
+) -> None:
+    """Merge a Qwen2 LoRA adapter into the base checkpoint and save it."""
+    from tunix.models import safetensors_saver
+
+    safetensors_saver.save_lora_merged_model_as_safetensors(
+        local_model_path=local_model_path,
+        output_dir=output_dir,
+        lora_model=lora_model,
+        rank=rank,
+        alpha=alpha,
+        state_key_transform_fn=qwen_lora_state_key,
+        transpose_rules=_QWEN_LORA_TRANSPOSE_RULES,
+    )
+
+
 def collect_safetensors_state(
     named_params: list[tuple[str, np.ndarray]],
     entry_fn: SafetensorsEntryFn,
@@ -330,6 +375,13 @@ def export_model(
             config["model"]["model_name"], automodel.ModelModule.PARAMS
         )
         save_fn = getattr(params_module, "save_lora_merged_model_as_safetensors", None)
+        if save_fn is None and (
+            safetensors_entry_fn(
+                config["model"]["model_name"], config["model"].get("architecture")
+            )
+            is qwen2_safetensors_entry
+        ):
+            save_fn = save_qwen2_lora_merged_model_as_safetensors
         if save_fn is None:
             raise NotImplementedError(
                 "This Tunix model does not expose merged-LoRA safetensors "

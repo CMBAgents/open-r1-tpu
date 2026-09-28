@@ -1,0 +1,213 @@
+# GRPO positive control: Qwen2.5-1.5B (base) on SimpleRL-Zoo's data, to check
+# this pipeline against a published RL result. One v6e-1 chip.
+#
+# THE TARGET. SimpleRL-Zoo (arXiv 2503.18892, Table 1) trained this base
+# with GRPO and a correctness-only reward and reports GSM8K 55.7 -> 74.4 and
+# MATH-500 29.6 -> 59.0. The trained model is public
+# (hkust-nlp/Qwen-2.5-1.5B-SimpleRL-Zoo), so the test is: score that model
+# and this run's export with ../eval under one protocol, and see whether this
+# run reaches it. A run that stays at the base's score, or collapses, means
+# the pipeline is broken; the rowanai GRPO runs could not tell, because their
+# models started at 1-2% correct and had nothing to reinforce. This base
+# starts at 30-55%, so most rollout groups mix right and wrong answers.
+#
+# WHAT IS COPIED FROM SIMPLERL-ZOO (code: github.com/hkust-nlp/simpleRL-reason,
+# branch v1, which runs on verl):
+# - Data: simplelr_abel_level3to5, the 8,523 MATH level 3-5 problems their
+#   1.5B trained on, gold in gt_answer.
+# - Prompt: the plain-text "Abel" template their 0.5B and 1.5B used, with no
+#   chat markup: "Question:\n{problem}\nAnswer:\nLet's think step by step.\n".
+#   tokenizer.chat_template below renders exactly that.
+# - Stops: <|endoftext|> plus the tokens "Question" (14582), "Answer" (16141)
+#   and "Problem" (31198), which their rollout adds for Qwen2.5-1.5B so a
+#   base model does not run on into an invented next problem. <|im_end|>
+#   (151645) is added because their reward cuts the text there.
+# - Reward: 1 for a correct answer, else 0, no format reward
+#   (math_answer_reward, which reads the answer in their order).
+# - GRPO: 8 rollouts per prompt, temperature 1.0 with no top-p or top-k
+#   cut, clip 0.2, KL coefficient 1e-4 with the low-variance estimator,
+#   token-mean loss, constant learning rate, AdamW (0.9, 0.999) with weight
+#   decay 0.01, gradient clip 1.0.
+#
+# WHAT IS NOT, AND WHY:
+# - Scale. They take 1,024 prompts x 8 rollouts per step, up to 8,192 new
+#   tokens, split into 4 updates, for about 120 steps: roughly 480 updates
+#   over a million rollouts. One v6e-1 cannot do that. This takes 16 prompts
+#   x 8 rollouts and one update per step for 400 steps: a similar number of
+#   updates from about 1/20th of the rollouts, each update noisier. Extend
+#   training.max_steps (the resume picks up) if eval reward is still rising.
+#   On a v6e-4, model.mesh.shape=[4,1] with a larger dataset.batch_size is
+#   the way toward their batch, but no GRPO run here has used more than one
+#   chip yet, so smoke it there first.
+# - LoRA, not a full fine-tune. The GRPO actor here is always a LoRA adapter
+#   (grpo.run's validator), and a full fine-tune at their 5e-7 would also
+#   lose its updates to bfloat16 rounding. LoRA matches full fine-tuning for
+#   RL at about ten times the learning rate, hence 5e-6 below.
+# - 2,048 new tokens, not 8,192. Their stops end most answers well before
+#   this, and the logits for 8 x 2,560 tokens is what fits beside two 1.5B
+#   models on one chip. Watch behaviour/stopped_frac: if many rollouts hit
+#   the cap, the cap is costing reward.
+# - No entropy bonus (theirs is 0.001): the pinned Tunix GRPO has none.
+# - Prompt filter by tokens (512), not by characters (1,024): it keeps 39 of
+#   the 108 long problems theirs drops.
+# - Grader: a string normaliser, not math_verify (see math_answer_reward).
+#
+# STAGING, on the VM:
+#   hf download hkust-nlp/SimpleRL-Zoo-Data --repo-type dataset \
+#     --include "simplelr_abel_level3to5/*" --local-dir data/SimpleRL-Zoo-Data
+# The base is the same models/Qwen2.5-1.5B the rowanai Qwen arms used.
+#
+# BEFORE THE REAL RUN:
+# 1. `python -m pytest tests/test_qwen2_lora_export.py` on the VM. Tunix has
+#    no merged-LoRA exporter for Qwen2; that test checks this project's.
+#    Only once it passes, add `export.enabled=true
+#    export.i_have_verified_qwen2_lora_export=true` to the launch, or there
+#    is nothing for ../eval to serve.
+# 2. A smoke, with the HBM sampler running: `training.max_steps=3
+#    dataset.eval_max_examples=4 training.wandb.enabled=false` plus
+#    separate checkpoint, log and rollout paths. Peak HBM must leave room;
+#    if not, lower rollout.max_tokens_to_generate (and kv_cache_size) first.
+# 3. Check the step-0 eval. Qwen2.5-1.5B's attention biases overflow
+#    bfloat16 in the plain-attention generation path (runs of token 0, "!",
+#    in greedy evals). The earlier Qwen GRPO rollouts showed none, but if the
+#    eval rollouts do, or step-0 eval reward is far below the base's score
+#    at ../eval, the rollouts are corrupt and nothing after them means much.
+model:
+  model_name: qwen2.5-1.5b
+  model_id: Qwen/Qwen2.5-1.5B
+  model_source: local
+  model_path: models/Qwen2.5-1.5B
+  model_download_path: /tmp/open-r1-tpu/models/Qwen2.5-1.5B
+  intermediate_ckpt_dir: /tmp/open-r1-tpu/intermediate_ckpt/simplerl-zoo-grpo
+  rng_seed: 42
+  model_display: false
+  dtype: bfloat16
+  load_dtype: bfloat16
+  remat_config: DECODER
+  use_flash_attention: true
+  # Must divide every query length the kernel sees: the rollout prefill at
+  # rollout.max_prompt_length (512) and prompt plus completion (2,560).
+  flash_attention_block_size: 512
+  rope_theta: 1000000
+  lora_config:
+    module_path: ".*q_proj|.*k_proj|.*v_proj|.*o_proj|.*gate_proj|.*up_proj|.*down_proj"
+    rank: 64
+    alpha: 64.0
+  mesh:
+    shape: [1, 1]
+    axis_names: [fsdp, tp]
+
+tokenizer:
+  tokenizer_path: models/Qwen2.5-1.5B
+  tokenizer_type: huggingface
+  add_bos: false
+  add_eos: false
+  # SimpleRL-Zoo's Abel prompt as a chat template, so the project's
+  # chat-template prompt path renders it unchanged: a user turn becomes
+  # "Question:\n{content}\nAnswer:\nLet's think step by step.\n" and an
+  # assistant turn ends in <|endoftext|>, which makes that the turn-end token
+  # the export writes. The two `if`s only fire at evaluation: they strip the
+  # wrappers LightEval puts around GSM8K ("Question: ...\nAnswer:") and
+  # MATH-500 (an answer-format instruction, then a blank line) so those
+  # benchmarks see SimpleRL-Zoo's prompt too. Training rows are bare problems.
+  # scripts/stage_eval_model.py copies this template into each model ../eval
+  # serves.
+  chat_template: "{% for message in messages %}{% if message['role'] == 'user' %}{% set q = message['content'] %}{% if q.startswith('Question: ') and q.endswith('\nAnswer:') %}{% set q = q[10:-8] %}{% endif %}{% if q.startswith('Solve the following problem. The final line of your response MUST be') and '\n\n' in q %}{% set q = q.split('\n\n', 1)[1] %}{% endif %}Question:\n{{ q }}\nAnswer:\nLet's think step by step.\n{% elif message['role'] == 'assistant' %}{{ message['content'] }}<|endoftext|>{% endif %}{% endfor %}"
+
+dataset:
+  name: parquet
+  config: null
+  train_split: train
+  data_files: data/SimpleRL-Zoo-Data/simplelr_abel_level3to5/train.parquet
+  # The bare problem; the chat template above adds the Abel wrapper. The
+  # file's own `prompt` column is that same wrapper already applied, which is
+  # what verl read.
+  question_column: question
+  answer_column: gt_answer
+  # 16 prompts x 8 rollouts = 128 completions per step.
+  batch_size: 16
+  max_prompt_length: 512
+  # 400 steps x 16 = 6,400 prompts, under one pass over the 8,458 training
+  # rows; the second epoch is headroom for extending max_steps.
+  num_train_epochs: 2
+  max_examples: null
+  # 65 rows held out (seed below), capped at 64: the eval set Tunix samples
+  # every training.eval_every_n_steps at the training temperature. MATH-500
+  # itself is left to ../eval.
+  eval_fraction: 0.0076
+  eval_max_examples: 64
+  # Tunix scores each eval batch's rollouts in one pass; with Qwen's ~152k
+  # vocabulary only one prompt's 8 fit.
+  eval_batch_size: 1
+  seed: 42
+  # No system turn: SimpleRL-Zoo's prompt has none.
+  system_prompt_file: null
+
+optimizer:
+  # Constant after a 4-step warm-up, as SimpleRL-Zoo's is constant.
+  learning_rate: 5.0e-6
+  warmup_ratio: 0.01
+  min_lr_ratio: 1.0
+  b1: 0.9
+  b2: 0.999
+  eps: 1.0e-8
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+
+training:
+  # Logits one prompt (8 sequences) at a time; rollouts 4 prompts (32
+  # sequences) at a time. Raise rollout_micro_batch_size for speed only after
+  # the smoke has measured HBM.
+  train_micro_batch_size: 1
+  compute_logps_micro_batch_size: 1
+  rollout_micro_batch_size: 4
+  max_steps: 400
+  checkpoint_dir: artifacts/Qwen2.5-1.5B-SimpleRL-Zoo/grpo/checkpoints
+  checkpointing_options:
+    save_interval_steps: 50
+    max_to_keep: 10
+    enable_async_checkpointing: false
+    timeout_secs: 1200
+  eval_every_n_steps: 50
+  eval_rollouts_path: artifacts/Qwen2.5-1.5B-SimpleRL-Zoo/grpo/eval_rollouts.jsonl
+  metrics_log_dir: artifacts/Qwen2.5-1.5B-SimpleRL-Zoo/grpo/logs
+  project_name: open-r1-tpu
+  run_name: qwen2.5-1.5b-simplerl-zoo-grpo-v1
+  flush_every_n_steps: 5
+  wandb:
+    enabled: true
+    entity: null
+    mode: online
+    group: qwen2.5-1.5b-simplerl-zoo
+    job_type: grpo
+    tags: [tpu, grpo, rl, qwen2.5, math, positive-control, v6e-1]
+    resume: allow
+    save_code: false
+  offload_to_cpu: false
+
+grpo:
+  reward_functions: [math_answer_reward]
+  num_generations: 8
+  num_iterations: 1
+  beta: 1.0e-4
+  epsilon: 0.2
+  loss_agg_mode: token-mean
+  kl_loss_mode: low_var_kl
+
+rollout:
+  max_prompt_length: 512
+  max_tokens_to_generate: 2048
+  kv_cache_size: 2816
+  temperature: 1.0
+  top_p: 1.0
+  top_k: null
+  # <|endoftext|>, <|im_end|>, "Question", "Answer", "Problem".
+  eos_token_ids: [151643, 151645, 14582, 16141, 31198]
+
+export:
+  # Off until tests/test_qwen2_lora_export.py has passed on the VM; see the
+  # header. Then enable it from the launch command.
+  enabled: false
+  i_have_verified_qwen2_lora_export: false
+  overwrite: true
+  output_dir: artifacts/Qwen2.5-1.5B-SimpleRL-Zoo/grpo/merged

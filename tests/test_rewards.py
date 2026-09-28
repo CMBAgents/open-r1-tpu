@@ -251,3 +251,95 @@ def test_reward_fns_from_names():
     )
     with pytest.raises(ValueError, match="Unknown reward"):
         reward_fns_from_names(["nope"])
+
+
+# ---------------------------------------------------------------------------
+# math_answer_reward: SimpleRL-Zoo's 1/0 reward, MATH-normalised
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("predicted", "gold"),
+    [
+        ("\\frac{3}{4}", "\\frac34"),
+        ("\\dfrac{3}{4}", "\\frac{3}{4}"),
+        ("3/4", "\\frac{3}{4}"),
+        ("0.5", "\\frac{1}{2}"),
+        ("x = 5", "5"),
+        ("2\\sqrt3", "2\\sqrt{3}"),
+        ("\\left( 3, \\frac{\\pi}{2} \\right)", "(3,\\frac{\\pi}{2})"),
+        ("90^\\circ", "90"),
+        ("25\\%", "25"),
+        ("1,000", "1000"),
+        ("3.0", "3"),
+        ("\\$18", "18"),
+        ("5\\text{ cm}", "5"),
+    ],
+)
+def test_math_answers_equal_accepts_equivalent_forms(predicted, gold):
+    from open_r1_tpu.grpo.rewards import math_answers_equal
+
+    assert math_answers_equal(predicted, gold)
+
+
+@pytest.mark.parametrize(
+    ("predicted", "gold"),
+    [
+        ("\\frac{4}{3}", "\\frac{3}{4}"),
+        ("2\\sqrt{2}", "2\\sqrt{3}"),
+        ("(3,4)", "(4,3)"),
+        ("5.1", "5"),
+        ("", "5"),
+    ],
+)
+def test_math_answers_equal_rejects_different_answers(predicted, gold):
+    from open_r1_tpu.grpo.rewards import math_answers_equal
+
+    assert not math_answers_equal(predicted, gold)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("So $x = \\boxed{\\dfrac{3}{4}}$.", "\\dfrac{3}{4}"),
+        ("First \\boxed{1}, correcting that, \\boxed{2}.", "2"),
+        ("Adding up, the answer is $\\frac{3}{4}$.", "$\\frac{3}{4}$"),
+        ("So the final answer is: 118.", " 118"),
+        ("We get 12, then 1,024 in all", "1024"),
+        ("no digits here", None),
+    ],
+)
+def test_extract_math_answer_follows_simplerl_order(text, expected):
+    from open_r1_tpu.grpo.rewards import extract_math_answer
+
+    assert extract_math_answer(text) == expected
+
+
+def test_math_answer_reward_scores_the_extracted_answer():
+    from open_r1_tpu.grpo.rewards import math_answer_reward
+
+    completions = [
+        "So the area is $\\boxed{\\dfrac{3}{4}}$.",
+        "First \\boxed{2}, but correcting that, \\boxed{1}.",
+        "Adding up, the answer is $\\frac{3}{4}$.",
+        "Wrong: \\boxed{\\frac{4}{3}}",
+        "Cut off mid-box: \\boxed{\\frac{3}{",
+        "The sum is 18 and the product is 118",
+    ]
+    gold = ["\\frac{3}{4}", "2", "\\frac{3}{4}", "\\frac{3}{4}", "\\frac{3}{4}", "118"]
+    assert math_answer_reward(
+        prompts=[""] * 6, completions=completions, answer=gold
+    ) == [1.0, 0.0, 1.0, 0.0, 0.0, 1.0]
+
+
+def test_math_answer_reward_rejects_mismatched_lengths():
+    from open_r1_tpu.grpo.rewards import math_answer_reward
+
+    with pytest.raises(ValueError, match="matching length"):
+        math_answer_reward(prompts=["p"], completions=["\\boxed{1}"], answer=[])
+
+
+def test_math_answer_reward_is_selectable_by_name():
+    from open_r1_tpu.grpo.rewards import math_answer_reward, reward_fns_from_names
+
+    assert reward_fns_from_names(["math_answer_reward"]) == (math_answer_reward,)

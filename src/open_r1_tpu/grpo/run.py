@@ -76,6 +76,20 @@ from open_r1_tpu.model.tokenizing import assistant_turn_end_id
 
 LOGGER = logging.getLogger(__name__)
 
+# GRPOConfig values the pinned Tunix accepts (tunix/rl/common.py's
+# aggregate_loss and compute_kl_divergence). A recipe that sets neither keeps
+# Tunix's defaults: sequence-mean-token-mean and the plain "kl" estimator.
+LOSS_AGG_MODES = frozenset(
+    {
+        "token-mean",
+        "sequence-mean-token-mean",
+        "sequence-mean-token-scale",
+        "seq-mean-token-sum",
+        "sequence-mean-token-sum-norm",
+    }
+)
+KL_LOSS_MODES = frozenset({"kl", "mse_kl", "low_var_kl"})
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -241,19 +255,26 @@ def validate_grpo_config(config: dict[str, Any]) -> None:
         value = grpo.get(key)
         if not isinstance(value, (int, float)) or isinstance(value, bool):
             raise ValueError(f"grpo.{key} must be a number")
+    for key, allowed in (
+        ("loss_agg_mode", LOSS_AGG_MODES),
+        ("kl_loss_mode", KL_LOSS_MODES),
+    ):
+        value = grpo.get(key)
+        if value is not None and value not in allowed:
+            raise ValueError(f"grpo.{key} must be one of {sorted(allowed)}")
 
     export = config.get("export", {})
     if export.get("enabled") and not export.get("i_have_verified_qwen2_lora_export"):
         raise ValueError(
             "export.enabled requires export.i_have_verified_qwen2_lora_export: "
-            "true, set only after confirming on the VM that "
-            "tunix.models.automodel.get_model_module(model_name, "
-            "ModelModule.PARAMS) exposes save_lora_merged_model_as_safetensors "
-            "for this model family. README's 'Checkpoints and GRPO handoff' "
-            "section: Tunix's merged-LoRA exporter is confirmed for Qwen3 "
-            "only, and this recipe's model is Qwen2. Until then, the "
-            "Tunix/Orbax LoRA checkpoint under training.checkpoint_dir "
-            "(actor/<step>/model_params) is the durable artifact."
+            "true, set only after a smoke run's merged export has been checked "
+            "on the VM. README's 'Checkpoints and GRPO handoff' section: "
+            "Tunix's own merged-LoRA exporter covers Qwen3 only, and Qwen2 "
+            "goes through open_r1_tpu.model.export's "
+            "save_qwen2_lora_merged_model_as_safetensors, which has not been "
+            "run on a TPU yet. Until then, the Tunix/Orbax LoRA checkpoint "
+            "under training.checkpoint_dir (actor/<step>/model_params) is the "
+            "durable artifact."
         )
 
 
@@ -482,11 +503,19 @@ def run(config: dict[str, Any]) -> None:
     )
 
     grpo = config["grpo"]
+    # Optional settings are passed only when the recipe sets them, so older
+    # recipes keep running on Tunix's own defaults.
+    optional = {
+        key: grpo[key]
+        for key in ("loss_agg_mode", "kl_loss_mode")
+        if grpo.get(key) is not None
+    }
     grpo_config = GRPOConfig(
         num_generations=int(grpo["num_generations"]),
         num_iterations=int(grpo.get("num_iterations", 1)),
         beta=float(grpo.get("beta", 0.04)),
         epsilon=float(grpo.get("epsilon", 0.2)),
+        **optional,
     )
 
     rl_cluster = rl_cluster_lib.RLCluster(

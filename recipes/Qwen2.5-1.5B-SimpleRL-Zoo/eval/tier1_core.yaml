@@ -1,0 +1,40 @@
+# Tier 1: GSM8K and MATH-500 at SimpleRL-Zoo's generation settings, the two
+# benchmarks with a published before/after row for Qwen2.5-1.5B. Run it on
+# each of the three models base.yaml lists.
+#
+# Their trained model was scored at temperature 1.0, top-p 0.95 and a
+# 16,000-token budget, one sample per problem. This tier keeps those settings
+# but takes three seeds, since one seed alone moves these benchmarks by
+# several points. Their base row was greedy; to reproduce it, override
+# `sampling.temperature=0.0 sampling.top_p=1.0 eval.seeds=[0]` for the base.
+#
+# Cost: 1,819 problems x 3 seeds. The stop tokens end most answers within a
+# few hundred tokens, so the 16,000-token budget matters only for the rare
+# rollout that never stops; watch generation.truncation_rate in the summary.
+extends: base.yaml
+
+eval:
+  tier: tier1-core
+  tasks:
+    - "gsm8k|0"
+    - "math_500|0"
+  seeds: [0, 1, 2]
+  max_samples: null
+
+server:
+  max_model_len: 16896
+
+sampling:
+  temperature: 1.0
+  top_p: 0.95
+  max_new_tokens: 16000
+  # None: the Abel prompt has no system turn, and the chat template would
+  # drop one anyway.
+  system_prompt_file: null
+
+reporting:
+  output_dir: artifacts/Qwen2.5-1.5B-SimpleRL-Zoo/eval/tier1
+  wandb:
+    enabled: true
+    run_name: qwen2.5-1.5b-simplerl-zoo-grpo-tier1
+    tags: [tpu, eval, math, simplerl-zoo, positive-control]
