@@ -20,6 +20,7 @@ within-group variance of rollouts, which memorised prompts collapse.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from open_r1_tpu.core.config import read_prompt_file
@@ -61,7 +62,12 @@ def _prompt_token_count(
     # (tunix.generate.tokenizer_adapter), which apply_chat_template is known
     # to support (model.tokenizing's render_ids relies on the same call) but
     # whose plain encode() is not exercised anywhere else in this project.
+    # Recent transformers return a BatchEncoding (a mapping) here, not a list,
+    # and len() of that counts its keys: every prompt read as 2 tokens and the
+    # budget never dropped anything.
     ids = _render(question, tokenizer, system_prompt=system_prompt, tokenize=True)
+    if isinstance(ids, Mapping):
+        ids = ids["input_ids"]
     if hasattr(ids, "tolist"):
         ids = ids.tolist()
     if ids and isinstance(ids[0], list):

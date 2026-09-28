@@ -96,6 +96,29 @@ def test_row_encoder_drops_rows_over_the_prompt_budget():
     assert encode({"problem": "a much longer problem statement", "answer": "4"}) is None
 
 
+def test_row_encoder_measures_a_batch_encoding_by_its_input_ids():
+    # Recent transformers return a BatchEncoding mapping from
+    # apply_chat_template(tokenize=True); its len() is the number of keys (2),
+    # which once let every prompt through the budget.
+    class BatchEncodingTokenizer(FakeTokenizer):
+        def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
+            rendered = super().apply_chat_template(
+                messages, tokenize=tokenize, add_generation_prompt=add_generation_prompt
+            )
+            if not tokenize:
+                return rendered
+            return {"input_ids": rendered, "attention_mask": [1] * len(rendered)}
+
+    encode = build_row_encoder(
+        BatchEncodingTokenizer(),
+        question_column="problem",
+        answer_column="answer",
+        system_prompt=None,
+        max_prompt_length=5,
+    )
+    assert encode({"problem": "a much longer problem statement", "answer": "4"}) is None
+
+
 def test_row_encoder_keeps_rows_within_the_prompt_budget():
     encode = build_row_encoder(
         FakeTokenizer(),
