@@ -174,11 +174,7 @@ def test_container_wrapper_builds_the_derived_tag_from_the_committed_context(tmp
     assert str(REPO_ROOT / "docker/vllm-tpu") in build_command
 
 
-def test_container_wrapper_reserves_an_unused_cid_path_and_hides_the_token(tmp_path):
-    docker_log = tmp_path / "docker.log"
-    fake_docker = tmp_path / "docker"
-    fake_docker.write_text(
-        """#!/usr/bin/env bash
+FAKE_RUN_DOCKER = """#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
 case "$1" in
@@ -203,7 +199,13 @@ case "$1" in
   *) exit 0 ;;
 esac
 """
-    )
+
+
+def _serve_through_fake_docker(tmp_path, extra_environment):
+    """Run the wrapper's serve path against a fake docker; return what it ran."""
+    docker_log = tmp_path / "docker.log"
+    fake_docker = tmp_path / "docker"
+    fake_docker.write_text(FAKE_RUN_DOCKER)
     fake_docker.chmod(0o755)
     model = tmp_path / "model"
     model.mkdir()
@@ -211,7 +213,7 @@ esac
         **os.environ,
         "PATH": f"{tmp_path}:{os.environ['PATH']}",
         "FAKE_DOCKER_LOG": str(docker_log),
-        "HF_TOKEN": "must-not-appear-in-command",
+        **extra_environment,
     }
 
     subprocess.run(
@@ -227,9 +229,31 @@ esac
         text=True,
         env=environment,
     )
+    return docker_log.read_text()
 
-    logged = docker_log.read_text()
+
+def test_container_wrapper_reserves_an_unused_cid_path_and_hides_the_token(tmp_path):
+    logged = _serve_through_fake_docker(
+        tmp_path, {"HF_TOKEN": "must-not-appear-in-command"}
+    )
+
     assert "run --rm" in logged
     assert "--env HF_TOKEN" in logged
     assert "must-not-appear-in-command" not in logged
     assert "stop --time 30 fake-container-id" in logged
+
+
+def test_container_wrapper_forwards_libtpu_settings_by_name(tmp_path):
+    logged = _serve_through_fake_docker(
+        tmp_path,
+        {
+            "TPU_VISIBLE_CHIPS": "0",
+            "LIBTPU_INIT_ARGS": "--sentinel-libtpu-flag",
+            "NOT_A_TPU_SETTING": "1",
+        },
+    )
+
+    assert "--env TPU_VISIBLE_CHIPS" in logged
+    assert "--env LIBTPU_INIT_ARGS" in logged
+    assert "--sentinel-libtpu-flag" not in logged
+    assert "NOT_A_TPU_SETTING" not in logged

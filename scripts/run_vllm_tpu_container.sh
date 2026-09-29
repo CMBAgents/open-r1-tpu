@@ -212,6 +212,14 @@ if [[ -n "${HF_TOKEN:-}" ]]; then
   TOKEN_ARGS=(--env HF_TOKEN)
 fi
 
+# libtpu takes its chip selection and flags from TPU_* and LIBTPU_* variables.
+# Forward them by name so a caller can pin the server to one chip of a
+# multi-chip VM (TPU_VISIBLE_CHIPS=0, both bounds 1,1,1) or pass libtpu flags.
+TPU_ENV_ARGS=()
+while IFS= read -r name; do
+  TPU_ENV_ARGS+=(--env "${name}")
+done < <(compgen -e | grep -E '^(TPU_|LIBTPU_)' || true)
+
 "${DOCKER[@]}" run \
   --rm \
   --name "${CONTAINER_NAME}" \
@@ -226,7 +234,8 @@ fi
   --volume "${VLLM_CACHE_VOLUME}:/root/.cache/vllm" \
   --env HF_HOME=/root/.cache/huggingface \
   --env VLLM_XLA_CACHE_PATH=/root/.cache/vllm/xla_cache \
-  "${TOKEN_ARGS[@]}" \
+  ${TOKEN_ARGS[@]+"${TOKEN_ARGS[@]}"} \
+  ${TPU_ENV_ARGS[@]+"${TPU_ENV_ARGS[@]}"} \
   --entrypoint vllm \
   "${IMAGE}" \
   serve "${MODEL_PATH}" "$@" &
