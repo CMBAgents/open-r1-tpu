@@ -120,7 +120,7 @@ def stage(
 
 def main(argv: list[str] | None = None) -> None:
     from open_r1_tpu.core.config import load_config
-    from open_r1_tpu.grpo.run import validate_grpo_config
+    from open_r1_tpu.grpo.config import validate_grpo_config
 
     args = parse_args(argv)
     recipe = load_config(args.recipe, [], validator=validate_grpo_config)

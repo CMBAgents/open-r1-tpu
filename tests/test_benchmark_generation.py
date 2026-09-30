@@ -208,10 +208,22 @@ def test_run_command_uses_the_recipes_system_prompt_verbatim(
     assert loaded["overrides"] == ["server.port=8123"]
 
 
-def test_eval_config_and_sft_config_are_required():
-    parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    benchmark._add_run_parser(subparsers)
-
+def test_eval_config_is_required():
     with pytest.raises(SystemExit):
-        parser.parse_args(["run", "--backend", "vllm"])
+        benchmark._parse_args(["run", "--backend", "vllm", "--output", "o.json"])
+
+
+def test_the_vllm_step_needs_no_sft_recipe():
+    # The arguments scripts/benchmark_generation_tpu.sh passes to the vLLM step.
+    args = benchmark._parse_args(
+        ["run", "--backend", "vllm", "--eval-config", "e.yaml", "--output", "o.json"]
+    )
+
+    assert args.sft_config is None
+
+
+def test_the_tunix_step_requires_an_sft_recipe():
+    with pytest.raises(SystemExit):
+        benchmark._parse_args(
+            ["run", "--backend", "tunix", "--eval-config", "e.yaml", "--output", "o"]
+        )

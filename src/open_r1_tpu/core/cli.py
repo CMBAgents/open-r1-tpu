@@ -23,7 +23,7 @@ def recipe_parser(description: str | None) -> argparse.ArgumentParser:
     parser.add_argument(
         "overrides",
         nargs="*",
-        help="Dotted recipe overrides such as training.max_steps=4",
+        help="Dotted recipe overrides, as section.key=value",
     )
     return parser
 

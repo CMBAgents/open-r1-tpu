@@ -9,8 +9,9 @@ active::
 The architecture is detected from the directory's ``config.json``. To talk to a
 training run's own weights, before it has finished or been exported, pass the
 SFT recipe it was trained with; its latest checkpoint is restored on top of the
-base the run started from (the recipe's ``model.model_path`` unless
-``--model-path`` says otherwise)::
+local base the run started from (``model.model_path``, or
+``model.model_download_path`` for a Hub model) unless ``--model-path`` says
+otherwise::
 
     python scripts/chat_tpu.py \
       --recipe recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml
@@ -29,7 +30,6 @@ import argparse
 import os
 import re
 import sys
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +39,7 @@ from open_r1_tpu.model.checkpoint import (
     resolve_model_dir,
     tunix_mesh_context,
 )
+from open_r1_tpu.model.tokenizing import as_token_ids
 
 DEFAULT_MODEL_PATH = "models/Qwen2.5-Math-1.5B"
 DEFAULT_MAX_PROMPT_LENGTH = 1024
@@ -73,7 +74,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Local Qwen2 or Qwen3 directory containing model.safetensors and "
-            "config.json (default: the recipe's model.model_path with --recipe, "
+            "config.json (default: the recipe's local base model with --recipe, "
             f"else {DEFAULT_MODEL_PATH})"
         ),
     )
@@ -159,10 +160,18 @@ def parse_args() -> argparse.Namespace:
 
 
 def recipe_base_model_path(recipe: str) -> str:
-    """The local base a recipe trains from, or the default for a Hub model."""
+    """The local base an SFT recipe trains from, as its merged export finds it."""
     from open_r1_tpu.core.config import load_config
+    from open_r1_tpu.model.export import local_base_model_path
+    from open_r1_tpu.sft.config import validate_sft_config
 
-    return str(load_config(recipe)["model"].get("model_path") or DEFAULT_MODEL_PATH)
+    config = load_config(recipe, validator=validate_sft_config)
+    try:
+        return local_base_model_path(config)
+    except ValueError:
+        raise ValueError(
+            f"{recipe} names no local base model; pass --model-path"
+        ) from None
 
 
 def validate_options(args: argparse.Namespace) -> None:
@@ -175,12 +184,6 @@ def validate_options(args: argparse.Namespace) -> None:
         raise ValueError("--temperature cannot be negative")
     if not 0 < args.top_p <= 1:
         raise ValueError("--top-p must be in (0, 1]")
-    if args.model_path is None:
-        args.model_path = (
-            recipe_base_model_path(args.recipe) if args.recipe else DEFAULT_MODEL_PATH
-        )
-    args.model_path = resolve_model_dir(args.model_path)
-
     if args.checkpoint_dir and not args.recipe:
         raise ValueError(
             "--checkpoint-dir needs --recipe, which says whether the "
@@ -192,6 +195,12 @@ def validate_options(args: argparse.Namespace) -> None:
         if not recipe_path.is_file():
             raise FileNotFoundError(f"Recipe does not exist: {recipe_path}")
         args.recipe = str(recipe_path)
+
+    if args.model_path is None:
+        args.model_path = (
+            recipe_base_model_path(args.recipe) if args.recipe else DEFAULT_MODEL_PATH
+        )
+    args.model_path = resolve_model_dir(args.model_path)
 
 
 def messages_with_prompt(
@@ -276,21 +285,6 @@ def colour_reasoning(reply: str) -> str:
     return reply
 
 
-def as_token_ids(value: Any) -> list[int]:
-    """Normalise the tokenizer's list, array, or batch-of-one output."""
-    if hasattr(value, "tolist"):
-        value = value.tolist()
-    if value and isinstance(value[0], list):
-        if len(value) != 1:
-            raise ValueError("chat template unexpectedly returned a token batch")
-        value = value[0]
-    if not isinstance(value, list) or not all(
-        isinstance(token, int) for token in value
-    ):
-        raise ValueError("chat template did not return a list of token IDs")
-    return value
-
-
 def prompt_token_count(
     tokenizer: Any, history: list[dict[str, str]], system_prompt: str
 ) -> int:
@@ -300,10 +294,6 @@ def prompt_token_count(
         tokenize=True,
         add_generation_prompt=True,
     )
-    # Recent Transformers return a BatchEncoding, which is a Mapping but not a
-    # dict.
-    if isinstance(token_ids, Mapping):
-        token_ids = token_ids["input_ids"]
     return len(as_token_ids(token_ids))
 
 

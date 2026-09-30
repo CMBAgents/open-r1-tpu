@@ -16,7 +16,11 @@ from typing import Any
 from open_r1_tpu.core.cli import parse_recipe_args, recipe_parser
 from open_r1_tpu.core.config import load_config, read_prompt_file
 from open_r1_tpu.core.packages import installed_version
-from open_r1_tpu.model.export import merged_lora_saver, safetensors_entry_fn
+from open_r1_tpu.model.export import (
+    local_base_model_path,
+    merged_lora_saver,
+    safetensors_entry_fn,
+)
 from open_r1_tpu.model.loading import create_tokenizer
 from open_r1_tpu.sft.config import validate_sft_config
 from open_r1_tpu.sft.data import (
@@ -122,6 +126,10 @@ def main() -> None:
             else:
                 safetensors_entry_fn(model_name)
         except NotImplementedError as exc:
+            errors.append(str(exc))
+        try:
+            local_base_model_path(config)
+        except ValueError as exc:
             errors.append(str(exc))
 
     print(f"JAX {jax.__version__}; Tunix {installed_version('google-tunix')}")

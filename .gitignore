@@ -7,17 +7,23 @@ dist/
 
 # Virtual environments and tool caches
 .venv
+venv/
+.cache/
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.coverage
 
-# Local secrets, such as docker/langfuse/.env
+# Local secrets, such as docker/langfuse/.env and a direnv file
 .env
+.envrc
 
-# Staged models and data, training outputs and W&B's local run files
-/artifacts/
-/data/
-/models/
-/wandb/
+# Staged models and data, training outputs, logs and W&B's local run files
+artifacts/
+data/
+models/
+wandb/
+*.log
 
 # Deployment-specific tracing config; configs/tracing.example.yaml is the
 # committed template.

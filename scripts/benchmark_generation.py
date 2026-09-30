@@ -368,8 +368,9 @@ def _run_tunix(
 
     from open_r1_tpu.core.config import load_config
     from open_r1_tpu.model.loading import create_model
+    from open_r1_tpu.sft.config import validate_sft_config
 
-    config = copy.deepcopy(load_config(sft_config_path))
+    config = copy.deepcopy(load_config(sft_config_path, validator=validate_sft_config))
     model_config = config["model"]
     model_config["model_source"] = "local"
     model_config["model_path"] = model_path
@@ -637,7 +638,9 @@ def _add_run_parser(subparsers: Any) -> None:
     parser = subparsers.add_parser("run", help="run one generation backend")
     parser.add_argument("--backend", choices=("vllm", "tunix"), required=True)
     parser.add_argument("--eval-config", required=True, help="YAML evaluation recipe")
-    parser.add_argument("--sft-config", required=True, help="YAML SFT recipe")
+    parser.add_argument(
+        "--sft-config", help="YAML SFT recipe; required with --backend tunix"
+    )
     parser.add_argument("--model-path")
     parser.add_argument("--output", required=True)
     parser.add_argument("--batch-sizes", nargs="+", type=int, default=[1, 8])
@@ -665,12 +668,15 @@ def _add_compare_parser(subparsers: Any) -> None:
     parser.add_argument("--output-markdown", required=True)
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
     _add_run_parser(subparsers)
     _add_compare_parser(subparsers)
-    return parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.command == "run" and args.backend == "tunix" and not args.sft_config:
+        parser.error("--sft-config is required with --backend tunix")
+    return args
 
 
 def _run_command(args: argparse.Namespace) -> None:

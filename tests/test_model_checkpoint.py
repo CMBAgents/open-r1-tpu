@@ -285,6 +285,16 @@ def test_load_sampler_restores_a_lora_recipe_into_its_own_geometry(monkeypatch):
     assert captured["restore"] == (fake.model, "elsewhere/checkpoints", 1500, True)
 
 
+def test_a_recipe_without_a_checkpoint_root_is_rejected(monkeypatch):
+    # Restoring nothing would serve the base weights as if they were the run's.
+    monkeypatch.setattr(
+        checkpoint, "recipe_restore_settings", lambda _recipe: (None, None)
+    )
+
+    with pytest.raises(ValueError, match="pass --checkpoint-dir"):
+        checkpoint.load_sampler("/models/base", seed=0, cache_size=8, recipe="r.yaml")
+
+
 def test_recipe_restore_settings_match_a_lora_recipe(tmp_path):
     recipe = tmp_path / "lora.yaml"
     recipe.write_text(
@@ -312,6 +322,7 @@ def test_full_finetune_recipe_restores_all_parameters():
     )
 
     assert lora_config is None
+    assert checkpoint_dir is not None
     assert checkpoint_dir.endswith("OpenR1-Distill-Qwen2.5-Math-1.5B/checkpoints")
 
 
@@ -332,7 +343,7 @@ def test_available_steps_tolerates_a_missing_root(tmp_path):
     assert checkpoint.available_steps(str(tmp_path / "absent")) == []
 
 
-def test_resolve_step_defaults_to_the_latest_written():
+def test_resolve_step_leaves_the_latest_to_orbax_when_no_step_is_asked():
     assert checkpoint.resolve_step("/absent", None) is None
 
 

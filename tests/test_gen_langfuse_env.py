@@ -148,6 +148,28 @@ def test_cross_referenced_values_are_consistent(tmp_path):
     assert "host: 127.0.0.1" in tracing
 
 
+def test_renamed_template_users_carry_into_the_derived_values(tmp_path):
+    script = _tree(tmp_path)
+    template = tmp_path / "docker" / "langfuse" / ".env.example"
+    text = template.read_text()
+    for key, value in (
+        ("POSTGRES_USER", "lf_user"),
+        ("POSTGRES_DB", "lf_db"),
+        ("MINIO_ROOT_USER", "lf_minio"),
+    ):
+        text = re.sub(rf"^{key}=.*$", f"{key}={value}", text, flags=re.MULTILINE)
+    template.write_text(text)
+
+    assert _run([str(script)], cwd=tmp_path).returncode == 0
+    env = _parse_env(_env_file(tmp_path))
+
+    assert env["DATABASE_URL"] == (
+        f"postgresql://lf_user:{env['POSTGRES_PASSWORD']}@postgres:5432/lf_db"
+    )
+    for prefix in ("LANGFUSE_S3_EVENT_UPLOAD", "LANGFUSE_S3_MEDIA_UPLOAD"):
+        assert env[f"{prefix}_ACCESS_KEY_ID"] == "lf_minio"
+
+
 def test_secrets_are_freshly_generated_not_placeholders(tmp_path):
     script = _tree(tmp_path)
     assert _run([str(script)], cwd=tmp_path).returncode == 0

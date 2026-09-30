@@ -204,6 +204,12 @@ if [[ "$WRITE_ENV" == "1" ]]; then
   INIT_PROJECT_PUBLIC_KEY="pk-lf-$(uuid)"
   INIT_PROJECT_SECRET_KEY="sk-lf-$(uuid)"
 
+  # Names kept from the template that other values must repeat.
+  template_value() { sed -n "s/^${1}=//p" "$ENV_TEMPLATE" | head -n 1; }
+  POSTGRES_USER="$(template_value POSTGRES_USER)"
+  POSTGRES_DB="$(template_value POSTGRES_DB)"
+  MINIO_ROOT_USER="$(template_value MINIO_ROOT_USER)"
+
   # The value to write for a template key; fails for keys that keep the
   # template's value.
   generated_value() {
@@ -211,9 +217,10 @@ if [[ "$WRITE_ENV" == "1" ]]; then
       LANGFUSE_WEB_BIND) printf '%s\n' "$LANGFUSE_WEB_BIND" ;;
       LANGFUSE_WEB_PORT) printf '%s\n' "$LANGFUSE_WEB_PORT" ;;
       POSTGRES_PASSWORD) printf '%s\n' "$POSTGRES_PASSWORD" ;;
-      DATABASE_URL) printf '%s\n' "postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/postgres" ;;
+      DATABASE_URL) printf '%s\n' "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}" ;;
       REDIS_AUTH) printf '%s\n' "$REDIS_AUTH" ;;
       CLICKHOUSE_PASSWORD) printf '%s\n' "$CLICKHOUSE_PASSWORD" ;;
+      LANGFUSE_S3_*_ACCESS_KEY_ID) printf '%s\n' "$MINIO_ROOT_USER" ;;
       MINIO_ROOT_PASSWORD | LANGFUSE_S3_*_SECRET_ACCESS_KEY) printf '%s\n' "$MINIO_ROOT_PASSWORD" ;;
       SALT) printf '%s\n' "$SALT" ;;
       ENCRYPTION_KEY) printf '%s\n' "$ENCRYPTION_KEY" ;;

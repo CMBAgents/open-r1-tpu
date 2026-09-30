@@ -9,14 +9,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 # LightEval's own default (`PipelineParameters.reasoning_tags`): the reasoning
 # block is dropped before a metric sees the completion.
 REASONING_TAG_PAIRS: tuple[tuple[str, str], ...] = (("<think>", "</think>"),)
 
-_LANGFUSE_NUMERIC = "NUMERIC"
-_LANGFUSE_CATEGORICAL = "CATEGORICAL"
+ScoreType = Literal["NUMERIC", "CATEGORICAL"]
+_LANGFUSE_NUMERIC: ScoreType = "NUMERIC"
+_LANGFUSE_CATEGORICAL: ScoreType = "CATEGORICAL"
 
 
 def build_doc(prompt_function: Any, row: Mapping[str, Any], task_name: str) -> Any:
@@ -114,7 +115,7 @@ def compute_scores(
     return ScoringResult(scores=scores, failed_metrics=tuple(failed), errors=errors)
 
 
-def coerce_score(value: Any) -> tuple[Any, str] | None:
+def coerce_score(value: Any) -> tuple[Any, ScoreType] | None:
     """Map one LightEval value to a `(value, Langfuse data_type)` pair.
 
     A `bool` becomes NUMERIC 1.0 or 0.0, an `int` or `float` NUMERIC, a `str`
@@ -146,9 +147,9 @@ def run_level_fields(
     }
 
 
-def coerce_fields(fields: Mapping[str, Any]) -> dict[str, tuple[Any, str]]:
+def coerce_fields(fields: Mapping[str, Any]) -> dict[str, tuple[Any, ScoreType]]:
     """`coerce_score` over a mapping, dropping the values it skips."""
-    coerced: dict[str, tuple[Any, str]] = {}
+    coerced: dict[str, tuple[Any, ScoreType]] = {}
     for name, value in fields.items():
         pair = coerce_score(value)
         if pair is not None:

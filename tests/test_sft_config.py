@@ -22,13 +22,6 @@ def test_every_committed_sft_recipe_validates(recipe):
     load_config(recipe, [], validator=validate_sft_config)
 
 
-def test_load_config_validates_an_sft_recipe_by_default():
-    # Scripts that load an SFT recipe pass no validator.
-    assert load_config(RECIPE) == load()
-    with pytest.raises(ValueError, match="max_length"):
-        load_config(RECIPE, ["dataset.max_length=1"])
-
-
 def test_overrides_reach_nested_recipe_keys():
     config = load(["dataset.max_examples=128", "model.mesh.shape=[1, 8]"])
     assert config["dataset"]["max_examples"] == 128

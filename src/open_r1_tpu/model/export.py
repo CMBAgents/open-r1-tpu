@@ -171,7 +171,9 @@ QWEN_LORA_MODULES = (
     "up_proj",
     "down_proj",
 )
-_QWEN_LORA_TRANSPOSE_RULES = dict.fromkeys(QWEN_LORA_MODULES, (1, 0))
+_QWEN_LORA_TRANSPOSE_RULES: dict[str, tuple[int, ...]] = dict.fromkeys(
+    QWEN_LORA_MODULES, (1, 0)
+)
 
 
 def qwen_lora_state_key(lora_path: str) -> str:
@@ -334,18 +336,21 @@ def export_model(
     config: dict[str, Any],
     model: Any,
     tokenizer: Any,
-    local_model_path: str,
+    local_model_path: str | None = None,
 ) -> None:
     """Export the trained model as safetensors if ``export.enabled``.
 
     A LoRA run merges its adapter into the base checkpoint at
-    `local_model_path`; a full fine-tune writes its live parameters. The
-    output directory may never be, or contain, the filesystem root, the home
-    or working directory, the base model or the checkpoint directory.
+    `local_model_path` (default: `local_base_model_path(config)`); a full
+    fine-tune writes its live parameters. The output directory may never be,
+    or contain, the filesystem root, the home or working directory, the base
+    model or the checkpoint directory.
     """
     export = config.get("export", {})
     if not export.get("enabled", False):
         return
+    if local_model_path is None:
+        local_model_path = local_base_model_path(config)
 
     output_path = Path(export["output_dir"]).expanduser().resolve()
     protected_paths = {

@@ -29,7 +29,8 @@ from typing import Any
 from open_r1_tpu.core.config import load_config
 from open_r1_tpu.model.checkpoint import restore_checkpoint
 from open_r1_tpu.model.export import export_model
-from open_r1_tpu.model.loading import create_model
+from open_r1_tpu.model.loading import create_mesh, create_model
+from open_r1_tpu.sft.config import validate_sft_config
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -57,7 +58,7 @@ def read_recipe(
 ) -> tuple[dict[str, Any], dict[str, Any] | None, str]:
     """Return the recipe with export enabled into ``--output``, its LoRA
     geometry (None for a full fine-tune), and the checkpoint root."""
-    config = load_config(args.recipe)
+    config = load_config(args.recipe, validator=validate_sft_config)
     config["export"] = {
         **config.get("export", {}),
         "output_dir": args.output,
@@ -73,12 +74,8 @@ def main(argv: list[str] | None = None) -> None:
     config, lora_config, checkpoint_dir = read_recipe(args)
 
     from tunix.cli.utils import model as model_utils
-    from tunix.utils import mesh as mesh_utils
 
-    mesh_config = config["model"]["mesh"]
-    mesh = mesh_utils.create_mesh(
-        tuple(mesh_config["shape"]), tuple(mesh_config["axis_names"])
-    )
+    mesh = create_mesh(config)
     print(f"Loading base model from {config['model']['model_path']} ...", flush=True)
     model, local_model_path = create_model(config, mesh)
 

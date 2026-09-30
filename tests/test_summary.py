@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import json
 import statistics
+from pathlib import Path
 
 import pytest
 
 from open_r1_tpu.evaluation import summary as eval_summary
+from open_r1_tpu.evaluation.config import load_eval_config, resolve_settings
 from open_r1_tpu.evaluation.stack import VLLM_TPU_BASE_IMAGE, vllm_tpu_image_tag
 
 
@@ -25,6 +27,9 @@ class FakeMetric:
 class FakeConfig:
     def __init__(self, metrics):
         self.metrics = list(metrics)
+
+
+TIER1 = Path(__file__).parents[1] / "recipes/Qwen2.5-Math-1.5B/eval/tier1_core.yaml"
 
 
 def _settings(tasks=("t",), seeds=(0,), **overrides):
@@ -272,15 +277,17 @@ def test_a_single_seed_reports_no_spread_rather_than_zero_spread():
 
 def test_build_summary_records_the_stack_and_the_sampling_parameters():
     service_versions = {"vllm-tpu": "0.27.0", "tpu-inference": "0.27.0"}
+    # The resolver's own output, so a renamed settings key fails here.
+    settings = resolve_settings(load_eval_config(TIER1))
 
     summary = eval_summary.build_summary(
-        _settings(),
+        settings,
         {0: {"t": {"acc": 0.4}}},
         {0: {"format_rate": 1.0, "truncation_rate": None}},
         {"image_id": "sha256:local-image", "service_versions": service_versions},
     )
 
-    assert summary["sampling"]["temperature"] == 0.6
+    assert summary["sampling"]["temperature"] == settings["temperature"]
     # Replicates are unseeded on this backend, so an archived summary listing
     # `seeds` must not be read as reproducible sample by sample.
     assert summary["seeded_replicates"] is False

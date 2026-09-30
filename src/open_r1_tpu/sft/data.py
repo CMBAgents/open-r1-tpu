@@ -6,7 +6,7 @@ import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -421,7 +421,11 @@ def build_grain_dataset(
     dataset = dataset.map(
         lambda record: encode_reasoning_example(record, tokenizer, **encode_kwargs)
     )
-    dataset = dataset.filter(lambda example: example is not None)
+    # The filter drops the Nones, which the type checker cannot see.
+    dataset = cast(
+        "grain.MapDataset[EncodedExample]",
+        dataset.filter(lambda example: example is not None),
+    )
     if packing:
         # Packing is stateful across examples, so it runs after Grain as a
         # re-iterable wrapper that also batches.
@@ -431,10 +435,12 @@ def build_grain_dataset(
             pad_id=_pad_id(tokenizer),
             batch_size=batch_size,
         )
+    # Tunix declares TrainingInput with flax.struct.dataclass(frozen=True),
+    # which hides its fields from type checkers.
     dataset = dataset.map(
         lambda example: TrainingInput(
-            input_tokens=example.input_tokens,
-            input_mask=example.input_mask,
+            input_tokens=example.input_tokens,  # pyright: ignore[reportCallIssue]
+            input_mask=example.input_mask,  # pyright: ignore[reportCallIssue]
         )
     )
     # Filtered MapDatasets no longer have a one-to-one index mapping, so Grain

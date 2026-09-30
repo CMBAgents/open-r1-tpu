@@ -473,7 +473,7 @@ def log_summary_to_wandb(
         run.summary.update(flat)
         table = wandb.Table(
             columns=["tier", "task", "metric", "mean", "std", "seeds"],  # pyright: ignore[reportArgumentType]
-            data=summary_rows(summary),
+            data=summary_rows(summary),  # pyright: ignore[reportArgumentType]
         )
         run.log({f"eval/{summary['tier']}/table": table})
     finally:

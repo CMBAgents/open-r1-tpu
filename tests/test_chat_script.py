@@ -316,3 +316,44 @@ def test_a_recipe_defaults_the_model_path_to_the_base_it_trains_from(tmp_path):
     chat.validate_options(args)
 
     assert args.model_path == str(base.resolve())
+
+
+def _hub_recipe(tmp_path, download_path=None):
+    distill = (
+        Path(__file__).parents[1]
+        / "recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml"
+    )
+    lines = [f"extends: {distill}", "model:", "  model_source: huggingface"]
+    lines.append("  model_id: Qwen/Qwen2.5-Math-1.5B")
+    lines.append(f"  model_download_path: {download_path or 'null'}")
+    recipe = tmp_path / "recipe.yaml"
+    recipe.write_text("\n".join(lines) + "\n")
+    return recipe
+
+
+def test_a_hub_recipe_defaults_the_model_path_to_its_download_directory(tmp_path):
+    base = tmp_path / "download"
+    base.mkdir()
+    (base / "model.safetensors").write_bytes(b"")
+
+    assert chat.recipe_base_model_path(str(_hub_recipe(tmp_path, base))) == str(base)
+
+
+def test_a_recipe_without_a_local_base_asks_for_a_model_path(tmp_path):
+    with pytest.raises(ValueError, match="pass --model-path"):
+        chat.recipe_base_model_path(str(_hub_recipe(tmp_path)))
+
+
+def test_a_missing_recipe_is_named_before_its_base_is_looked_up(tmp_path):
+    args = SimpleNamespace(
+        max_new_tokens=8,
+        max_prompt_length=17,
+        temperature=0.0,
+        top_p=0.95,
+        model_path=None,
+        recipe=str(tmp_path / "missing.yaml"),
+        checkpoint_dir=None,
+    )
+
+    with pytest.raises(FileNotFoundError, match="Recipe does not exist"):
+        chat.validate_options(args)

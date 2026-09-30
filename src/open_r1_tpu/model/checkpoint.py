@@ -207,13 +207,19 @@ def pad_input_strings_for_fsdp(input_strings: list[str], fsdp_size: int) -> list
     ]
 
 
-def recipe_restore_settings(recipe_path: str) -> tuple[dict[str, Any] | None, str]:
+def recipe_restore_settings(
+    recipe_path: str,
+) -> tuple[dict[str, Any] | None, str | None]:
     """Read an SFT recipe's LoRA geometry (None for a full fine-tune) and
     checkpoint root."""
     from open_r1_tpu.core.config import load_config
+    from open_r1_tpu.sft.config import validate_sft_config
 
-    config = load_config(recipe_path)
-    return config["model"].get("lora_config"), config["training"]["checkpoint_dir"]
+    config = load_config(recipe_path, validator=validate_sft_config)
+    return (
+        config["model"].get("lora_config"),
+        config["training"].get("checkpoint_dir"),
+    )
 
 
 def available_steps(checkpoint_root: str) -> list[int]:
@@ -297,6 +303,16 @@ def load_sampler(
     ``training.checkpoint_dir``. `cache_size` is the KV-cache length: prompt
     plus generated tokens.
     """
+    lora_config = None
+    restore_dir = None
+    if recipe:
+        lora_config, recipe_checkpoint_dir = recipe_restore_settings(recipe)
+        restore_dir = checkpoint_dir or recipe_checkpoint_dir
+        if not restore_dir:
+            raise ValueError(
+                f"{recipe} sets no training.checkpoint_dir; pass --checkpoint-dir"
+            )
+
     import jax
     from tunix.cli.utils import model as model_utils
     from tunix.generate import sampler as sampler_lib
@@ -309,12 +325,6 @@ def load_sampler(
     )
     mesh_shape = mesh_shape_for_devices(tuple(jax.devices()), num_kv_heads)
     mesh = mesh_utils.create_mesh(mesh_shape, ("fsdp", "tp"))
-
-    lora_config = None
-    restore_dir = None
-    if recipe:
-        lora_config, recipe_checkpoint_dir = recipe_restore_settings(recipe)
-        restore_dir = checkpoint_dir or recipe_checkpoint_dir
 
     config = {
         "model": inference_model_config(

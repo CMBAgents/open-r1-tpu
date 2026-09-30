@@ -3,12 +3,14 @@ its tier on purpose. `RECIPE` validation runs before anything Docker- or
 TPU-related, so it is safe to exercise with no server up. The happy-path tests
 stub `python3` in a copied `scripts/` directory, so they too need neither
 Docker nor a live server: with SKIP_SERVER=1 the real script never reaches
-anything that does.
+anything that does, except the one test of the server's lifecycle.
 """
 
 import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 SCRIPT_PATH = Path(__file__).parents[1] / "scripts" / "run_eval_tpu.sh"
 SERVER_HELPER_PATH = SCRIPT_PATH.parent / "lib" / "vllm_server.sh"
@@ -69,7 +71,7 @@ def _stubbed_scripts_dir(tmp_path, capture_file):
     return scripts_dir, bin_dir
 
 
-def test_runs_the_experiment_entry_point_with_tracing_config(tmp_path):
+def test_runs_the_evaluation_entry_point_with_tracing_config(tmp_path):
     capture_file = tmp_path / "argv.txt"
     scripts_dir, bin_dir = _stubbed_scripts_dir(tmp_path, capture_file)
     tracing_config = tmp_path / "tracing.yaml"
@@ -158,3 +160,45 @@ def test_without_a_trace_config_the_run_is_local(tmp_path):
 def test_an_empty_trace_config_is_treated_as_missing(tmp_path):
     argv = _run_stubbed(tmp_path, trace_config="")
     assert "--tracing-config" not in argv
+
+
+@pytest.mark.skipif(shutil.which("setsid") is None, reason="needs Linux setsid")
+def test_starts_the_recipes_server_and_stops_it_afterwards(tmp_path):
+    # The stubbed evaluation.server prints a stand-in server command; the real
+    # script starts it in its own process group and must stop it on exit.
+    capture_file = tmp_path / "argv.txt"
+    scripts_dir, bin_dir = _stubbed_scripts_dir(tmp_path, capture_file)
+    server = "sleep 61.5"
+    (bin_dir / "python3").write_text(
+        "#!/usr/bin/env bash\n"
+        f'printf "%s\\n" "$@" >> "{capture_file}"\n'
+        f'[[ "$2" == open_r1_tpu.evaluation.server ]] && echo "{server}"\n'
+        "exit 0\n"
+    )
+
+    completed = subprocess.run(
+        ["bash", str(scripts_dir / "run_eval_tpu.sh"), "server.port=8123"],
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{bin_dir}:/usr/bin:/bin", "RECIPE": "r.yaml"},
+        cwd=tmp_path,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert f"Starting: {server}" in completed.stderr
+    argv = capture_file.read_text().splitlines()
+    # Both halves read the same recipe and overrides.
+    assert argv == [
+        "-m",
+        "open_r1_tpu.evaluation.server",
+        "--config",
+        "r.yaml",
+        "server.port=8123",
+        "-m",
+        "open_r1_tpu.evaluation.run",
+        "--config",
+        "r.yaml",
+        "server.port=8123",
+    ]
+    leftover = subprocess.run(["pgrep", "-f", server], capture_output=True)
+    assert leftover.returncode == 1, "the server outlived the script"

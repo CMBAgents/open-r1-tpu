@@ -327,6 +327,14 @@ def test_a_typo_d_dotted_override_is_rejected_the_same_way():
         eval_config.load_eval_config(TIER0, ["sampling.max_new_token=4096"])
 
 
+def test_a_typo_d_section_in_an_override_is_rejected():
+    with pytest.raises(
+        ValueError,
+        match="Unknown configuration section samplng; did you mean 'sampling'",
+    ):
+        eval_config.load_eval_config(TIER0, ["samplng.temperature=0.9"])
+
+
 def test_wandb_requires_project_name_and_mode_when_enabled():
     with pytest.raises(ValueError, match=r"wandb\.project_name"):
         eval_config.validate_eval_config(

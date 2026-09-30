@@ -14,9 +14,12 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).parents[1]
 
-# The files that wire tracing into an evaluation launch.
+# The files that wire tracing into an evaluation launch, including the
+# templates gen_langfuse_env.sh copies into the generated files.
 FILES = [
     REPO_ROOT / "docker" / "langfuse" / "docker-compose.yaml",
+    REPO_ROOT / "docker" / "langfuse" / ".env.example",
+    REPO_ROOT / "configs" / "tracing.example.yaml",
     REPO_ROOT / "scripts" / "run_eval_tpu.sh",
     REPO_ROOT / "scripts" / "gen_langfuse_env.sh",
 ]
@@ -32,9 +35,10 @@ NON_LOOPBACK_IPV4 = re.compile(
     r"(?<![\w.])(?!127\.0\.0\.1|0\.0\.0\.0)\d{1,3}(?:\.\d{1,3}){3}(?![\w.])"
 )
 
-# docker-compose.yaml and gen_langfuse_env.sh legitimately reference Compose
-# service names (`http://clickhouse:8123`), so only run_eval_tpu.sh is checked
-# for a non-loopback URL. Every file is checked for an IP literal.
+# The Compose file, the .env template and gen_langfuse_env.sh legitimately
+# reference Compose service names (`http://clickhouse:8123`), so only
+# run_eval_tpu.sh is checked for a non-loopback URL. Every file is checked for
+# an IP literal.
 URL_CHECKED_FILES = [REPO_ROOT / "scripts" / "run_eval_tpu.sh"]
 
 

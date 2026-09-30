@@ -12,9 +12,10 @@ returned `ExperimentResult`, never read back from Langfuse.
 
 A document's `query` and `specific` are captured once, at sync, and scoring
 rebuilds its `Doc` from them (`scoring.doc_from_item`), because gpqa's prompt
-function shuffles its choices on every call. `run_experiment()` silently drops
-a document whose task function raised; `write_experiment_jsonl` records each
-one as `status: "dropped"` so document counts still add up.
+function shuffles its choices on every call. `run_experiment()` leaves a
+document whose task function raised out of its results (it only logs the
+error); `write_experiment_jsonl` records each one as `status: "dropped"` so
+document counts still add up.
 
 The tracing config (`configs/tracing.example.yaml`) has one section,
 `langfuse`, with `host` and `port`. The keys come from `LANGFUSE_PUBLIC_KEY`
@@ -24,7 +25,6 @@ and `LANGFUSE_SECRET_KEY` in the environment, never a file.
 from __future__ import annotations
 
 import concurrent.futures
-import difflib
 import logging
 import subprocess
 import uuid
@@ -32,9 +32,8 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from open_r1_tpu.core.config import load_config
+from open_r1_tpu.core.config import check_sections, load_config, reject_unknown_keys
 from open_r1_tpu.evaluation import scoring
-from open_r1_tpu.evaluation.config import reject_unknown_keys
 from open_r1_tpu.evaluation.generate import iter_documents, make_task, render_messages
 from open_r1_tpu.evaluation.summary import jsonl_path, ok_record, write_jsonl
 from open_r1_tpu.evaluation.taskpack import (
@@ -66,15 +65,8 @@ def _require_nonempty_str(field: str, value: Any) -> None:
 
 def validate_tracing_config(config: dict[str, Any]) -> None:
     """Fail early for a tracing config mistake, before anything is launched."""
-    for section in config:
-        if section not in SECTIONS:
-            close = difflib.get_close_matches(str(section), sorted(SECTIONS), n=1)
-            hint = f"; did you mean {close[0]!r}?" if close else ""
-            raise ValueError(f"Unknown configuration section {section!r}{hint}")
-
+    check_sections(config, SECTIONS)
     for section, allowed in SECTIONS.items():
-        if not isinstance(config.get(section), dict):
-            raise ValueError(f"Missing configuration section: {section}")
         reject_unknown_keys(section, config[section], allowed)
 
     langfuse = config["langfuse"]

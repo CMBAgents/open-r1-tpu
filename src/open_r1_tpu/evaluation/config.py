@@ -9,13 +9,17 @@ typo'd dotted override, since overrides apply before validation.
 
 from __future__ import annotations
 
-import difflib
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from open_r1_tpu.core.config import load_config, read_prompt_file
+from open_r1_tpu.core.config import (
+    check_sections,
+    load_config,
+    read_prompt_file,
+    reject_unknown_keys,
+)
 from open_r1_tpu.evaluation.stack import vllm_tpu_image_tag
 
 DEFAULT_HOST = "127.0.0.1"
@@ -84,17 +88,6 @@ WANDB_KEYS = {
 }
 
 
-def reject_unknown_keys(
-    prefix: str, section: Mapping[str, Any], allowed: set[str]
-) -> None:
-    """Reject a key outside a section's schema, suggesting the nearest match."""
-    for key in section:
-        if key not in allowed:
-            close = difflib.get_close_matches(str(key), sorted(allowed), n=1)
-            hint = f"; did you mean {close[0]!r}?" if close else ""
-            raise ValueError(f"Unknown key {prefix}.{key}{hint}")
-
-
 def uses_container_wrapper(serve_command: Sequence[Any]) -> bool:
     """Whether `serve_command` runs the supported vLLM container wrapper."""
     return bool(serve_command) and str(serve_command[0]).endswith(CONTAINER_WRAPPER)
@@ -152,10 +145,7 @@ def _validate_consensus(
 
 def validate_eval_config(config: dict[str, Any]) -> None:
     """Fail early for recipe mistakes that would otherwise waste TPU time."""
-    for section in ("eval", "server", "sampling", "reporting"):
-        if not isinstance(config.get(section), dict):
-            raise ValueError(f"Missing configuration section: {section}")
-
+    check_sections(config, ("eval", "server", "sampling", "reporting"))
     reject_unknown_keys("eval", config["eval"], EVAL_KEYS)
     reject_unknown_keys("server", config["server"], SERVER_KEYS)
     reject_unknown_keys("sampling", config["sampling"], SAMPLING_KEYS)
@@ -375,11 +365,7 @@ def resolve_settings(config: dict[str, Any]) -> dict[str, Any]:
         "temperature": float(sampling["temperature"]),
         "top_p": float(sampling["top_p"]),
         "max_new_tokens": int(sampling["max_new_tokens"]),
-        "system_prompt": (
-            read_prompt_file(sampling["system_prompt_file"])
-            if sampling["system_prompt_file"] is not None
-            else None
-        ),
+        "system_prompt": read_prompt_file(sampling["system_prompt_file"]),
         "tensor_parallel_size": int(server.get("tensor_parallel_size", 1)),
         "server_extra_args": [str(arg) for arg in (server.get("extra_args") or [])],
         "startup_timeout_secs": int(server.get("startup_timeout_secs", 900)),

@@ -2,10 +2,11 @@
 
 `generate_one` talks to vLLM directly through the `openai` SDK with this
 project's retry policy, `render_messages` builds each prompt the way
-LightEval's zero-shot prompt construction does, and `make_task` wraps both in
-the task function both evaluation paths drive. Its circuit breaker stops
-sending requests once the server refuses one or `server.fail_fast_after` in a
-row fail; requests already in flight are not cancelled.
+LightEval's zero-shot prompt construction does, and `make_task` wraps
+`generate_one` in the task function both evaluation paths drive. Its circuit
+breaker stops a (task, seed) sending requests once the server refuses one or
+`server.fail_fast_after` in a row fail; requests already in flight are not
+cancelled.
 """
 
 from __future__ import annotations
@@ -83,9 +84,9 @@ async def generate_one(
             if 400 <= error.status_code < 500:
                 raise GenerationRefused(
                     f"the server refused this request with HTTP "
-                    f"{error.status_code}: {error.message}. Evaluating "
-                    "would produce nothing for the rest of this tier, so "
-                    "the run is stopping instead of retrying."
+                    f"{error.status_code}: {error.message}. Retrying would "
+                    "fail the same way, so the rest of this task and seed "
+                    "fails at once."
                 ) from error
             last_error = error
         except openai.APIConnectionError as error:  # includes APITimeoutError
@@ -199,7 +200,7 @@ def make_task(settings: Mapping[str, Any], *, client: Any) -> Callable[..., Any]
     generates `item.input` and returns the completion and its usage as a dict.
 
     `settings` is `config.resolve_settings`'s output and `client` the run's
-    shared `openai.AsyncOpenAI`. Each call gets a fresh circuit breaker.
+    shared `openai.AsyncOpenAI`. Each (task, seed) gets its own circuit breaker.
 
     No per-request `seed` is sent: vLLM's TPU backend rejects one whenever
     `temperature > 0` (reaching the client as an empty HTTP 500), so

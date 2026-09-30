@@ -75,7 +75,10 @@ def test_an_unknown_key_suggests_the_near_match(tmp_path):
 
 def test_an_unknown_top_level_section_is_rejected(tmp_path):
     path = write_config(tmp_path, {"langfusee": {"host": "x"}})
-    with pytest.raises(ValueError, match="Unknown configuration section 'langfusee'"):
+    with pytest.raises(
+        ValueError,
+        match="Unknown configuration section langfusee; did you mean 'langfuse'",
+    ):
         traced.load_tracing_config(path)
 
 

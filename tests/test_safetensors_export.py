@@ -210,8 +210,8 @@ def _stub_tunix_registry(monkeypatch, module_name):
 
     models = types.ModuleType("tunix.models")
     tunix = types.ModuleType("tunix")
-    # setattr, as in tests/conftest.py: a bare ModuleType declares none of
-    # these attributes, so assigning them directly is a type error.
+    # setattr: a bare ModuleType declares none of these attributes, so
+    # assigning them directly is a type error.
     setattr(automodel, "ModelModule", ModelModule)  # noqa: B010
     setattr(automodel, "get_model_module", get_model_module)  # noqa: B010
     setattr(models, "automodel", automodel)  # noqa: B010
@@ -354,6 +354,12 @@ def test_export_keeps_an_existing_directory_without_overwrite(tmp_path):
 def test_export_is_skipped_unless_enabled(tmp_path):
     config = _export_config(Path.cwd(), tmp_path, enabled=False)
     export_model(config=config, model=None, tokenizer=None, local_model_path="")
+
+
+def test_a_disabled_export_needs_no_local_base_model():
+    # A Hub-sourced run with no download path must not fail after training.
+    config = {"model": {"model_source": "huggingface"}, "export": {"enabled": False}}
+    export_model(config=config, model=None, tokenizer=None)
 
 
 def _stub_params_registry(monkeypatch, family, params_saver=None):

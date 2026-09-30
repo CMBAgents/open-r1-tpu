@@ -37,7 +37,7 @@ def test_stage_writes_the_recipe_template_and_stop_tokens(tmp_path):
     )
 
     from open_r1_tpu.core.config import load_config
-    from open_r1_tpu.grpo.run import validate_grpo_config
+    from open_r1_tpu.grpo.config import validate_grpo_config
 
     recipe = load_config(RECIPE, [], validator=validate_grpo_config)
     tokenizer_config = json.loads((output / "tokenizer_config.json").read_text())

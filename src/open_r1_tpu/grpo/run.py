@@ -35,7 +35,7 @@ from open_r1_tpu.grpo.behaviour import build_behaviour_metric_fn
 from open_r1_tpu.grpo.config import validate_grpo_config
 from open_r1_tpu.grpo.data import load_grpo_prompts
 from open_r1_tpu.grpo.rewards import reward_fns_from_names
-from open_r1_tpu.model.export import export_model, local_base_model_path
+from open_r1_tpu.model.export import export_model
 from open_r1_tpu.model.loading import (
     absolute_checkpoint_dir,
     create_mesh,
@@ -331,7 +331,6 @@ def run(config: dict[str, Any]) -> None:
         config=config,
         model=actor_model,
         tokenizer=tokenizer,
-        local_model_path=local_base_model_path(config),
     )
 
 

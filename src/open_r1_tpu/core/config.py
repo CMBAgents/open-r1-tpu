@@ -100,13 +100,14 @@ def read_prompt_file(path: str | Path | None) -> str | None:
 def load_config(
     path: str | Path,
     overrides: list[str] | None = None,
-    validator: Callable[[dict[str, Any]], None] | None = None,
+    *,
+    validator: Callable[[dict[str, Any]], None],
 ) -> dict[str, Any]:
     """Load a YAML recipe, apply dotted command-line overrides, and validate it.
 
     `extends` is merged first, then the overrides, so `validator` sees the
     final recipe without the `extends` key. Each stage passes its own
-    validator; `None` validates an SFT recipe, which some scripts rely on.
+    validator (`validate_sft_config`, `validate_grpo_config`, ...).
     """
     recipe_path = Path(path)
     config = copy.deepcopy(
@@ -115,10 +116,6 @@ def load_config(
     for raw_override in overrides or []:
         key, value = parse_override(raw_override)
         _set_dotted(config, key, value)
-    if validator is None:
-        from open_r1_tpu.sft.config import validate_sft_config
-
-        validator = validate_sft_config
     validator(config)
     return config
 

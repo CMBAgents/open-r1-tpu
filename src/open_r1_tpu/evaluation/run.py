@@ -1,6 +1,6 @@
 """Evaluate a served model on a recipe's tasks and write the summary.
 
-Each (task, seed) writes `output_dir/seed-{seed}/{task}.jsonl`, one record per
+Each (task, seed) writes `output_dir/seed-{seed}/{task_slug}.jsonl`, one record per
 document, and the summary is reduced from those files (`evaluation.summary`).
 By default documents are generated concurrently against the server and scored
 locally; with `--tracing-config` the run goes through Langfuse instead

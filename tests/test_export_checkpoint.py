@@ -102,8 +102,6 @@ def test_main_restores_what_the_recipe_trained_and_exports_it(
     model = object()
     captured: dict[str, Any] = {}
 
-    fake_mesh_utils: Any = ModuleType("tunix.utils.mesh")
-    fake_mesh_utils.create_mesh = lambda shape, axes: ("mesh", shape, axes)
     fake_model_utils: Any = ModuleType("tunix.cli.utils.model")
     fake_model_utils.create_tokenizer = lambda config, path: SimpleNamespace(
         config=config, path=path
@@ -113,8 +111,6 @@ def test_main_restores_what_the_recipe_trained_and_exports_it(
         "tunix.cli": ModuleType("tunix.cli"),
         "tunix.cli.utils": ModuleType("tunix.cli.utils"),
         "tunix.cli.utils.model": fake_model_utils,
-        "tunix.utils": ModuleType("tunix.utils"),
-        "tunix.utils.mesh": fake_mesh_utils,
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
 
@@ -129,6 +125,11 @@ def test_main_restores_what_the_recipe_trained_and_exports_it(
     def export_model(*, config, model, tokenizer, local_model_path):
         captured["export"] = (config["export"], model, tokenizer, local_model_path)
 
+    def create_mesh(config):
+        mesh = config["model"]["mesh"]
+        return ("mesh", tuple(mesh["shape"]), tuple(mesh["axis_names"]))
+
+    monkeypatch.setattr(export_script, "create_mesh", create_mesh)
     monkeypatch.setattr(export_script, "create_model", create_model)
     monkeypatch.setattr(export_script, "restore_checkpoint", restore_checkpoint)
     monkeypatch.setattr(export_script, "export_model", export_model)

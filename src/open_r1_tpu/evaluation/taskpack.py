@@ -43,7 +43,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
@@ -138,7 +138,8 @@ def resolve_task_configs(tasks: Sequence[str]) -> dict[str, Any]:
     from lighteval.tasks.registry import Registry
 
     registry = Registry(tasks=",".join(tasks), load_multilingual=False)
-    configs = dict(registry.task_to_configs)
+    # Annotated as one config per task, but built as a list per task.
+    configs = cast("dict[str, list[Any]]", dict(registry.task_to_configs))
 
     resolved: dict[str, Any] = {}
     for task in tasks:
