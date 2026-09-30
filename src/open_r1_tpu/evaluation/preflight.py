@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 from open_r1_tpu.core.cli import parse_recipe_args, recipe_parser
+from open_r1_tpu.core.packages import installed_version
 from open_r1_tpu.evaluation.config import (
     load_eval_config,
     resolve_settings,
@@ -42,7 +43,6 @@ from open_r1_tpu.evaluation.stack import (
     EVALUATION_PACKAGE_VERSIONS,
     EVALUATION_PYTHON_VERSION,
     VLLM_TPU_SERVICE_VERSIONS,
-    installed_version,
 )
 from open_r1_tpu.evaluation.taskpack import DEFAULT_TASKPACK_PATH, verify_task_specs
 

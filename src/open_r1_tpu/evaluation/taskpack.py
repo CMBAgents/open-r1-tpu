@@ -48,7 +48,7 @@ from typing import Any
 import yaml
 
 from open_r1_tpu.core.logging import LOG_LEVELS, configure_logging
-from open_r1_tpu.evaluation.stack import installed_version
+from open_r1_tpu.core.packages import installed_version
 
 LOGGER = logging.getLogger(__name__)
 

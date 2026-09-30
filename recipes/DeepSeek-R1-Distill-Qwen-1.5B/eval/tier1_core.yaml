@@ -1,9 +1,9 @@
 # Tier 1: MATH-500 under the project's comparison protocol, not the card's.
 # Task, seeds, sampling and context window match
-# ../../Qwen2.5-Math-1.5B/eval/tier1_core.yaml (tests/test_evaluate.py keeps
-# them matched). Only the prompt differs: this model runs without a system
-# prompt, per DeepSeek's guidance, while the project's exports keep the one
-# they were trained with. Measured: pass@1 0.798 +/- 0.013, 4.5% truncated.
+# ../../Qwen2.5-Math-1.5B/eval/tier1_core.yaml
+# (tests/test_evaluation_config.py keeps them matched). Only the prompt
+# differs: this model runs without a system prompt, per DeepSeek's guidance,
+# while the project's exports keep the one they were trained with. Measured: pass@1 0.798 +/- 0.013, 4.5% truncated.
 #
 # The card's 83.9 was measured at a 32768-token budget with four replicates,
 # and at 16384 tokens a trace the model would have finished later scores as

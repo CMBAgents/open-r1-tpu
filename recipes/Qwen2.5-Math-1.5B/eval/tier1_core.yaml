@@ -4,8 +4,8 @@
 # more than most recipe changes are worth.
 #
 # Task, seeds and sampling match ../../DeepSeek-R1-Distill-Qwen-1.5B/eval/
-# tier1_core.yaml (tests/test_evaluate.py keeps them matched), so the two
-# compare directly; only the prompt differs, as this export keeps its training
+# tier1_core.yaml (tests/test_evaluation_config.py keeps them matched), so the
+# two compare directly; only the prompt differs, as this export keeps its training
 # system prompt and DeepSeek's distill runs without one. Measured: the SFT
 # export 0.833 +/- 0.011, DeepSeek-R1-Distill-Qwen-1.5B 0.798 +/- 0.013.
 # Neither is the card's 83.9, measured at 32768 tokens; base.yaml says how to

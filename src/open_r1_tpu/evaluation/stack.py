@@ -6,7 +6,6 @@ before the project environment exists. The package pins are repeated in
 """
 
 from hashlib import sha256
-from importlib import metadata
 from pathlib import Path
 
 EVALUATION_PYTHON_VERSION = "3.13.14"
@@ -33,14 +32,6 @@ VLLM_TPU_SERVICE_VERSIONS = {
     "vllm-tpu": "0.27.0",
     "tpu-inference": "0.27.0",
 }
-
-
-def installed_version(distribution: str) -> str:
-    """The installed version of `distribution`, or "unknown" when absent."""
-    try:
-        return metadata.version(distribution)
-    except metadata.PackageNotFoundError:
-        return "unknown"
 
 
 def vllm_tpu_image_tag(

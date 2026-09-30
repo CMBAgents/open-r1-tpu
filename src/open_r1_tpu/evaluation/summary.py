@@ -24,13 +24,13 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from open_r1_tpu.core.packages import installed_version
 from open_r1_tpu.evaluation.config import DEFAULT_SERVE_COMMAND, task_slug
 from open_r1_tpu.evaluation.consensus import consensus_metrics
 from open_r1_tpu.evaluation.server import vllm_serve_command
 from open_r1_tpu.evaluation.stack import (
     EVALUATION_PACKAGE_VERSIONS,
     VLLM_TPU_BASE_IMAGE,
-    installed_version,
     vllm_tpu_image_tag,
 )
 
