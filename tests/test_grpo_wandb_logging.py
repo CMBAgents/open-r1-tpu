@@ -96,22 +96,20 @@ def test_step_axis_backend_is_silent_without_an_active_run():
     assert wandb.rows == []
 
 
-def test_completion_behaviour_reads_shape_stopping_and_loops():
+def test_completion_behaviour_reads_shape_and_loops():
     completions = [
-        "3 x 4 = 12.\nAnswer: 12<|im_end|>more text",
+        "3 x 4 = 12.\nAnswer: 12",
         "so \\boxed{7}",
         "loop\nloop\nloop\nno number",
         "Answer: 5",
     ]
-    m = completion_behaviour(completions, ["<|im_end|>"])
+    m = completion_behaviour(completions)
     assert m["behaviour/answer_line_frac"] == 0.5
     assert m["behaviour/boxed_frac"] == 0.25
     assert m["behaviour/number_found_frac"] == 0.75
-    assert m["behaviour/stopped_frac"] == 0.25
-    assert m["behaviour/after_stop_chars_mean"] == len("more text") / 4
+    assert m["behaviour/chars_mean"] == sum(len(c) for c in completions) / 4
     assert m["behaviour/repeated_line_frac"] == 0.25
     assert 0 < m["behaviour/distinct_4gram_mean"] <= 1
-    assert "behaviour/stopped_frac" not in completion_behaviour(completions)
 
 
 def test_group_signal_counts_groups_that_can_teach():
@@ -125,7 +123,7 @@ def test_group_signal_counts_groups_that_can_teach():
 
 
 def test_behaviour_metric_fn_returns_tunix_metric_tuples():
-    fn = build_behaviour_metric_fn(2, None)
+    fn = build_behaviour_metric_fn(2)
     out = fn(
         prompts=["p", "p"],
         completions=["Answer: 1", "x"],

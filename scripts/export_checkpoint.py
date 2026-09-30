@@ -10,9 +10,9 @@ checkpoints can be evaluated the same way as the final export.
 
 Usage (from the repo root, with the pinned environment active):
     python3 scripts/export_checkpoint.py \
-        --recipe recipes/rowanai/sft/config_rowanai_clean_v4_worked.yaml \
+        --recipe recipes/Qwen3-1.7B-Math/sft/config_distill.yaml \
         --step 200 \
-        --output artifacts/rowanai-clean-worked/v4-rowanai/checkpoint-200/merged
+        --output artifacts/Qwen3-1.7B-Math/checkpoint-200/merged
 """
 
 from __future__ import annotations

@@ -38,9 +38,9 @@
 # WHY THE MESH IS [1, 1]. One v6e-1 chip, actor + reference + rollout all
 # colocated on it (role_to_mesh in grpo/run.py maps all three Tunix roles to
 # this one mesh) -- an exploratory scale deliberately far below the SFT
-# recipe's v6e-4, matching the class VM this pipeline's structure was
-# checked against (tpu-2026-boris, itself an adaptation of Tunix's own
-# published examples/grpo_gemma.ipynb -- see grpo/run.py's module docstring
+# recipe's v6e-4, matching the single-chip setup this pipeline's structure
+# was checked against (an adaptation of Tunix's own published
+# examples/grpo_gemma.ipynb -- see grpo/run.py's module docstring
 # for the API details verified directly against this project's pinned Tunix
 # commit rather than assumed from either notebook).
 #

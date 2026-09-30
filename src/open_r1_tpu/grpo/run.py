@@ -31,14 +31,8 @@ Both loads go through ``model.loading.create_model``, the same helper
 safetensors checkpoint cannot drift between the two training stages.
 
 Generation stops on the first token of the tokenizer's assistant turn-end
-sequence (Qwen's ``<|im_end|>``) unless the recipe sets
-``rollout.eos_token_ids``. That override exists for a model whose turn-end
-marker is spelled with ordinary tokens (the local ``rowanai`` Llama base:
-``<|im_end|>`` is seven tokens starting with ``<``, ID 29, which would also
-stop generation at the ``<`` of ``<think>``). Tunix's sampler matches single
-token IDs only, so such a model stops on its document EOS instead, and
-``rollout.completion_stop_strings`` cuts each completion at the first
-occurrence of the marker before the reward functions see it.
+sequence (Qwen's ``<|im_end|>``) unless the recipe lists the token IDs to
+stop on in ``rollout.eos_token_ids``.
 
 With ``dataset.eval_fraction`` set, Tunix samples the held-out prompts every
 ``training.eval_every_n_steps`` (including step 0) and logs their reward
@@ -64,10 +58,7 @@ from open_r1_tpu.core.config import load_config
 from open_r1_tpu.core.logging import LOG_LEVELS, configure_logging
 from open_r1_tpu.grpo.behaviour import build_behaviour_metric_fn
 from open_r1_tpu.grpo.data import load_grpo_prompts
-from open_r1_tpu.grpo.rewards import (
-    reward_fns_from_names,
-    with_completion_stop_strings,
-)
+from open_r1_tpu.grpo.rewards import reward_fns_from_names
 from open_r1_tpu.model.export import export_model
 from open_r1_tpu.model.loading import absolute_checkpoint_dir, create_model
 from open_r1_tpu.model.metrics import metrics_logger_options
@@ -226,15 +217,6 @@ def validate_grpo_config(config: dict[str, Any]) -> None:
     ):
         raise ValueError(
             "rollout.eos_token_ids must be a non-empty list of non-negative integers"
-        )
-    stop_strings = rollout.get("completion_stop_strings")
-    if stop_strings is not None and (
-        not isinstance(stop_strings, list)
-        or not stop_strings
-        or any(not isinstance(value, str) or not value for value in stop_strings)
-    ):
-        raise ValueError(
-            "rollout.completion_stop_strings must be a non-empty list of strings"
         )
 
     grpo = config["grpo"]
@@ -446,10 +428,7 @@ def run(config: dict[str, Any]) -> None:
     eos_token_ids = [int(token) for token in rollout.get("eos_token_ids") or ()] or [
         assistant_turn_end_id(tokenizer)
     ]
-    reward_fns = with_completion_stop_strings(
-        reward_fns_from_names(config["grpo"].get("reward_functions")),
-        rollout.get("completion_stop_strings"),
-    )
+    reward_fns = reward_fns_from_names(config["grpo"].get("reward_functions"))
 
     train_ds, eval_ds = load_grpo_prompts(config["dataset"], tokenizer)
 
@@ -565,23 +544,18 @@ def run(config: dict[str, Any]) -> None:
         reward_fns=reward_fns,
         # behaviour/* and signal/* per step, train and eval, next to Tunix's
         # own rewards/*, completions/* and actor/* metrics.
-        metric_fns=[
-            build_behaviour_metric_fn(
-                grpo_config.num_generations, rollout.get("completion_stop_strings")
-            )
-        ],
+        metric_fns=[build_behaviour_metric_fn(grpo_config.num_generations)],
     )
 
     LOGGER.info(
         "Starting GRPO: model=%s mesh=%s max_steps=%d num_generations=%d beta=%s "
-        "eos_token_ids=%s completion_stop_strings=%s eval_rollouts_path=%s",
+        "eos_token_ids=%s eval_rollouts_path=%s",
         config["model"]["model_id"],
         mesh_shape,
         max_steps,
         grpo_config.num_generations,
         grpo_config.beta,
         eos_token_ids,
-        rollout.get("completion_stop_strings"),
         eval_rollouts_path,
     )
     # Same reason as sft.run.run: Tunix 0.1.8's PeftTrainer (which

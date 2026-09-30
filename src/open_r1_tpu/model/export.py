@@ -137,17 +137,7 @@ SAFETENSORS_ENTRY_FNS: dict[str, SafetensorsEntryFn] = {
 }
 
 
-def llama_safetensors_entry(path: str, value: np.ndarray) -> tuple[str, np.ndarray]:
-    """Map a bias-free Llama parameter; reject accidental Qwen-only weights."""
-    entry = _shared_safetensors_entry(path, value)
-    if entry is None:
-        raise ValueError(f"No safetensors mapping for Llama parameter {path!r}")
-    return entry
-
-
-def safetensors_entry_fn(
-    model_name: str, architecture: str | None = None
-) -> SafetensorsEntryFn:
+def safetensors_entry_fn(model_name: str) -> SafetensorsEntryFn:
     """Pick the parameter mapping for a Tunix model name.
 
     The family is read off the module Tunix itself would load rather than
@@ -156,9 +146,6 @@ def safetensors_entry_fn(
     registers new names against existing families all the time. Asking the
     registry means this cannot fall out of step with what actually loaded.
     """
-    if architecture == "llama":
-        return llama_safetensors_entry
-
     from tunix.models import automodel
 
     module = automodel.get_model_module(model_name, automodel.ModelModule.MODEL)
@@ -241,7 +228,6 @@ def export_full_model(
     local_model_path: str,
     output_dir: str,
     model_name: str,
-    architecture: str | None = None,
 ) -> None:
     """Write the model's live parameters as an unsharded HF checkpoint.
 
@@ -256,7 +242,7 @@ def export_full_model(
 
     # Resolved before any work, so an unsupported architecture fails here
     # rather than after the parameters have been walked.
-    entry_fn = safetensors_entry_fn(model_name, architecture)
+    entry_fn = safetensors_entry_fn(model_name)
 
     named_params: list[tuple[str, np.ndarray]] = []
     state = nnx.state(model, nnx.Param)
@@ -292,41 +278,25 @@ def export_full_model(
                 shutil.copy(source, os.path.join(output_dir, filename))
 
 
-def write_turn_end_generation_config(
-    *, output_dir: str, tokenizer: Any, stop_strings: list[str] | None = None
-) -> None:
-    """Persist either a native turn-end token or explicit text stop strings.
+def write_turn_end_generation_config(*, output_dir: str, tokenizer: Any) -> None:
+    """Put the assistant turn-end token first in the export's EOS ids.
 
-    Native special markers such as Qwen's ``<|im_end|>`` must be token-level
-    EOS: serving commonly strips special tokens before matching stop strings.
-    Markers encoded as ordinary tokens remain in decoded text, so an explicit
-    ``stop_strings`` list preserves the document EOS and matches the whole
-    marker instead. Inference clients must honor these strings (Transformers
-    needs the tokenizer; vLLM requests need their ``stop`` parameter).
+    Qwen's ``<|im_end|>`` must be token-level EOS: serving commonly strips
+    special tokens before matching stop strings, so a stop string cannot end
+    the turn.
     """
-    # A delimiter encoded as ordinary tokens must be matched in full. Adding
-    # its first piece (for example '<') to EOS would stop normal prose early.
-    if stop_strings is not None and (
-        not isinstance(stop_strings, list)
-        or not stop_strings
-        or any(not isinstance(value, str) or not value for value in stop_strings)
-    ):
-        raise ValueError("export.stop_strings must be a nonempty list of strings")
     path = os.path.join(output_dir, "generation_config.json")
     generation_config: dict[str, Any] = {}
     if os.path.exists(path):
         with open(path) as handle:
             generation_config = json.load(handle)
-    if stop_strings is not None:
-        generation_config["stop_strings"] = stop_strings
-    else:
-        turn_end = assistant_turn_end_id(tokenizer)
-        existing = generation_config.get("eos_token_id", [])
-        if isinstance(existing, int):
-            existing = [existing]
-        generation_config["eos_token_id"] = [turn_end] + [
-            token for token in existing if token != turn_end
-        ]
+    turn_end = assistant_turn_end_id(tokenizer)
+    existing = generation_config.get("eos_token_id", [])
+    if isinstance(existing, int):
+        existing = [existing]
+    generation_config["eos_token_id"] = [turn_end] + [
+        token for token in existing if token != turn_end
+    ]
     with open(path, "w") as handle:
         json.dump(generation_config, handle, indent=2, sort_keys=True)
         handle.write("\n")
@@ -376,9 +346,7 @@ def export_model(
         )
         save_fn = getattr(params_module, "save_lora_merged_model_as_safetensors", None)
         if save_fn is None and (
-            safetensors_entry_fn(
-                config["model"]["model_name"], config["model"].get("architecture")
-            )
+            safetensors_entry_fn(config["model"]["model_name"])
             is qwen2_safetensors_entry
         ):
             save_fn = save_qwen2_lora_merged_model_as_safetensors
@@ -407,11 +375,6 @@ def export_model(
             local_model_path=local_model_path,
             output_dir=output_dir,
             model_name=str(config["model"]["model_name"]),
-            architecture=config["model"].get("architecture"),
         )
 
-    write_turn_end_generation_config(
-        output_dir=output_dir,
-        tokenizer=tokenizer,
-        stop_strings=export.get("stop_strings"),
-    )
+    write_turn_end_generation_config(output_dir=output_dir, tokenizer=tokenizer)

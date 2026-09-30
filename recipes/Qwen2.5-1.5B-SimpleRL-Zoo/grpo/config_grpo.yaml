@@ -7,9 +7,8 @@
 # (hkust-nlp/Qwen-2.5-1.5B-SimpleRL-Zoo), so the test is: score that model
 # and this run's export with ../eval under one protocol, and see whether this
 # run reaches it. A run that stays at the base's score, or collapses, means
-# the pipeline is broken; the rowanai GRPO runs could not tell, because their
-# models started at 1-2% correct and had nothing to reinforce. This base
-# starts at 30-55%, so most rollout groups mix right and wrong answers.
+# the pipeline is broken. This base starts at 30-55% correct, so most rollout
+# groups mix right and wrong answers and carry a learning signal.
 #
 # WHAT IS COPIED FROM SIMPLERL-ZOO (code: github.com/hkust-nlp/simpleRL-reason,
 # branch v1, which runs on verl):
@@ -45,8 +44,8 @@
 #   RL at about ten times the learning rate, hence 5e-6 below.
 # - 2,048 new tokens, not 8,192. Their stops end most answers well before
 #   this, and the logits for 8 x 2,560 tokens is what fits beside two 1.5B
-#   models on one chip. Watch behaviour/stopped_frac: if many rollouts hit
-#   the cap, the cap is costing reward.
+#   models on one chip. If many rollouts hit the cap, the cap is costing
+#   reward.
 # - No entropy bonus (theirs is 0.001): the pinned Tunix GRPO has none.
 # - Prompt filter by tokens (512), not by characters (1,024): it keeps 39 of
 #   the 108 long problems theirs drops.
@@ -55,7 +54,7 @@
 # STAGING, on the VM:
 #   hf download hkust-nlp/SimpleRL-Zoo-Data --repo-type dataset \
 #     --include "simplelr_abel_level3to5/*" --local-dir data/SimpleRL-Zoo-Data
-# The base is the same models/Qwen2.5-1.5B the rowanai Qwen arms used.
+#   hf download Qwen/Qwen2.5-1.5B --local-dir models/Qwen2.5-1.5B
 #
 # BEFORE THE REAL RUN:
 # 1. `python -m pytest tests/test_qwen2_lora_export.py` on the VM. Tunix has

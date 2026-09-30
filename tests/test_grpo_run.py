@@ -92,7 +92,7 @@ def test_missing_section_is_rejected():
 
 
 # ---------------------------------------------------------------------------
-# rollout.eos_token_ids / rollout.completion_stop_strings
+# rollout.eos_token_ids
 # ---------------------------------------------------------------------------
 
 
@@ -113,127 +113,11 @@ def test_eos_token_ids_must_be_a_list_of_non_negative_integers():
     assert config["rollout"]["eos_token_ids"] == [0]
 
 
-def test_completion_stop_strings_must_be_a_list_of_strings():
-    with pytest.raises(ValueError, match="completion_stop_strings"):
-        load_config(
-            RECIPE,
-            ["rollout.completion_stop_strings=[]"],
-            validator=validate_grpo_config,
-        )
-    with pytest.raises(ValueError, match="completion_stop_strings"):
-        load_config(
-            RECIPE,
-            ["rollout.completion_stop_strings=x"],
-            validator=validate_grpo_config,
-        )
-
-
-# ---------------------------------------------------------------------------
-# The GSM8K recipes for the rowanai and general-purpose bases
-# ---------------------------------------------------------------------------
-
-GSM8K_RECIPES = {
-    "rowanai": Path(__file__).parents[1]
-    / "recipes/rowanai/grpo/config_rowanai_gsm8k.yaml",
-    "qwen": Path(__file__).parents[1]
-    / "recipes/rowanai/grpo/config_qwen_base_gsm8k.yaml",
-}
-
-
-@pytest.mark.parametrize("arm", sorted(GSM8K_RECIPES))
-def test_gsm8k_recipe_loads_with_k_8_on_one_device(arm):
-    config = load_config(GSM8K_RECIPES[arm], [], validator=validate_grpo_config)
-    assert config["grpo"]["num_generations"] == 8
-    assert config["model"]["mesh"]["shape"] == [1, 1]
-    assert config["model"]["lora_config"]["rank"] == 64
-    assert config["dataset"]["data_files"] == "data/gsm8k-pre1905/train.jsonl"
-    assert (
-        config["dataset"]["question_column"],
-        config["dataset"]["answer_column"],
-    ) == (
-        "prompt",
-        "solution",
-    )
-    assert config["export"]["enabled"] is False
-    rollout = config["rollout"]
-    assert rollout["kv_cache_size"] >= (
-        rollout["max_prompt_length"] + rollout["max_tokens_to_generate"]
-    )
-
-
-def test_gsm8k_arms_differ_only_in_model_tokenizer_and_output_paths():
-    rowanai = load_config(GSM8K_RECIPES["rowanai"], [], validator=validate_grpo_config)
-    qwen = load_config(GSM8K_RECIPES["qwen"], [], validator=validate_grpo_config)
-    # eval_batch_size only changes how the same eval prompts are batched
-    # (a memory setting for Qwen's larger vocabulary), not what is evaluated.
-    for config in (rowanai, qwen):
-        config["dataset"].pop("eval_batch_size", None)
-    for section in ("dataset", "optimizer", "grpo"):
-        assert rowanai[section] == qwen[section], section
-    for key in (
-        "max_prompt_length",
-        "max_tokens_to_generate",
-        "kv_cache_size",
-        "temperature",
-    ):
-        assert rowanai["rollout"][key] == qwen["rollout"][key], key
-
-
-def test_rowanai_gsm8k_recipe_stops_on_document_eos_not_the_turn_marker():
-    # rowanai's <|im_end|> is ordinary tokens starting with "<" (ID 29); the
-    # default stop token would end generation at the "<" of <think>.
-    config = load_config(GSM8K_RECIPES["rowanai"], [], validator=validate_grpo_config)
-    assert config["rollout"]["eos_token_ids"] == [0]
-    assert config["rollout"]["completion_stop_strings"] == ["<|im_end|>"]
-    assert config["model"]["architecture"] == "llama"
-    assert config["model"]["rope_theta"] == 50000
-
-
-def test_qwen_gsm8k_recipe_uses_the_general_purpose_base_with_its_own_template():
-    config = load_config(GSM8K_RECIPES["qwen"], [], validator=validate_grpo_config)
-    assert config["model"]["model_id"] == "Qwen/Qwen2.5-1.5B"
-    assert config["model"]["rope_theta"] == 1000000
-    assert config["tokenizer"]["chat_template"] is None
-    assert "eos_token_ids" not in config["rollout"]
-
-
-@pytest.mark.parametrize("arm", sorted(GSM8K_RECIPES))
-def test_gsm8k_recipes_start_from_an_sft_export(arm):
-    config = load_config(GSM8K_RECIPES[arm], [], validator=validate_grpo_config)
-    expected = {
-        "rowanai": "artifacts/rowanai-gsm8k-format/v1/merged",
-        "qwen": "artifacts/rowanai-clean-worked/v4-qwen-base/merged",
-    }[arm]
-    assert config["model"]["model_path"] == expected
-
-
-def test_rowanai_format_sft_feeds_the_grpo_recipe():
-    """The format SFT must share GRPO's prompt and end turns with EOS."""
-    sft = load_config("recipes/rowanai/sft/config_rowanai_gsm8k_format.yaml")
-    grpo = load_config(GSM8K_RECIPES["rowanai"], [], validator=validate_grpo_config)
-    assert sft["export"]["enabled"]
-    assert sft["export"]["output_dir"] == grpo["model"]["model_path"]
-    assert sft["dataset"]["system_prompt_file"] == grpo["dataset"]["system_prompt_file"]
-    template = sft["tokenizer"]["chat_template"]
-    assert "'<|im_end|>' }}{% if message['role'] == 'assistant' %}" in template
-    assert "{{ '<|endoftext|>' }}" in template
-    worked = "artifacts/rowanai-clean-worked/v4-rowanai/merged"
-    assert sft["model"]["model_path"] == worked
-
-
-@pytest.mark.parametrize("arm", sorted(GSM8K_RECIPES))
-def test_gsm8k_recipes_reward_answer_correctness_only(arm):
-    config = load_config(GSM8K_RECIPES[arm], [], validator=validate_grpo_config)
-    assert config["grpo"]["reward_functions"] == ["answer_correctness_reward"]
-    prompt = Path(config["dataset"]["system_prompt_file"]).read_text()
-    assert "<think>" not in prompt and "boxed" not in prompt
-
-
 @pytest.mark.parametrize("names", [["nope"], [], "answer_correctness_reward"])
 def test_grpo_reward_functions_are_validated(names):
     with pytest.raises(ValueError):
         load_config(
-            GSM8K_RECIPES["qwen"],
+            RECIPE,
             [f"grpo.reward_functions={names!r}"],
             validator=validate_grpo_config,
         )
@@ -251,12 +135,12 @@ def test_grpo_reward_functions_are_validated(names):
 )
 def test_grpo_micro_batch_sizes_are_validated(overrides):
     with pytest.raises(ValueError, match="batch_size"):
-        load_config(GSM8K_RECIPES["qwen"], overrides, validator=validate_grpo_config)
+        load_config(RECIPE, overrides, validator=validate_grpo_config)
 
 
 def test_grpo_micro_batch_sizes_accept_a_divisor():
     config = load_config(
-        GSM8K_RECIPES["qwen"],
+        RECIPE,
         [
             "training.train_micro_batch_size=1",
             "training.compute_logps_micro_batch_size=1",
@@ -348,26 +232,6 @@ def test_rollout_recorder_accepts_numpy_columns(tmp_path):
     assert rows[0]["rewards"]["correctness_reward"] == 3.0
     assert rows[1]["rewards"]["correctness_reward"] == 0.0
     assert "a_scalar" not in rows[0]
-
-
-@pytest.mark.parametrize("arm", sorted(GSM8K_RECIPES))
-def test_gsm8k_recipes_flash_block_divides_prompt_length(arm):
-    """Splash attention requires the block size to divide the query length."""
-    config = load_config(GSM8K_RECIPES[arm], [], validator=validate_grpo_config)
-    block = config["model"]["flash_attention_block_size"]
-    prompt_len = config["rollout"]["max_prompt_length"]
-    total_len = prompt_len + config["rollout"]["max_tokens_to_generate"]
-    assert prompt_len % block == 0
-    assert total_len % block == 0
-
-
-@pytest.mark.parametrize("arm", sorted(GSM8K_RECIPES))
-def test_gsm8k_recipes_record_a_64_prompt_eval_split(arm):
-    config = load_config(GSM8K_RECIPES[arm], [], validator=validate_grpo_config)
-    assert config["dataset"]["eval_fraction"] > 0
-    assert config["dataset"]["eval_max_examples"] == 64
-    assert config["training"]["eval_every_n_steps"] == 100
-    assert config["training"]["eval_rollouts_path"].endswith("eval_rollouts.jsonl")
 
 
 # ---------------------------------------------------------------------------
