@@ -4,7 +4,8 @@
 Run from the repository root on the TPU VM, with the project environment
 active::
 
-    python scripts/chat_tpu.py --model-path models/Qwen2.5-Math-1.5B
+    python scripts/chat_tpu.py --model-path models/Qwen2.5-Math-1.5B \
+      --model-name qwen2.5-math-1.5b
 
 The architecture is detected from the directory's ``config.json``. To talk to a
 training run's own weights, before it has finished or been exported, pass the
@@ -43,8 +44,8 @@ from open_r1_tpu.model.tokenizing import as_token_ids
 
 DEFAULT_MODEL_PATH = "models/Qwen2.5-Math-1.5B"
 DEFAULT_MAX_PROMPT_LENGTH = 1024
-# Empty because the SFT recipes train without a system prompt; injecting one
-# here would show the model a message type it rarely saw in training.
+# Empty, so no system message is sent and the chat template supplies its own
+# default, if it has one. Pass --system-prompt to use a recipe's prompt.
 DEFAULT_SYSTEM_PROMPT = ""
 
 # The chat template ends every turn with <|im_end|>, but Qwen base models name
@@ -90,8 +91,9 @@ def parse_args() -> argparse.Namespace:
         "--model-name",
         default=None,
         help=(
-            "Canonical Tunix model name, only needed when the local config.json "
-            "has no _name_or_path."
+            "Tunix model name, such as qwen2.5-math-1.5b (default: the recipe's "
+            "model.model_name with --recipe, else read from config.json's "
+            "_name_or_path, which Hub downloads and exports lack)."
         ),
     )
     parser.add_argument(
@@ -159,19 +161,19 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def recipe_base_model_path(recipe: str) -> str:
-    """The local base an SFT recipe trains from, as its merged export finds it."""
+def recipe_model(recipe: str) -> tuple[str | None, str]:
+    """An SFT recipe's local base, as its merged export finds it (None if it
+    has none), and its Tunix model name."""
     from open_r1_tpu.core.config import load_config
     from open_r1_tpu.model.export import local_base_model_path
     from open_r1_tpu.sft.config import validate_sft_config
 
     config = load_config(recipe, validator=validate_sft_config)
     try:
-        return local_base_model_path(config)
+        base = local_base_model_path(config)
     except ValueError:
-        raise ValueError(
-            f"{recipe} names no local base model; pass --model-path"
-        ) from None
+        base = None
+    return base, str(config["model"]["model_name"])
 
 
 def validate_options(args: argparse.Namespace) -> None:
@@ -195,11 +197,18 @@ def validate_options(args: argparse.Namespace) -> None:
         if not recipe_path.is_file():
             raise FileNotFoundError(f"Recipe does not exist: {recipe_path}")
         args.recipe = str(recipe_path)
+        base, model_name = recipe_model(args.recipe)
+        if args.model_name is None:
+            args.model_name = model_name
+        if args.model_path is None:
+            if base is None:
+                raise ValueError(
+                    f"{args.recipe} names no local base model; pass --model-path"
+                )
+            args.model_path = base
 
     if args.model_path is None:
-        args.model_path = (
-            recipe_base_model_path(args.recipe) if args.recipe else DEFAULT_MODEL_PATH
-        )
+        args.model_path = DEFAULT_MODEL_PATH
     args.model_path = resolve_model_dir(args.model_path)
 
 

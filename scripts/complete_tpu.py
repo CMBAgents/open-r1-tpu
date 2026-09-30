@@ -5,7 +5,7 @@ No system prompt, role markers, chat template, or history is added, so this
 shows a base model's native next-token behaviour. For a single completion::
 
     python scripts/complete_tpu.py \
-      --model-path models/Qwen2.5-Math-1.5B \
+      --model-path models/Qwen2.5-Math-1.5B --model-name qwen2.5-math-1.5b \
       "The capital of France is"
 
 Omit the prompt to enter independent prompts interactively. Decoding is
@@ -49,8 +49,8 @@ def parse_args() -> argparse.Namespace:
         "--model-name",
         default=None,
         help=(
-            "Canonical Tunix model name, only needed when the local config.json "
-            "has no _name_or_path."
+            "Tunix model name, such as qwen2.5-math-1.5b (default: read from "
+            "config.json's _name_or_path, which Hub downloads and exports lack)."
         ),
     )
     parser.add_argument(

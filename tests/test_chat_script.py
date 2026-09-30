@@ -309,6 +309,7 @@ def test_a_recipe_defaults_the_model_path_to_the_base_it_trains_from(tmp_path):
         temperature=0.0,
         top_p=0.95,
         model_path=None,
+        model_name=None,
         recipe=str(recipe),
         checkpoint_dir=None,
     )
@@ -316,6 +317,8 @@ def test_a_recipe_defaults_the_model_path_to_the_base_it_trains_from(tmp_path):
     chat.validate_options(args)
 
     assert args.model_path == str(base.resolve())
+    # Tunix needs the name, and neither a Hub download nor an export records it.
+    assert args.model_name == "qwen2.5-math-1.5b"
 
 
 def _hub_recipe(tmp_path, download_path=None):
@@ -331,17 +334,45 @@ def _hub_recipe(tmp_path, download_path=None):
     return recipe
 
 
+def _recipe_args(recipe):
+    return SimpleNamespace(
+        max_new_tokens=8,
+        max_prompt_length=17,
+        temperature=0.0,
+        top_p=0.95,
+        model_path=None,
+        model_name=None,
+        recipe=str(recipe),
+        checkpoint_dir=None,
+    )
+
+
 def test_a_hub_recipe_defaults_the_model_path_to_its_download_directory(tmp_path):
     base = tmp_path / "download"
     base.mkdir()
     (base / "model.safetensors").write_bytes(b"")
+    args = _recipe_args(_hub_recipe(tmp_path, base))
 
-    assert chat.recipe_base_model_path(str(_hub_recipe(tmp_path, base))) == str(base)
+    chat.validate_options(args)
+
+    assert args.model_path == str(base.resolve())
 
 
 def test_a_recipe_without_a_local_base_asks_for_a_model_path(tmp_path):
     with pytest.raises(ValueError, match="pass --model-path"):
-        chat.recipe_base_model_path(str(_hub_recipe(tmp_path)))
+        chat.validate_options(_recipe_args(_hub_recipe(tmp_path)))
+
+
+def test_an_explicit_model_name_wins_over_the_recipes(tmp_path):
+    base = tmp_path / "download"
+    base.mkdir()
+    (base / "model.safetensors").write_bytes(b"")
+    args = _recipe_args(_hub_recipe(tmp_path, base))
+    args.model_name = "qwen2.5-1.5b"
+
+    chat.validate_options(args)
+
+    assert args.model_name == "qwen2.5-1.5b"
 
 
 def test_a_missing_recipe_is_named_before_its_base_is_looked_up(tmp_path):
