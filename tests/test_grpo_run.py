@@ -5,10 +5,7 @@ import pytest
 from open_r1_tpu.core.config import load_config
 from open_r1_tpu.grpo.run import validate_grpo_config
 
-RECIPE = (
-    Path(__file__).parents[1]
-    / "recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/grpo/config_grpo.yaml"
-)
+RECIPE = Path(__file__).parents[1] / "recipes/Qwen2.5-Math-1.5B/grpo/dapo-math-17k.yaml"
 
 
 def test_recipe_loads_and_targets_one_device():
@@ -28,7 +25,7 @@ def test_recipe_names_the_merged_sft_export_not_the_pre_sft_base():
 def test_recipe_rope_theta_matches_the_sft_recipe():
     sft_recipe = (
         Path(__file__).parents[1]
-        / "recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/sft/config_distill.yaml"
+        / "recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml"
     )
     grpo_config = load_config(RECIPE, [], validator=validate_grpo_config)
     sft_config = load_config(sft_recipe)
@@ -248,8 +245,7 @@ def test_loss_options_are_optional_and_checked():
 # ---------------------------------------------------------------------------
 
 SIMPLERL_RECIPE = (
-    Path(__file__).parents[1]
-    / "recipes/Qwen2.5-1.5B-SimpleRL-Zoo/grpo/config_grpo.yaml"
+    Path(__file__).parents[1] / "recipes/Qwen2.5-1.5B/grpo/simplerl-zoo.yaml"
 )
 QWEN25_BASE = Path(__file__).parents[1] / "models/Qwen2.5-1.5B"
 ABEL = "Question:\n{}\nAnswer:\nLet's think step by step.\n"

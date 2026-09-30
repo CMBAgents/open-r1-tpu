@@ -5,11 +5,11 @@ No system prompt, role markers, chat template, or history is added. For a
 single completion::
 
     python scripts/complete_qwen_tpu.py \
-      --model-path models/Qwen3-1.7B-Base \
+      --model-path models/Qwen2.5-Math-1.5B \
       "The capital of France is"
 
 Omit the positional prompt to enter multiple independent prompts interactively.
-Qwen2.5-1.5B weights are also detected from their local ``config.json``.
+The Tunix architecture is detected from the directory's ``config.json``.
 """
 
 from __future__ import annotations

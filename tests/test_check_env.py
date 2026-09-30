@@ -4,9 +4,16 @@ from open_r1_tpu.core.config import load_config
 from open_r1_tpu.sft.data import encode_reasoning_example
 from open_r1_tpu.sft.preflight import _preflight_example
 
-OT3_RECIPE = (
-    Path(__file__).parents[1] / "recipes/Qwen3-1.7B-OT3/sft/config_distill.yaml"
+RECIPE = (
+    Path(__file__).parents[1] / "recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml"
 )
+# A ShareGPT-style corpus: {from: human|gpt, value: ...} rows under
+# `conversations`, as OpenThoughts3 publishes them.
+SHAREGPT = [
+    "dataset.messages_column=conversations",
+    "dataset.message_schema={role_key: from, content_key: value, "
+    "role_map: {human: user, gpt: assistant}}",
+]
 
 
 class FakeTokenizer:
@@ -33,7 +40,7 @@ def test_probe_defaults_to_role_and_content_messages():
 
 
 def test_probe_is_written_in_the_recipe_corpus_vocabulary():
-    config = load_config(OT3_RECIPE)
+    config = load_config(RECIPE, SHAREGPT)
 
     record, encode_kwargs = _preflight_example(config["dataset"])
 

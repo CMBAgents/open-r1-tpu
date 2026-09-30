@@ -38,7 +38,7 @@ the TPU chip, so the training job must have exited before the server starts.
 
 Run through `scripts/run_eval_tpu.sh`, which owns the server's lifecycle::
 
-    RECIPE=recipes/Qwen3-1.7B-Math/eval/tier1_core.yaml ./scripts/run_eval_tpu.sh
+    RECIPE=recipes/Qwen2.5-Math-1.5B/eval/tier1_core.yaml ./scripts/run_eval_tpu.sh
 
 WHY SEEDS ARE MANDATORY. Seed variance alone moves small reasoning benchmarks
 by 5-15 points (arXiv 2504.07086), which is more than most recipe changes are

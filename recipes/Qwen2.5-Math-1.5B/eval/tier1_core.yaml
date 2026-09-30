@@ -17,18 +17,13 @@
 # so a single number cannot tell an improvement from noise. Three is the
 # documented minimum for a benchmark this size.
 #
-# Two comparisons hang off this tier. Against recipes/Qwen3-1.7B-Math's
-# tier 1: same corpus, same prompt, same protocol, different base model and
-# window. Against recipes/DeepSeek-R1-Distill-Qwen-1.5B's tier 1: same task,
-# seeds and sampling block, so the gap to the published distill is measured
+# This tier compares directly with recipes/DeepSeek-R1-Distill-Qwen-1.5B's
+# tier 1: same task, seeds and sampling block, so the gap to the published distill is measured
 # under identical generation parameters -- only the prompt side differs, on
 # purpose (this export keeps its training system prompt; DeepSeek's distills
 # run without one, per their card). Neither number is the card's MATH-500
 # 83.9, which DeepSeek measured at a 32768-token budget; see base.yaml for
 # how to run that protocol against this export.
-#
-# Identical to recipes/Qwen3-1.7B-Math/eval/tier1_core.yaml apart from the
-# paths; tests/test_evaluate.py holds the two together.
 extends: base.yaml
 
 eval:
@@ -54,12 +49,11 @@ sampling:
   # Deliberately large. A trace cut off by the cap scores as wrong and reads as
   # a reasoning failure, so an undersized cap silently understates the model.
   # Watch generation.truncation_rate in the summary: if it is not near zero,
-  # this number is too low and the accuracy below it is not trustworthy. That
-  # check matters more for this export than for the Qwen3 one: it was trained
-  # on whole traces up to 25,733 tokens rather than on the under-4096 subset,
-  # so it has seen, and may reproduce, traces longer than this cap.
+  # this number is too low and the accuracy below it is not trustworthy. This
+  # export was trained on whole traces up to 25,733 tokens, so it has seen,
+  # and may reproduce, traces longer than this cap.
   max_new_tokens: 16384
-  system_prompt_file: recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/system_prompt.txt
+  system_prompt_file: recipes/Qwen2.5-Math-1.5B/system_prompt.txt
 
 reporting:
   output_dir: artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/eval/tier1

@@ -3,7 +3,7 @@
 Run with::
 
   python -m open_r1_tpu.grpo.run --config \
-    recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/grpo/config_grpo.yaml
+    recipes/Qwen2.5-1.5B/grpo/simplerl-zoo.yaml
 
 Prerequisites: the merged SFT export and the prompt corpus must already be
 staged on local disk (the recipe's model and dataset sections say where).

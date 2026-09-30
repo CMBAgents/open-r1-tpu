@@ -10,8 +10,8 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MODEL="${GCS_MODEL:-Qwen3-1.7B-Base}"
-DATASET="${GCS_DATASET:-Mixture-of-Thoughts}"
+MODEL="${GCS_MODEL:-Qwen2.5-Math-1.5B-RoPE-300k}"
+DATASET="${GCS_DATASET:-OpenR1-Math-220k}"
 BUCKET="${GCS_BUCKET:-}"
 
 usage() {
@@ -24,12 +24,11 @@ repository's ignored models/ and data/ directories.
 
   --bucket gs://BUCKET   Source bucket. Defaults to $GCS_BUCKET.
   --model NAME           Model directory name. Defaults to $GCS_MODEL, or
-                         Qwen3-1.7B-Base.
+                         Qwen2.5-Math-1.5B-RoPE-300k.
   --dataset NAME         Dataset directory name. Defaults to $GCS_DATASET, or
-                         Mixture-of-Thoughts. Also accepts smoltalk, the
-                         instruction-tuning corpus, its smol-smoltalk variant,
-                         OpenR1-Math-220k, the math reasoning corpus, and
-                         DAPO-Math-17k-Processed, the GRPO prompt set.
+                         OpenR1-Math-220k, the distillation corpus. Also
+                         accepts DAPO-Math-17k-Processed and SimpleRL-Zoo-Data,
+                         the GRPO prompt sets.
 
 Objects are read from the bucket's models/NAME and datasets/NAME and written
 to models/NAME and data/NAME. Override the bucket layout with
@@ -77,16 +76,13 @@ DATA_PREFIX="${GCS_DATA_PREFIX:-datasets/${DATASET}}"
 # dataset.data_files without a split mapping loads every match into the train
 # split. Selecting a held-out shard here would train on the evaluation data.
 case "${DATASET}" in
-  Mixture-of-Thoughts) DATA_GLOB="${GCS_DATA_GLOB:-all/*.parquet}" ;;
-  # smoltalk ships one directory per subset; `all` is the full mix.
-  smoltalk) DATA_GLOB="${GCS_DATA_GLOB:-data/all/train-*.parquet}" ;;
-  smol-smoltalk) DATA_GLOB="${GCS_DATA_GLOB:-data/train-*.parquet}" ;;
   # Only the `default` config's shards under data/. The repository's `extended`
   # and `all` views cover the same problems, so a wider glob would train on
   # duplicates.
   OpenR1-Math-220k) DATA_GLOB="${GCS_DATA_GLOB:-data/train-*.parquet}" ;;
   # Only the English config. `all` is `en` plus the Chinese `cn` prompts.
   DAPO-Math-17k-Processed) DATA_GLOB="${GCS_DATA_GLOB:-en/train-*.parquet}" ;;
+  SimpleRL-Zoo-Data) DATA_GLOB="${GCS_DATA_GLOB:-simplelr_abel_level3to5/train.parquet}" ;;
   *) DATA_GLOB="${GCS_DATA_GLOB:-*.parquet}" ;;
 esac
 

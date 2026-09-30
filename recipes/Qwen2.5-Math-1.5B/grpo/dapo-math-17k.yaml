@@ -29,11 +29,10 @@
 # the merged export already has <|im_end|> and the reasoning format baked
 # into its own weights, so a LoRA adapter over attention/MLP projections is
 # enough to reshape *policy* (which reasoning paths get reinforced) without
-# retouching the tied embedding/lm_head row. module_path is the same pattern
-# recipes/OpenR1-Distill-Qwen3-1.7B/sft and recipes/Qwen3-1.7B-OT3/sft
-# already use successfully: export.py's shared Qwen2/Qwen3 key-mapping rules
-# confirm both families expose attention and MLP projections under these
-# same internal names.
+# retouching the tied embedding/lm_head row. module_path is the pattern
+# ../../Qwen2.5-1.5B/grpo/simplerl-zoo.yaml trains with: export.py's shared
+# Qwen2/Qwen3 key-mapping rules confirm both families expose attention and
+# MLP projections under these same internal names.
 #
 # WHY THE MESH IS [1, 1]. One v6e-1 chip, actor + reference + rollout all
 # colocated on it (role_to_mesh in grpo/run.py maps all three Tunix roles to
@@ -44,7 +43,7 @@
 # for the API details verified directly against this project's pinned Tunix
 # commit rather than assumed from either notebook).
 #
-# FLOAT32 AND PLAIN ATTENTION, as in ../../Qwen2.5-1.5B-SimpleRL-Zoo/grpo:
+# FLOAT32 AND PLAIN ATTENTION, as in ../../Qwen2.5-1.5B/grpo/simplerl-zoo.yaml:
 # bfloat16 or splash attention corrupts Qwen2 GRPO rollouts on the pinned
 # Tunix (see that recipe's header).
 #
@@ -138,7 +137,7 @@ dataset:
   eval_fraction: 0.0
   eval_max_examples: 64
   seed: 42
-  system_prompt_file: recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/system_prompt.txt
+  system_prompt_file: recipes/Qwen2.5-Math-1.5B/system_prompt.txt
 
 optimizer:
   # Two orders of magnitude below the SFT recipe's 2.0e-4: GRPO fine-tunes

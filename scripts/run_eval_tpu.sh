@@ -10,7 +10,7 @@ set -euo pipefail
 # halves read the same recipe and the same dotted overrides, so the port and
 # the served model name cannot drift apart.
 #
-#   RECIPE=recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml ./scripts/run_eval_tpu.sh
+#   RECIPE=recipes/Qwen2.5-Math-1.5B/eval/tier0_smoke.yaml ./scripts/run_eval_tpu.sh
 #
 # RECIPE is required and has no default: an expensive run must name its tier
 # on purpose rather than falling into whichever one happened to be the
@@ -21,8 +21,8 @@ set -euo pipefail
 # Overrides pass straight through, which is how the base model gets measured on
 # the identical stack -- the only baseline worth comparing against:
 #
-#   RECIPE=recipes/Qwen3-1.7B-Math/eval/tier1_core.yaml ./scripts/run_eval_tpu.sh \
-#     server.model_path=models/Qwen3-1.7B-Base
+#   RECIPE=recipes/Qwen2.5-Math-1.5B/eval/tier1_core.yaml ./scripts/run_eval_tpu.sh \
+#     server.model_path=models/Qwen2.5-Math-1.5B
 #
 # Needs the locked host stack and pinned service image:
 # `scripts/setup_tpu_vm.sh --with-eval`. Only one process can hold the TPU chip,

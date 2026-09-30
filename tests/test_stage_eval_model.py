@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).parents[1]
-RECIPE = REPO / "recipes/Qwen2.5-1.5B-SimpleRL-Zoo/grpo/config_grpo.yaml"
+RECIPE = REPO / "recipes/Qwen2.5-1.5B/grpo/simplerl-zoo.yaml"
 
 _spec = importlib.util.spec_from_file_location(
     "stage_eval_model", REPO / "scripts/stage_eval_model.py"

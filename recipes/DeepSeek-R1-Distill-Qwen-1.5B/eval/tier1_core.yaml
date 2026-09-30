@@ -2,11 +2,10 @@
 #
 # Since 2026-09-03 this tier no longer replicates the card's MATH-500 row. It
 # exists so the published distill and this project's own 1.5B export
-# (recipes/OpenR1-Distill-Qwen2.5-Math-1.5B) are measured on the same
-# benchmark under the same generation parameters: the same task list, seeds,
-# temperature, top-p, token budget and context window as that recipe's tier 1
-# (and recipes/Qwen3-1.7B-Math's, which it mirrors); tests/test_evaluate.py
-# holds the protocols together. The one deliberate asymmetry is the prompt
+# (recipes/Qwen2.5-Math-1.5B/eval) are measured on the same benchmark under
+# the same generation parameters: the same task list, seeds, temperature,
+# top-p, token budget and context window as that recipe's tier 1;
+# tests/test_evaluate.py holds the protocols together. The one deliberate asymmetry is the prompt
 # side: this model runs without a system prompt, per DeepSeek's usage
 # guidance, while the project exports keep the system prompt they were
 # trained with -- each model is asked the way it is meant to be asked, and

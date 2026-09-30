@@ -4,19 +4,17 @@
 Run from the repository root on the TPU VM after activating the project
 environment::
 
-    python scripts/chat_qwen_tpu.py --model-path models/Qwen3-1.7B-Base
-
-Qwen2.5-1.5B weights are detected from their local ``config.json`` and use the
-matching Tunix architecture automatically::
-
     python scripts/chat_qwen_tpu.py --model-path models/Qwen2.5-Math-1.5B
+
+The Tunix architecture (Qwen2 or Qwen3) is detected from the directory's
+``config.json``.
 
 To talk to a training run's own weights, pass the recipe it was trained with.
 Its latest checkpoint is then restored on top of the base model, which is how
 a run can be inspected before it has finished and exported merged weights::
 
     python scripts/chat_qwen_tpu.py \
-      --recipe recipes/Qwen3-1.7B-Instruct/sft/config_instruct.yaml
+      --recipe recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml
 
 A full fine-tune's checkpoint replaces every parameter; a LoRA recipe's
 checkpoint restores adapters alone. Which applies is read from the recipe's
@@ -42,7 +40,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-DEFAULT_MODEL_PATH = "models/Qwen3-1.7B-Base"
+DEFAULT_MODEL_PATH = "models/Qwen2.5-Math-1.5B"
 # Empty by default because SFT trains on conversations as they come, and the
 # recipes leave dataset.system_prompt_file null. Injecting a system prompt
 # here would put the model in front of a message type it rarely saw in

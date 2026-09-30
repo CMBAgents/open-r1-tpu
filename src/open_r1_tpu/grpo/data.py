@@ -8,7 +8,7 @@ of the source row for the reward functions in
 here, the bare gold answer. There is nothing to tokenize or pack here: Tunix's
 rollout takes prompt strings and tokenizes them itself.
 
-The recipe (``recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/grpo``) reads
+The recipe ``recipes/Qwen2.5-Math-1.5B/grpo/dapo-math-17k.yaml`` reads
 ``open-r1/DAPO-Math-17k-Processed``'s ``en`` config: one ``prompt`` string
 (the bare problem, no instruction wrapper) and one ``solution`` string (a
 bare integer) per row, named via ``dataset.question_column`` and

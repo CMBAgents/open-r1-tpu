@@ -11,17 +11,7 @@ from open_r1_tpu.model.metrics import (
 )
 
 RECIPE = (
-    Path(__file__).parents[1]
-    / "recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml"
-)
-INSTRUCT_RECIPE = (
-    Path(__file__).parents[1] / "recipes/Qwen3-1.7B-Instruct/sft/config_instruct.yaml"
-)
-OT3_RECIPE = (
-    Path(__file__).parents[1] / "recipes/Qwen3-1.7B-OT3/sft/config_distill.yaml"
-)
-MATH_RECIPE = (
-    Path(__file__).parents[1] / "recipes/Qwen3-1.7B-Math/sft/config_distill.yaml"
+    Path(__file__).parents[1] / "recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml"
 )
 
 
@@ -43,164 +33,25 @@ def test_load_config_applies_nested_overrides():
     assert config["model"]["mesh"]["shape"] == [1, 8]
 
 
-def test_default_recipe_targets_one_32gb_tpu():
+def test_distill_recipe_matches_its_tested_setup():
     config = load_config(RECIPE)
 
-    assert config["model"]["mesh"]["shape"] == [1, 1]
-    assert config["dataset"]["batch_size"] == 1
-    assert config["dataset"]["max_length"] == 1024
-    assert config["training"]["gradient_accumulation_steps"] == 8
-    assert config["training"]["project_name"] == "open-r1-tpu"
-    assert config["training"]["wandb"]["entity"] is None
-
-
-@pytest.mark.parametrize(
-    "recipe",
-    [RECIPE, INSTRUCT_RECIPE, OT3_RECIPE, MATH_RECIPE],
-    ids=["distill", "instruct", "ot3", "math"],
-)
-def test_every_recipe_targets_one_device_and_names_no_entity(recipe):
-    config = load_config(recipe)
-
-    assert config["model"]["mesh"]["shape"] == [1, 1]
-    # Deployment-specific values belong in the environment, not in the recipe.
-    assert config["training"]["wandb"]["entity"] is None
-    # The splash attention kernel requires its block size to divide the
-    # sequence length, and fails at trace time rather than at load time.
+    # Four chips as [fsdp, tp] = [2, 2]: tp halves the float32 logits of a
+    # 26,624-token window, which do not fit one chip whole.
+    assert config["model"]["mesh"]["shape"] == [2, 2]
+    # LoRA freezes the tied embedding matrix, whose rows carry <|im_end|>.
+    assert "lora_config" not in config["model"]
+    # The config-edited RoPE-300k base, staged locally so its config.json is
+    # what the export copies.
+    assert config["model"]["model_source"] == "local"
+    assert config["model"]["model_path"].endswith("Qwen2.5-Math-1.5B-RoPE-300k")
+    # The splash kernel needs its block size to divide the sequence length,
+    # and fails at trace time rather than at load time.
     block_size = config["model"]["flash_attention_block_size"]
     assert config["dataset"]["max_length"] % block_size == 0
-
-
-def test_instruct_recipe_does_not_filter_on_reasoning_tags():
-    config = load_config(INSTRUCT_RECIPE)
-
-    # SmolTalk carries no <think>/</think> traces. Requiring them would filter
-    # every example and train on an empty dataset instead of raising.
-    assert config["dataset"]["require_reasoning_tags"] is False
-    # prepare_messages injects a system prompt wherever an example lacks one, so
-    # a reasoning instruction here would precede every response that ignores it.
-    assert config["dataset"]["system_prompt_file"] is None
-    assert config["dataset"]["assistant_only_loss"] is True
-
-
-def test_instruct_recipe_reads_staged_parquet_rather_than_the_hub():
-    config = load_config(INSTRUCT_RECIPE)
-
-    assert config["dataset"]["name"] == "parquet"
-    data_files = config["dataset"]["data_files"]
-    # data_files carries no split mapping, so every match lands in the train
-    # split. Globbing the test shard alongside them would train on held-out data.
-    assert "train-" in data_files
-    assert "test" not in data_files
-
-
-def test_instruct_recipe_packs_and_trains_without_eval():
-    config = load_config(INSTRUCT_RECIPE)
-
-    # Packing carries segment geometry the trainer needs; without it two-thirds
-    # of every 2048-token window is padding on this corpus.
-    assert config["dataset"]["packing"] is True
-    # Eval is off: the measured 250-step eval spikes reached 99.9% of HBM, and
-    # batch_size 2 spends that headroom on throughput instead.
-    assert config["dataset"]["eval_fraction"] == 0.0
-    assert config["dataset"]["batch_size"] == 2
-    # Effective batch stays 32 windows per optimizer step.
-    assert config["training"]["gradient_accumulation_steps"] == 16
-
-
-def test_instruct_recipe_exports_where_the_distill_recipe_can_read_it():
-    instruct = load_config(INSTRUCT_RECIPE)
-    distill = load_config(RECIPE)
-
-    # The stages are chained through the merged export, so they must not share a
-    # checkpoint directory or the second run would restore the first one's state.
-    assert instruct["export"]["enabled"] is True
-    assert (
-        instruct["training"]["checkpoint_dir"] != distill["training"]["checkpoint_dir"]
-    )
-
-
-def test_ot3_recipe_truncates_where_the_distill_recipe_drops():
-    ot3 = load_config(OT3_RECIPE)
-    distill = load_config(RECIPE)
-
-    # A live packed run trains against the distill recipe; its semantics must
-    # not move, so drop stays the default and stays unstated there.
-    assert "overlength_policy" not in distill["dataset"]
-    assert ot3["dataset"]["overlength_policy"] == "truncate"
-    # 62% of OpenThoughts3 traces never close their <think> block. Requiring
-    # the closing tag would drop them and undo the truncation policy.
-    assert ot3["dataset"]["require_reasoning_tags"] is False
-    assert ot3["dataset"]["max_length"] == 16384
-    # The microbatch cannot grow at this sequence length; batch comes from
-    # accumulation instead.
-    assert ot3["dataset"]["batch_size"] == 1
-    accumulation = ot3["training"]["gradient_accumulation_steps"]
-    assert accumulation > distill["training"]["gradient_accumulation_steps"]
-
-
-def test_ot3_recipe_reads_sharegpt_rows_from_an_unnamed_config():
-    config = load_config(OT3_RECIPE)["dataset"]
-
-    # OpenThoughts3 publishes no named config; `all` would fail to load.
-    assert config["config"] is None
-    # Rows are {from: human|gpt, value: ...} under `conversations`. Without the
-    # mapping every row is filtered and the dataset comes out empty.
-    assert config["messages_column"] == "conversations"
-    assert config["message_schema"] == {
-        "role_key": "from",
-        "content_key": "value",
-        "role_map": {"human": "user", "gpt": "assistant"},
-    }
-
-
-def test_math_recipe_drops_whole_traces_at_a_short_window():
-    math = load_config(MATH_RECIPE)["dataset"]
-
-    # Measured on 3,000 rows: 4096 retains 40.5% of the corpus, and every
-    # retained trace is complete. Dropping is what buys that property, so the
-    # default is relied on and left unstated.
-    assert "overlength_policy" not in math
-    assert math["max_length"] == 4096
-    assert math["batch_size"] == 1
-    # 99.9% of rows carry both tags, unlike OpenThoughts3, where requiring the
-    # closing tag would drop 62% of the corpus.
-    assert math["require_reasoning_tags"] is True
-    assert load_config(OT3_RECIPE)["dataset"]["require_reasoning_tags"] is False
-    # Standard {role, content} rows, so no schema mapping is needed.
-    assert math["messages_column"] == "messages"
-    assert "message_schema" not in math
-
-
-def test_math_recipe_is_a_full_finetune_from_base():
-    math = load_config(MATH_RECIPE)
-
-    # LoRA freezes the tied embedding matrix, whose rows carry <think>,
-    # </think> and <|im_end|>. A reasoning stage is defined by emitting them.
-    assert "lora_config" not in math["model"]
-    # Single stage: trained from the base model, not the instruct export.
-    assert math["model"]["model_source"] == "huggingface"
-    assert math["model"]["model_id"] == "Qwen/Qwen3-1.7B-Base"
-    # Full-fine-tune optimizer settings, not the LoRA recipe's.
-    assert math["optimizer"]["weight_decay"] == 0.0
-    assert math["optimizer"]["max_grad_norm"] == 1.0
-    # An async save transiently double-allocates params plus Adam moments,
-    # which OOMed the sibling full fine-tune.
-    checkpointing = math["training"]["checkpointing_options"]
-    assert checkpointing["enable_async_checkpointing"] is False
-
-
-def test_recipes_do_not_share_checkpoint_dirs_or_run_names():
-    configs = [
-        load_config(recipe)
-        for recipe in (RECIPE, INSTRUCT_RECIPE, OT3_RECIPE, MATH_RECIPE)
-    ]
-
-    # wandb.resume: allow would otherwise append one run to another, and a
-    # shared checkpoint directory would restore another run's state.
-    for key in ("checkpoint_dir", "run_name"):
-        values = [config["training"][key] for config in configs]
-        assert len(set(values)) == len(values)
+    # Deployment-specific values belong in the environment, not the recipe.
+    assert config["training"]["wandb"]["entity"] is None
+    assert config["training"]["project_name"] == "open-r1-tpu"
 
 
 @pytest.mark.parametrize(
@@ -233,9 +84,9 @@ def test_wandb_backend_receives_run_metadata_and_resolved_config():
     kwargs = wandb_backend_kwargs(config)
 
     assert kwargs["entity"] == "my-team"
-    assert kwargs["group"] == "qwen3-1.7b-reasoning-distillation"
+    assert kwargs["group"] == "qwen2.5-math-1.5b-reasoning-distillation"
     assert kwargs["job_type"] == "sft"
-    assert kwargs["tags"] == ["tpu", "sft", "lora", "qwen3"]
+    assert kwargs["tags"] == config["training"]["wandb"]["tags"]
     assert kwargs["dir"] == config["training"]["metrics_log_dir"]
     assert kwargs["config"] is config
 
@@ -328,18 +179,11 @@ def test_absolute_and_remote_checkpoint_dirs_are_preserved():
     )
 
 
-def test_default_recipe_checkpoint_dir_resolves_to_an_absolute_path():
+def test_recipe_checkpoint_dir_resolves_to_an_absolute_path():
     config = load_config(RECIPE)
     assert Path(
         absolute_checkpoint_dir(config["training"]["checkpoint_dir"])
     ).is_absolute()
-
-
-def test_default_recipe_has_a_bounded_eval_split():
-    config = load_config(RECIPE)
-    # Without a held-out split, train loss is the only signal there is.
-    assert config["dataset"]["eval_fraction"] > 0.0
-    assert config["dataset"]["eval_max_examples"] == 64
 
 
 @pytest.mark.parametrize(

@@ -49,7 +49,7 @@ individually against a dataset known not to exist.
 To sync without evaluating, run from the repository root::
 
     python -m open_r1_tpu.evaluation.dataset_sync \\
-      --config recipes/Qwen3-1.7B-Math/eval/tier1_core.yaml \\
+      --config recipes/Qwen2.5-Math-1.5B/eval/tier1_core.yaml \\
       --tracing-config configs/tracing.yaml
 """
 

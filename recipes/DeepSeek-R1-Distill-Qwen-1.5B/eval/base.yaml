@@ -25,7 +25,7 @@
 # **Two purposes share this directory.** Tiers 2, 4 and 5 replicate the
 # card: DeepSeek's token budget, their sample counts, their task list. Tiers
 # 0 and 1 instead line up task-for-task with the project's own tiers of the
-# same number (recipes/OpenR1-Distill-Qwen2.5-Math-1.5B and Qwen3-1.7B-Math),
+# same number (recipes/Qwen2.5-Math-1.5B/eval),
 # so the reference model and this project's models are directly comparable on
 # this stack -- tier 1 moved back to this footing on 2026-09-03 for the
 # MATH-500 comparison, at the price that its number no longer reproduces the

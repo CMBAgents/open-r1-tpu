@@ -16,7 +16,7 @@ scripts/run_langfuse_stack.sh up
 scripts/gen_langfuse_env.sh --print-keys >> ~/.open-r1-tpu.env
 source ~/.open-r1-tpu.env
 TRACE_CONFIG=configs/tracing.yaml \
-  RECIPE=recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml ./scripts/run_eval_tpu.sh
+  RECIPE=recipes/Qwen2.5-Math-1.5B/eval/tier0_smoke.yaml ./scripts/run_eval_tpu.sh
 ```
 
 The first command writes `docker/langfuse/.env` and `configs/tracing.yaml`

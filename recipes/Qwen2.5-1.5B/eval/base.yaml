@@ -1,12 +1,14 @@
-# Shared by the Qwen2.5-1.5B-SimpleRL-Zoo eval tiers. A tier file `extends`
-# this one and overrides only what differs between tiers.
+# Shared by the eval tiers for the SimpleRL-Zoo GRPO positive control
+# (../grpo/simplerl-zoo.yaml). A tier file `extends` this one and overrides
+# only what differs between tiers.
 #
 # THREE MODELS GO THROUGH THESE TIERS, UNCHANGED BUT FOR server.model_path:
 #
 #   1. the untouched base, Qwen/Qwen2.5-1.5B (the "before" row);
 #   2. the published SimpleRL-Zoo checkpoint,
 #      hkust-nlp/Qwen-2.5-1.5B-SimpleRL-Zoo (the target);
-#   3. the GRPO run in ../grpo, its merged export (the default below).
+#   3. the GRPO run of ../grpo/simplerl-zoo.yaml, its merged export (the
+#      default below).
 #
 # The test of the GRPO run is 3 against 2 under this one protocol. The
 # published numbers (GSM8K 55.7 -> 74.4, MATH-500 29.6 -> 59.0) are the check
@@ -32,7 +34,7 @@
 #     artifacts/Qwen2.5-1.5B-SimpleRL-Zoo/grpo/merged:artifacts/Qwen2.5-1.5B-SimpleRL-Zoo/grpo/merged-eval
 #   do
 #     python scripts/stage_eval_model.py \
-#       --recipe recipes/Qwen2.5-1.5B-SimpleRL-Zoo/grpo/config_grpo.yaml \
+#       --recipe recipes/Qwen2.5-1.5B/grpo/simplerl-zoo.yaml \
 #       --source "${pair%%:*}" --output "${pair##*:}"
 #   done
 #
@@ -57,7 +59,7 @@ server:
   startup_timeout_secs: 900
   # Qwen2.5-1.5B declares a 131072-token context, well above every tier's
   # window. If the published checkpoint declares less, raise it for that
-  # model only, as recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/eval/base.yaml
+  # model only, as recipes/Qwen2.5-Math-1.5B/eval/base.yaml
   # does with --hf-overrides.
   extra_args: []
   max_concurrency: 8

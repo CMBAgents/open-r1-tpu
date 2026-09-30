@@ -13,7 +13,7 @@ record each task-and-seed run with its inputs, outputs, traces and scores.
 
 It includes:
 
-- TPU-focused recipes for instruction tuning, reasoning SFT and GRPO;
+- TPU-focused recipes for reasoning SFT and GRPO;
 - reproducible local or GCS-backed data and model staging;
 - checkpointing, model export, and W&B training metrics;
 - multi-seed benchmark evaluation and consensus scoring; and
@@ -43,10 +43,11 @@ corresponding modules inside those subpackages.
 
 ## Quick start on a TPU VM
 
-Run every step on the TPU VM itself, over SSH. Both scripts are re-runnable, so
-a failed step can simply be repeated. The example trains
-[`recipes/Qwen3-1.7B-Math`](recipes/Qwen3-1.7B-Math/sft/config_distill.yaml), a
-full fine-tune of Qwen3-1.7B-Base on OpenR1-Math-220k that fits one v6e chip.
+Run every step on a TPU v6e-4 VM, over SSH. Both scripts are re-runnable, so a
+failed step can simply be repeated. The example trains
+[`recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml`](recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml),
+a full fine-tune of Qwen2.5-Math-1.5B on OpenR1-Math-220k; see
+[Reasoning distillation](#reasoning-distillation-qwen25-math-15b-on-openr1-math-220k).
 
 **1. Clone the repository.**
 
@@ -73,7 +74,7 @@ Step 2 writes `~/.open-r1-tpu.env` with every value commented out. Uncomment
 and set the ones you need, then load it:
 
 ```bash
-export HF_TOKEN=hf_...                    # the recipe loads the base from the Hub
+export HF_TOKEN=hf_...                    # Hub downloads
 export WANDB_ENTITY=your-user-or-team     # W&B account or team
 export WANDB_PROJECT=your-project         # W&B project
 export GCS_BUCKET=gs://your-bucket        # only to stage data from a bucket
@@ -88,21 +89,24 @@ Keep deployment-specific values here rather than in the recipe. The file lives
 outside the repository and is created `chmod 600`, so nothing lands in git or
 in shell history.
 
-**4. Stage the training data.**
+**4. Stage the base model and the training data.**
 
 ```bash
 hf download open-r1/OpenR1-Math-220k --repo-type dataset \
   --include 'data/*' --local-dir data/OpenR1-Math-220k
+hf download Qwen/Qwen2.5-Math-1.5B --local-dir models/Qwen2.5-Math-1.5B-RoPE-300k
+python scripts/set_rope.py models/Qwen2.5-Math-1.5B-RoPE-300k \
+  --rope-theta 300000 --max-position-embeddings 32768
 ```
 
-The recipe reads these Parquet shards from the ignored `data/` directory. To
-copy data you keep in a GCS bucket instead, see
-[Copying GCS bucket data](#copying-gcs-bucket-data).
+The last command makes the long-context variant of the base the recipe trains
+from, by editing its `config.json` only. To copy data you keep in a GCS bucket
+instead, see [Copying GCS bucket data](#copying-gcs-bucket-data).
 
 **5. Run preflight.**
 
 ```bash
-export RECIPE=recipes/Qwen3-1.7B-Math/sft/config_distill.yaml
+export RECIPE=recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml
 python -m open_r1_tpu.sft.preflight --config "$RECIPE"
 ```
 
@@ -119,19 +123,44 @@ python -m open_r1_tpu.sft.preflight --config "$RECIPE"
   export.enabled=false
 ```
 
-Drop every override but the first for the full run: 2,400 optimizer steps that
-write a merged export to `artifacts/Qwen3-1.7B-Math/merged`. The first step
-includes JAX/XLA compilation and is much slower than the rest.
-`run_sft_tpu.sh` trains whichever recipe `RECIPE` names; the smoke writes its
-checkpoints to `/tmp` because training resumes from the newest checkpoint in
+Drop every override but the first for the full run: 6,710 optimizer steps,
+about 19 hours, ending with a merged export in
+`artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/merged`. The first step includes
+JAX/XLA compilation and is much slower than the rest. `run_sft_tpu.sh` trains
+whichever recipe `RECIPE` names; the smoke writes its checkpoints to `/tmp`
+because training resumes from the newest checkpoint in
 `training.checkpoint_dir`.
+
+**7. Evaluate the export.** With the `--with-eval` environment:
+
+```bash
+RECIPE=recipes/Qwen2.5-Math-1.5B/eval/tier0_smoke.yaml ./scripts/run_eval_tpu.sh
+```
+
+See [Benchmark evaluation](#benchmark-evaluation).
+
+## Recipes
+
+Recipes live in `recipes/<base model>/<stage>/<dataset>.yaml`, named by the
+Hugging Face model the run starts from. Evaluation tiers are
+`recipes/<model>/eval/tier<N>_<name>.yaml` and extend that directory's
+`base.yaml`. Outputs go under `artifacts/<output model name>/`.
+
+| Recipe | What it does | Hardware | Tested |
+| --- | --- | --- | --- |
+| `Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml` | Reasoning distillation, full fine-tune | v6e-4 | Yes: MATH-500 83.3% at tier 1 |
+| `Qwen2.5-Math-1.5B/eval/` | Tiers 0-3 for that export | 1 chip | Yes |
+| `Qwen2.5-Math-1.5B/grpo/dapo-math-17k.yaml` | GRPO on that export | v6e-1 | No |
+| `Qwen2.5-1.5B/grpo/simplerl-zoo.yaml` | GRPO positive control against SimpleRL-Zoo | v6e-4 | Yes: GSM8K 68.2, MATH-500 54.7 |
+| `Qwen2.5-1.5B/eval/` | SimpleRL-Zoo's tier 1 protocol | 1 chip | Yes |
+| `DeepSeek-R1-Distill-Qwen-1.5B/eval/` | The reference model, replicating its card | 1 chip | Yes |
 
 ## TPU VM setup
 
 Use standard CPython 3.13 (the repository default is 3.13.14) on a TPU VM. The
-recipes here have run on v6e-1 and v6e-4; `model.mesh.shape` must multiply
-out to the number of visible chips. Do not use the free-threaded `3.13t`
-build.
+training recipes here target a v6e-4 and evaluation serves on one chip;
+`model.mesh.shape` must multiply out to the number of visible chips. Do not use
+the free-threaded `3.13t` build.
 
 `scripts/setup_tpu_vm.sh` covers step 2 above. To do the same by hand:
 
@@ -148,8 +177,7 @@ session, including for public repositories). Tunix and its TPU JAX dependency
 are installed by `pyproject.toml`; no CUDA packages, PyTorch trainer,
 Accelerate, DeepSpeed, or GPU vLLM are used by the SFT stage.
 
-Validate the environment on the TPU VM itself before downloading the full model
-or starting a training job:
+Validate the environment on the TPU VM itself before starting a training job:
 
 ```bash
 python -m open_r1_tpu.sft.preflight --config "$RECIPE"
@@ -157,8 +185,8 @@ python -m open_r1_tpu.sft.preflight --config "$RECIPE"
 
 This initializes JAX and requires the configured mesh device count to consist
 entirely of TPUs. It also checks the installed Tunix/Optax APIs, loads the real
-Qwen tokenizer, verifies the assistant-only chat-template boundary, and
-confirms that Tunix supplies the Qwen3 merged-LoRA exporter.
+tokenizer, verifies the assistant-only chat-template boundary, and confirms the
+recipe's merged export is supported for its model family.
 
 ### Copying GCS bucket data
 
@@ -174,72 +202,41 @@ GCS to local disk without passing through a workstation. The bucket comes from
 ```bash
 ./scripts/copy_gcs_bucket_data.sh
 ./scripts/copy_gcs_bucket_data.sh --bucket gs://another-bucket
-./scripts/copy_gcs_bucket_data.sh --dataset smoltalk
-./scripts/copy_gcs_bucket_data.sh --model Qwen2.5-1.5B --dataset OpenR1-Math-220k
+./scripts/copy_gcs_bucket_data.sh --model Qwen2.5-1.5B --dataset SimpleRL-Zoo-Data
 ```
 
 It reads `models/MODEL` and `datasets/NAME` from the bucket, writing them to
 `models/MODEL` and `data/NAME` locally. `MODEL` comes from `--model` or
-`$GCS_MODEL` and defaults to `Qwen3-1.7B-Base`; `NAME` comes from `--dataset`
-or `$GCS_DATASET` and defaults to `Mixture-of-Thoughts`; the
-instruction-tuning corpus is `smoltalk`. Set `$GCS_MODEL_PREFIX`,
-`$GCS_DATA_PREFIX`, or `$GCS_DATA_GLOB` for a different layout. Afterwards it
-reports how many Parquet shards the *training glob* matches — not merely how many
-were copied — along with on-disk sizes, warning rather than failing silently if
-either copy looks empty. `gcloud storage rsync` is incremental, so re-running
-after an interrupted copy resumes cheaply.
-
-The equivalent by hand:
-
-```bash
-gcloud storage rsync \
-  gs://your-bucket/models/Qwen3-1.7B-Base \
-  models/Qwen3-1.7B-Base --recursive
-gcloud storage rsync \
-  gs://your-bucket/datasets/smoltalk \
-  data/smoltalk --recursive
-```
-
-For copied model and data, add these local-input overrides to the launcher; the
-checked-in mesh, batch, and sequence defaults already target the one-device VM:
-
-```bash
-model.model_source=local
-model.model_path=models/Qwen3-1.7B-Base
-tokenizer.tokenizer_path=models/Qwen3-1.7B-Base
-dataset.name=parquet
-dataset.config=null
-dataset.data_files='data/Mixture-of-Thoughts/all/*.parquet'
-```
+`$GCS_MODEL` and defaults to `Qwen2.5-Math-1.5B-RoPE-300k`; `NAME` comes from
+`--dataset` or `$GCS_DATASET` and defaults to `OpenR1-Math-220k`. Set
+`$GCS_MODEL_PREFIX`, `$GCS_DATA_PREFIX`, or `$GCS_DATA_GLOB` for a different
+layout. Afterwards it reports how many Parquet shards the *training glob*
+matches — not merely how many were copied — along with on-disk sizes, warning
+rather than failing silently if either copy looks empty. `gcloud storage rsync`
+is incremental, so re-running after an interrupted copy resumes cheaply.
 
 Orbax checkpoints may use a `gs://` directory directly. Merged export is a
 local-filesystem operation; export locally first, then copy the completed
 directory to GCS with `gcloud storage rsync --recursive`.
 
-### Continue text with the local base model
+### Continue text with a base model
 
-`Qwen3-1.7B-Base` is a pretrained causal language model rather than a
-post-trained chat model. To inspect its native next-token behavior, pass raw
-text directly to `complete_qwen_tpu.py`. The script adds no system prompt, role
-markers, chat template, or conversation history and generates at most 100 new
-tokens by default:
+A base model is a pretrained causal language model rather than a post-trained
+chat model. To inspect its native next-token behavior, pass raw text directly
+to `complete_qwen_tpu.py`. The script adds no system prompt, role markers, chat
+template, or conversation history and generates at most 100 new tokens by
+default:
 
 ```bash
 source .venv/bin/activate
 python scripts/complete_qwen_tpu.py \
-  --model-path models/Qwen3-1.7B-Base \
+  --model-path models/Qwen2.5-Math-1.5B \
   "The capital of France is"
 ```
 
 Omit the quoted prompt for an interactive loop of independent completions. The
 first completion compiles the TPU decode path and is slower than later ones.
-Override the generation length when needed:
-
-```bash
-python scripts/complete_qwen_tpu.py \
-  --model-path models/Qwen3-1.7B-Base \
-  --max-new-tokens 200
-```
+Override the generation length with `--max-new-tokens`.
 
 Generation is greedy and stops at the model's `<|endoftext|>` token or the
 configured token limit. `--max-prompt-length` defaults to 2048. The completion
@@ -248,72 +245,59 @@ left-pads fixed-length prompts but does not pass the segment IDs that Qwen's
 splash-attention path needs to exclude padding. This is slower than splash
 attention, but prevents pad/EOS embeddings from changing the continuation.
 
-`chat_qwen_tpu.py` remains available for inspecting role-formatted prompts, but
-it applies the tokenizer's system/user/assistant chat template. Base weights
-are not expected to follow that template reliably; use a post-trained Qwen
-checkpoint for conversational behavior.
+### Chat with a model or a training run's own weights
 
-### Chat with a training run's own weights
-
-Training writes LoRA adapters alone, so a checkpoint is not a model you can
-load on its own. Pass the recipe and the adapters from its latest checkpoint
-are restored on top of the base weights:
+`chat_qwen_tpu.py` applies the tokenizer's chat template. Point it at any
+merged export:
 
 ```bash
 python scripts/chat_qwen_tpu.py \
-  --recipe recipes/Qwen3-1.7B-Instruct/sft/config_instruct.yaml
+  --model-path artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/merged
 ```
 
-The rank, alpha and target modules come from that recipe rather than from
-flags, because adapters restored under a different LoRA geometry than they
-were trained with produce confident nonsense rather than an error. Add `--step`
-to pick an earlier checkpoint, or `--checkpoint-dir` if the artifacts moved.
+To inspect a run before it has finished, pass its recipe instead, and the
+latest checkpoint is restored on top of the base weights. A full fine-tune's
+checkpoint replaces every parameter; a LoRA recipe's restores its adapters,
+with the rank, alpha and target modules read from the recipe, because adapters
+restored under a different geometry produce confident nonsense rather than an
+error:
 
-The restored step is printed on load, and it is rarely the step the run
-stopped on: checkpoints are written every
+```bash
+python scripts/chat_qwen_tpu.py \
+  --recipe recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml
+```
+
+Add `--step` to pick an earlier checkpoint, or `--checkpoint-dir` if the
+artifacts moved. The restored step is printed on load, and it is rarely the
+step the run stopped on: checkpoints are written every
 `training.checkpointing_options.save_interval_steps` and only `max_to_keep` of
-them survive, so a run killed at step 1744 leaves 1500 as its latest. Asking
-for a step that was never written names the ones that were.
+them survive. Asking for a step that was never written names the ones that
+were.
 
-Once a run finishes it exports merged weights, which need no recipe:
+**One TPU VM, one process.** The chat and completion clients use every visible
+TPU chip in a topology derived from the model's `config.json` (Qwen2.5-Math-1.5B
+gets an `[fsdp, tp] = [2, 2]` mesh on four chips), so do not run either beside
+a training job: all chips are held by whichever process claims them first. If
+an exported config has no `_name_or_path`, supply its canonical Tunix model
+name with `--model-name`.
 
-```bash
-python scripts/chat_qwen_tpu.py --model-path artifacts/Qwen3-1.7B-Instruct/merged
-```
+Two details of the chat script exist to match what training teaches, and both
+would otherwise be silent:
 
-**One TPU VM, one process.** The chat and completion clients automatically use
-every visible TPU chip in a topology appropriate to the loaded architecture,
-so they work on both v6e-1 and compatible multi-chip VMs. All chips are held
-by whichever process claims them first, so do not run either client beside a
-training job.
-For Qwen3-1.7B, the visible chip count must divide its eight KV heads; a
-four-chip VM is supported.
-
-The clients derive the Tunix model name and KV-head topology from each local
-`config.json`. On four chips, Qwen2.5-Math-1.5B produces an `[fsdp, tp] =
-[2, 2]` mesh; the interactive prompt is duplicated internally to fill the two
-FSDP lanes, and only the first completion is shown. If an exported config has
-no `_name_or_path`, supply its canonical Tunix model name with `--model-name`.
-
-```bash
-python scripts/chat_qwen_tpu.py --model-path models/Qwen2.5-Math-1.5B
-```
-
-Two details of the chat script exist to match what the corpus actually teaches,
-and both would otherwise be silent:
-
-- **The reply stops at `<|im_end|>`.** Qwen3's template ends every turn with
-  that token, but `Qwen3-1.7B-Base` names `<|endoftext|>` as its EOS, and the
+- **The reply stops at `<|im_end|>`.** The ChatML template ends every turn with
+  that token, but Qwen base models name `<|endoftext|>` as their EOS, and the
   sampler stops at the tokenizer's EOS unless told otherwise. Left alone the
   model runs past the end of its reply and writes your next turn for you.
-- **An empty `<think></think>` block is hidden.** The template opens an
+- **An empty `<think></think>` block is hidden.** Qwen3's template opens an
   assistant turn with `<think>\n\n</think>\n\n` whenever the message carries
   no reasoning trace, so a corpus without traces teaches the model to emit that
   scaffold before every answer. It is stripped for display; a trace with actual
   content is left alone.
 
-The system prompt defaults to empty, matching `dataset.system_prompt_file: null`
-in the recipes. Pass `--system-prompt` to try one.
+The system prompt defaults to empty. Pass `--system-prompt` with the text a
+model was trained with (for the distillation recipe,
+`recipes/Qwen2.5-Math-1.5B/system_prompt.txt`) to chat with it as it was
+trained.
 
 ## Smoke test
 
@@ -340,19 +324,22 @@ steps of a throwaway configuration:
 ```bash
   training.checkpoint_dir=/tmp/sft-smoke/checkpoints \
   training.transcripts.output_path=/tmp/sft-smoke/transcripts.jsonl \
-  training.wandb.enabled=false
+  training.wandb.enabled=false \
+  export.enabled=false
 ```
 
 ## Watching how training is going
 
 Two signals, one quantitative and one qualitative.
 
-**Held-out loss.** `dataset.eval_fraction: 0.01` holds out a slice of the
-corpus, and `dataset.eval_max_examples: 64` caps it. The cap matters: a
-hundredth of a corpus this size is thousands of examples, and the trainer walks
-the whole eval set at every evaluation, so an uncapped split would spend longer
-evaluating than training. Evaluation runs every `training.eval_every_n_steps`
-and reports `eval/loss` alongside `train/loss`.
+**Held-out loss.** `dataset.eval_fraction` holds out a slice of the corpus, and
+`dataset.eval_max_examples` caps it. The cap matters: a hundredth of a large
+corpus is thousands of examples, and the trainer walks the whole eval set at
+every evaluation, so an uncapped split would spend longer evaluating than
+training. Evaluation runs every `training.eval_every_n_steps` and reports
+`eval/loss` alongside `train/loss`. An evaluation also runs *before* the first
+training step: the trainer takes a baseline reading whenever a held-out split
+exists.
 
 **Free-running transcripts.** Teacher-forced loss says nothing about what the
 model does when it generates unaided. It cannot tell you whether the model
@@ -371,12 +358,12 @@ to a memory profile validated without them. Enable it once you know you have HBM
 headroom, and watch the first sampling step for an OOM.
 
 Each interval writes one JSON object per prompt to the recipe's
-`training.transcripts.output_path`, recording the step, the
-prompt, the completion, and flags for whether the reasoning trace was closed and
-whether the token budget was exhausted. That last flag matters when reading the
-output: a completion that used its whole budget was probably cut off, so a
-missing `</think>` there is inconclusive rather than a real failure. The same
-records go to W&B as a table under `samples/transcripts` unless
+`training.transcripts.output_path`, recording the step, the prompt, the
+completion, and flags for whether the reasoning trace was closed and whether
+the token budget was exhausted. That last flag matters when reading the output:
+a completion that used its whole budget was probably cut off, so a missing
+`</think>` there is inconclusive rather than a real failure. The same records
+go to W&B as a table under `samples/transcripts` unless
 `training.transcripts.log_to_wandb=false`.
 
 Sampling never ends a run. If it OOMs or fails to compile, it logs a warning,
@@ -403,6 +390,30 @@ to itself the sampler pads short prompts to the next power of two, which fails
 with `q_block_size=1024 should divide q_seq_len=128`. `cache_size` then defaults
 to `max_prompt_length + max_new_tokens`, since the sampler budgets both. If you
 disable flash attention, prompt padding reverts to the sampler's own choice.
+
+This summarizes whether the model is learning to close its reasoning traces:
+
+```bash
+python - <<'PY'
+import collections, json
+
+by_step = collections.defaultdict(list)
+with open("artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/transcripts.jsonl") as handle:
+    for line in handle:
+        record = json.loads(line)
+        by_step[record["step"]].append(record)
+
+for step in sorted(by_step):
+    rows = by_step[step]
+    closed = sum(row["reasoning_balanced"] for row in rows)
+    capped = sum(row["hit_token_cap"] for row in rows)
+    print(f"step {step:>6}  closed {closed}/{len(rows)}  hit cap {capped}")
+PY
+```
+
+`closed` should climb toward the prompt count over the first few thousand steps.
+If it stays at zero while `train/loss` falls, that is the failure teacher-forced
+loss cannot show, and it is worth stopping for.
 
 ## Weights & Biases
 
@@ -434,101 +445,7 @@ restoring an Orbax checkpoint, preserve the W&B log directory and set
 `WANDB_RUN_ID` to the original run ID; the recipe's `resume: allow` will then
 append to that run.
 
-## Instruction tuning before reasoning SFT
-
-[`recipes/Qwen3-1.7B-Instruct/sft/config_instruct.yaml`](recipes/Qwen3-1.7B-Instruct/sft/config_instruct.yaml)
-trains general instruction following on `smoltalk` (1,043,917 train rows), the
-SFT mix that built SmolLM2-1.7B-Instruct. It produces a base model that answers
-ordinary requests and stops on `<|im_end|>`, which the reasoning recipe can then
-specialise. Both stages use the tokenizer's own Qwen3 chat template, so the turn
-structure and end-of-turn token stay the same across them.
-
-Measured under the recipe's own encoder on a stratified 8,000-row sample, the
-corpus is short: median templated length 590 tokens, p90 1,677, p99 3,022. The
-recipe's `max_length: 2048` therefore retains 95.9% of it, with 13.5% of each
-padded sequence carrying gradient. Wider windows buy almost no extra data — 4096
-retains 99.6%, 8192 retains 99.8% — while costing more than the token count
-suggests, because attention is quadratic: one 8192 sequence runs to roughly 5.5x
-one at 2048. The 8192 sequence length on the dataset card describes what its
-authors could afford on a multi-GPU node, not a length this corpus needs.
-
-Padding would otherwise dominate at any window — 86.5% of each sequence is pad
-even at 2048, and pad positions cost full forward and backward compute because
-the masks gate the loss, not the matmuls — so the recipe packs whole examples
-into 2048-token windows first fit (`dataset.packing: true`). Attention cannot
-cross example boundaries: per-token `segment_ids` gate the splash kernel, the
-non-flash path receives a block-diagonal causal mask, and RoPE positions restart
-per example. A segment's first token is never supervised, since the causal shift
-would predict it from the preceding example. The `segment_ids` gap that still
-stands is the sampler's: interactive inference does not pass them, which is why
-chat runs with masked attention.
-
-Unlike the reasoning recipe, this one defaults to Parquet already staged on the
-VM's local disk rather than to the Hub, so stage the corpus first:
-
-```bash
-./scripts/copy_gcs_bucket_data.sh --dataset smoltalk
-```
-
-That writes `data/smoltalk/data/all/train-0000{0..8}-of-00009.parquet`, which is
-what the recipe globs. `all` is the full mix; the sibling directories under
-`data/` are its component subsets. `test-00000-of-00001.parquet` lands beside the
-train shards and is deliberately excluded: `dataset.data_files` carries no split
-mapping, so every match would be loaded into the train split. The held-out set
-comes from `dataset.eval_fraction` instead.
-
-Select this recipe with `RECIPE`:
-
-```bash
-RECIPE=recipes/Qwen3-1.7B-Instruct/sft/config_instruct.yaml \
-  ./scripts/run_sft_tpu.sh \
-  model.model_source=local \
-  model.model_path=models/Qwen3-1.7B-Base \
-  tokenizer.tokenizer_path=models/Qwen3-1.7B-Base \
-  training.project_name="${WANDB_PROJECT}" \
-  2>&1 | tee -a artifacts/instruct.log
-```
-
-To pull the corpus from the Hub instead, override `dataset.name`, name the
-config, and clear the glob:
-`dataset.name=HuggingFaceTB/smoltalk dataset.config=all dataset.data_files=null`.
-
-Two settings differ from the reasoning recipe for reasons that are easy to get
-wrong. `dataset.require_reasoning_tags` is `false`, because SmolTalk carries no
-`<think>`/`</think>` traces and requiring them filters every example into an
-empty dataset rather than raising. `dataset.system_prompt_file` is `null`,
-because `prepare_messages` injects a system prompt into any example that lacks
-one, and a reasoning instruction in front of responses that ignore it teaches
-the model to disregard its system prompt.
-
-The stage writes a merged export to `artifacts/Qwen3-1.7B-Instruct/merged`. Point
-the reasoning run at it to chain the two:
-
-```bash
-RECIPE=recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml \
-  ./scripts/run_sft_tpu.sh \
-  model.model_source=local \
-  model.model_path=artifacts/Qwen3-1.7B-Instruct/merged
-```
-
-Reasoning SFT on its own data will erode general instruction following, so mix
-some of this stage's corpus back in if both behaviours matter. Going straight
-from base to reasoning SFT is also viable — the DeepSeek-R1 distills did exactly
-that — and sequencing is mainly worth it to isolate what the reasoning stage adds.
-
-## Full reasoning SFT
-
-This section follows the Mixture-of-Thoughts LoRA recipe,
-[`recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml`](recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml).
-
-### The complete run, from bucket data with transcripts
-
-The recipe runs 5000 optimizer steps. At `gradient_accumulation_steps: 8`
-and `batch_size: 1` that consumes 40,000 examples — well under one epoch of
-`Mixture-of-Thoughts`, whose `all` subset holds roughly 349k rows before length
-filtering. Along the way it writes 20 checkpoints (keeping the newest 2),
-evaluates 11 times (a baseline plus every 500 steps), and samples transcripts 10
-times.
+## Long runs
 
 Training runs for hours, so start it under `tmux` and it will survive an SSH
 drop:
@@ -543,32 +460,15 @@ Inside the session:
 cd ~/open-r1-tpu
 source ~/.open-r1-tpu.env
 source .venv/bin/activate
-
-LOCAL_INPUTS=(
-  model.model_source=local
-  model.model_path=models/Qwen3-1.7B-Base
-  tokenizer.tokenizer_path=models/Qwen3-1.7B-Base
-  dataset.name=parquet
-  dataset.config=null
-  dataset.data_files='data/Mixture-of-Thoughts/all/*.parquet'
-)
-
+export RECIPE=recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml
 mkdir -p artifacts
-export RECIPE=recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml
-./scripts/run_sft_tpu.sh "${LOCAL_INPUTS[@]}" \
-  training.project_name="${WANDB_PROJECT}" \
-  training.transcripts.enabled=true \
+./scripts/run_sft_tpu.sh training.project_name="${WANDB_PROJECT}" \
   2>&1 | tee -a artifacts/train.log
 ```
 
-Detach with `Ctrl-b d` and reattach with `tmux attach -t sft`. Drop the
-`LOCAL_INPUTS` expansion to pull the model and dataset from the Hub instead,
-which needs `HF_TOKEN` set.
-
-An evaluation runs *before* the first training step. That is a baseline reading,
-not a misconfigured interval: the trainer evaluates unconditionally at startup
-whenever a held-out split exists, independently of
-`training.eval_every_n_steps`.
+Detach with `Ctrl-b d` and reattach with `tmux attach -t sft`. To stop a run,
+interrupt the Python process itself (`Ctrl-c` in the pane, or kill its PID):
+killing only the tmux session can leave the process holding the TPU.
 
 ### Resuming, intended and unintended
 
@@ -589,7 +489,7 @@ If that step is not where you meant to resume, stop, move the directory aside,
 and relaunch:
 
 ```bash
-mv artifacts/OpenR1-Distill-Qwen3-1.7B/checkpoints \
+mv artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/checkpoints \
    artifacts/stale-checkpoints-$(date +%s)
 ```
 
@@ -620,50 +520,18 @@ Quietening another package that hides behind absl is one entry in
 `NOISY_PACKAGES`; a library with a logger of its own needs no help, since its
 level can simply be set.
 
-Transcripts accumulate as JSON lines, one object per prompt per interval. This
-summarizes whether the model is learning to close its reasoning traces:
-
-```bash
-python - <<'PY'
-import collections, json
-
-by_step = collections.defaultdict(list)
-with open("artifacts/OpenR1-Distill-Qwen3-1.7B/transcripts.jsonl") as handle:
-    for line in handle:
-        record = json.loads(line)
-        by_step[record["step"]].append(record)
-
-for step in sorted(by_step):
-    rows = by_step[step]
-    closed = sum(row["reasoning_balanced"] for row in rows)
-    capped = sum(row["hit_token_cap"] for row in rows)
-    print(f"step {step:>6}  closed {closed}/{len(rows)}  hit cap {capped}")
-PY
-```
-
-`closed` should climb toward the prompt count over the first few thousand steps.
-If it stays at zero while `train/loss` falls, that is the failure teacher-forced
-loss cannot show, and it is worth stopping for.
-
 ### Overriding the recipe
 
 Any recipe value can be overridden using Tunix-style dotted arguments, for
-example:
-
-```bash
-RECIPE=recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml \
-  ./scripts/run_sft_tpu.sh \
-  dataset.config=math \
-  training.max_steps=1000
-```
+example `training.max_steps=1000` or `dataset.max_length=16384`.
 
 Important behavior:
 
 - The input must contain a `messages` column whose final turn is an assistant
-  response. This matches `Mixture-of-Thoughts`. A corpus that names things
-  differently — ShareGPT's `conversations` of `{from, value}` with `human`/`gpt`
-  roles — is adapted by `dataset.messages_column` and `dataset.message_schema`
-  in the recipe, not by code.
+  response, as OpenR1-Math-220k's does. A corpus that names things
+  differently — ShareGPT's `conversations` of `{from, value}` with
+  `human`/`gpt` roles — is adapted by `dataset.messages_column` and
+  `dataset.message_schema` in the recipe, not by code.
 - By default the assistant response must contain `<think>` and `</think>`.
 - Loss is masked off for system/user/padding tokens. Set
   `dataset.assistant_only_loss=false` to reproduce full-conversation causal
@@ -675,107 +543,38 @@ Important behavior:
   severed chain of thought or missing final answer. `truncate` cuts the render
   on the right instead, keeping the prompt and leaving the sequence
   deliberately unterminated; it is for corpora whose traces are themselves
-  incomplete, where dropping would exclude most of the data. See
-  [Distilling from OpenThoughts3 under truncation](#distilling-from-openthoughts3-under-truncation).
-- `dataset.batch_size=1` and `dataset.max_length=1024` are the validated
-  32 GiB single-device baseline. With eight accumulation steps, the effective
-  batch size is eight; increase sequence length only after measuring HBM use
-  and how many complete reasoning traces survive length filtering.
+  incomplete, where dropping would exclude most of the data.
+- `dataset.packing: true` packs whole examples into each window first-fit.
+  Attention cannot cross example boundaries: per-token `segment_ids` gate the
+  splash kernel, the non-flash path receives a block-diagonal causal mask, and
+  RoPE positions restart per example.
+- Increase `dataset.max_length` only after measuring peak HBM, and check how
+  many complete reasoning traces survive length filtering.
 
-## Distilling from OpenThoughts3 under truncation
+## Reasoning distillation: Qwen2.5-Math-1.5B on OpenR1-Math-220k
 
-[`recipes/Qwen3-1.7B-OT3/sft/config_distill.yaml`](recipes/Qwen3-1.7B-OT3/sft/config_distill.yaml)
-trains the same model on `open-thoughts/OpenThoughts3-1.2M` at
-`dataset.max_length: 16384`. It is the one recipe that truncates rather than
-drops:
+[`recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml`](recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml)
+trains the base DeepSeek distilled to make DeepSeek-R1-Distill-Qwen-1.5B, on
+the public `open-r1/OpenR1-Math-220k` corpus, as open-r1 did at 7B. The quick
+start runs it. The recipe header explains each choice; in short:
 
-```bash
-RECIPE=recipes/Qwen3-1.7B-OT3/sft/config_distill.yaml ./scripts/run_sft_tpu.sh
-```
+- **The whole corpus fits.** A 26,624-token window keeps every one of the
+  93,554 examples that carry a complete `<think>` trace; a 4096 window would
+  drop about 60%. `dataset.packing` fills each window with whole examples.
+- **RoPE θ 300k.** The base declares a 4096-token context at θ 10000, and a
+  26k window trained at that θ ended in repetition loops. The config-only
+  RoPE-300k variant (`scripts/set_rope.py`, as open-r1 used at 7B), with a
+  higher learning rate, took MATH-500 from 48% to 83%.
+- **A full fine-tune.** The model ties its embeddings, so the rows for
+  `<|im_end|>` live in the matrix LoRA freezes.
+- **Four chips as `[fsdp, tp] = [2, 2]`.** Tensor parallelism halves the
+  float32 logits of a 26k window, which do not fit one chip whole. Peak HBM was
+  19.69 GiB per chip; a step takes about 10.2 s.
 
-The corpus forces that choice. Its traces were generated by QwQ-32B under a
-context budget of roughly 16,800 tokens, so most of them stop mid-sentence:
-`<think>` opens in 100% of rows, but 62% carry no closing `</think>`. Dropping
-incomplete or overlength traces here excludes most of the corpus instead of
-filtering bad data, which is why `dataset.require_reasoning_tags` is `false` and
-`dataset.overlength_policy` is `truncate`. The dataset's authors ran the same
-comparison, reported that filtering incomplete traces *hurts* downstream
-performance, and trained on the truncated majority; their trainer truncates at
-`cutoff_len` by default, so their overlength rows were cut a second time during
-training.
-
-Measured on a 21,000-row sample with the Qwen3-1.7B-Base tokenizer, rendered as
-ChatML with the recipe's system prompt and reweighted to the corpus's true
-850k/250k/100k domain mix: truncation keeps ~100% of the 1.2M rows and holds the
-domain mix at the corpus's 71% math / 21% code / 8% science, while dropping at
-the same 16384 would keep only ~31.7% (~381k rows) and skew it to 58% math /
-23% science / 19% code. About 68% of rows exceed 16384 and are cut.
-
-Two consequences follow. Packing gains largely collapse: an example cut at
-`max_length` fills its window alone, so only the shorter, science-heavy tail
-still packs. And an epoch is 1.2M examples rather than ~381k, so
-`training.max_steps: 4000` at `gradient_accumulation_steps: 32` covers ~10.7% of
-one epoch — a first pass in which no example is seen twice.
-
-Rows are ShareGPT-style, a `conversations` list of `{from, value}` with
-`human`/`gpt` roles, which `dataset.message_schema` maps onto `role`/`content`.
-Without that block every row fails message validation and is filtered, leaving
-an empty dataset with no error to read: check the retained count on a small
-`dataset.max_examples` run before starting a long one.
-
-Nothing about this recipe's memory profile has been measured. The 32 GiB
-baseline was smoke-tested at `max_length: 1024`; this asks for 16x the sequence,
-and under truncation most examples are full-length, so the worst case is now the
-common case. Measure peak HBM in a short run before committing TPU time, and
-revisit `model.remat_config` first.
-
-## Math reasoning SFT on OpenR1-Math-220k
-
-[`recipes/Qwen3-1.7B-Math/sft/config_distill.yaml`](recipes/Qwen3-1.7B-Math/sft/config_distill.yaml)
-is the short-window counterpart to the OpenThoughts3 recipe: a full-parameter
-fine-tune of `Qwen3-1.7B-Base` on `open-r1/OpenR1-Math-220k` at
-`dataset.max_length: 4096`, dropping over-length traces rather than truncating
-them.
-
-This is the recipe the quick start trains:
-
-```bash
-hf download open-r1/OpenR1-Math-220k --repo-type dataset \
-  --include 'data/*' --local-dir data/OpenR1-Math-220k
-RECIPE=recipes/Qwen3-1.7B-Math/sft/config_distill.yaml ./scripts/run_sft_tpu.sh
-```
-
-The corpus permits what OpenThoughts3 does not. Measured on 3,000 rows sampled
-evenly across the 93,733 in the `default` config, rendered with the
-Qwen3-1.7B-Base chat template and the recipe's system prompt: `<think>` appears
-in 100% of assistant messages and `</think>` in 99.9%, and the templated length
-has a median of 4,855 tokens (p75 8,127, p90 12,070). Retention under `drop` is
-11.6% at 2048, **40.5% at 4096** (~37,900 rows), 75.4% at 8192 and 98.5% at
-16384.
-
-4096 therefore buys complete traces rather than more of them. Every retained
-example carries a full chain of thought ending in a boxed answer, which is the
-property a reasoning stage exists to teach and the one truncation destroys; the
-price is the 59.5% of the corpus that does not fit. Retained examples average
-2,609 tokens, 63.7% of the window, so `dataset.packing` is worth keeping on and
-windows carry roughly 1.5 examples each.
-
-The run is a full fine-tune rather than LoRA because a reasoning stage is
-defined by emitting `<think>`, `</think>` and `<|im_end|>`, whose rows live in
-the tied embedding matrix that LoRA freezes — the failure the instruct stage
-already hit. It trains the base model directly rather than the instruct stage's
-merged export, following Olmo 3, DeepSeek-R1 and Qwen3, all of which run
-long-CoT SFT on the base model. The consequence is that the output is a math
-reasoner, not a general chat model: this corpus carries no instruction-following
-or open-ended chat data.
-
-`training.max_steps: 2400` is about three epochs — ~99M retained tokens pack into
-~25,400 windows, or ~790 optimizer steps per epoch at 32 windows per step. That
-makes held-out loss a real overfitting signal here, unlike the OpenThoughts3 run,
-which sees no example twice. It is still `eval_fraction: 0.0` by default, because
-the instruct run's 2048-token evals spiked HBM to 31.23 of 31.25 GiB and a full
-fine-tune at twice that sequence has less room. Peak HBM at 4096 is unmeasured:
-measure it in a short run before committing TPU time, then enable eval.
+Its export scores 83.3% ± 1.1 on MATH-500 at tier 1 (three seeds, 16,384
+tokens), against 79.8% for DeepSeek-R1-Distill-Qwen-1.5B under the same
+protocol, and 83.7% under DeepSeek's card protocol against their published
+83.9%.
 
 ## Benchmark evaluation
 
@@ -877,7 +676,7 @@ hold the TPU chip, so stop the training job before starting the server.
 
 ```bash
 python -m open_r1_tpu.evaluation.preflight \
-  --config recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml
+  --config recipes/Qwen2.5-Math-1.5B/eval/tier0_smoke.yaml
 ```
 
 This checks the exact host dependency versions, Docker access, that the derived
@@ -887,8 +686,8 @@ names `scripts/run_vllm_tpu_container.sh --build`; it never builds implicitly.
 Failures are caught before vLLM claims the TPU. A merged
 export missing its tokenizer files or its chat template loads far enough to
 serve requests and then answers off-distribution, producing a number that
-measures the wrong thing. And Qwen3-Base names `<|endoftext|>` as its EOS while
-the chat template closes turns with `<|im_end|>`, so a server left to the
+measures the wrong thing. And Qwen base models name `<|endoftext|>` as their
+EOS while the chat template closes turns with `<|im_end|>`, so a server left to the
 tokenizer's own EOS runs past the end of every reply and writes the user's next
 turn as well — which under a benchmark reads as a model that cannot stop
 reasoning. A stop string cannot fix this: vLLM matches stop strings against
@@ -903,7 +702,7 @@ spent fifteen minutes loading weights. A name that exists in a different suite i
 reported with the suite it actually lives in.
 
 ```bash
-RECIPE=recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml ./scripts/run_eval_tpu.sh
+RECIPE=recipes/Qwen2.5-Math-1.5B/eval/tier0_smoke.yaml ./scripts/run_eval_tpu.sh
 ```
 
 `scripts/run_eval_tpu.sh` owns the evaluation-level vLLM lifecycle: it builds
@@ -922,7 +721,7 @@ Set `TRACE_CONFIG` to trace an evaluation in a self-hosted Langfuse:
 
 ```bash
 TRACE_CONFIG=configs/tracing.yaml \
-  RECIPE=recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml ./scripts/run_eval_tpu.sh
+  RECIPE=recipes/Qwen2.5-Math-1.5B/eval/tier0_smoke.yaml ./scripts/run_eval_tpu.sh
 ```
 
 The run first syncs each of the recipe's tasks into a Langfuse dataset, then
@@ -969,12 +768,14 @@ accuracy.
 
 ### The tiers
 
+`recipes/Qwen2.5-Math-1.5B/eval/` holds this project's tiers:
+
 | Recipe | Cost | When |
 | --- | --- | --- |
 | `eval/tier0_smoke.yaml` | ~5 min | Every run. GSM8K, 200 problems, greedy. |
 | `eval/tier1_core.yaml` | ~1 h | Every checkpoint worth keeping. MATH-500 over three seeds. |
-| `eval/tier2_headline.yaml` | hours | Milestones. AIME24, AIME25, OlympiadBench over ten seeds. |
-| `eval/tier3_regression.yaml` | hours | Milestones. IFEval, GPQA-Diamond, MMLU-Pro. |
+| `eval/tier2_headline.yaml` | hours | Milestones. AIME24 and AIME25 over ten seeds. |
+| `eval/tier3_regression.yaml` | hours | Milestones. IFEval and GPQA-Diamond over three seeds. |
 
 The reference model's directory carries two more, `eval/tier4_code.yaml` and
 `eval/tier5_gpqa.yaml`, and splits the tasks differently; see below.
@@ -1029,23 +830,15 @@ ships no CodeForces task and no Elo harness, and the published rating is a
 percentile placement against human contestants across ten Div.2 contests, not
 a benchmark accuracy. Nothing in that directory approximates it.
 
-Tiers 0 and 1 line up task-for-task with `recipes/Qwen3-1.7B-Math/eval/` —
+Tiers 0 and 1 line up task-for-task with `recipes/Qwen2.5-Math-1.5B/eval/` —
 tier 1 shares that tier's full generation-parameter set, which is what makes
 the MATH-500 comparison direct. Tiers 2, 4 and 5 replicate the card instead,
 which is why they do not line up with the project tiers of the same number.
 
-`recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/eval/` goes the other way: it
-mirrors `recipes/Qwen3-1.7B-Math/eval/` tier for tier — same tasks, seeds,
-windows, sampling and system prompt, which `tests/test_evaluate.py` pins — so
-the two from-base distillations of the same corpus compare directly. The one
-serving difference is that Qwen2.5-Math-1.5B declares a 4096-token
-`max_position_embeddings`, which the export copies unchanged and vLLM would
-refuse every tier's window against; its `base.yaml` raises the declaration
-through `server.extra_args` (`--hf-overrides`) and leaves `rope_theta` at the
-value the weights were trained with. To read that export against the
-reference model's card instead, run the reference directory's tiers with
-`server.model_path`, `server.turn_end_token`, `server.extra_args` and
-`reporting.reasoning_start` overridden to that `base.yaml`'s values.
+To read the distillation export against the reference model's card, run the
+reference directory's tiers with `server.model_path`,
+`server.turn_end_token`, `server.extra_args` and `reporting.reasoning_start`
+overridden to `recipes/Qwen2.5-Math-1.5B/eval/base.yaml`'s values.
 
 **Tier 4 executes model-generated Python on the VM.** Scoring a code benchmark
 means running the extracted solutions against the problem's tests, which
@@ -1110,9 +903,13 @@ Published numbers are not a baseline either — they were produced by a differen
 stack. Measure the base model on this one:
 
 ```bash
-RECIPE=recipes/Qwen3-1.7B-Math/eval/tier1_core.yaml ./scripts/run_eval_tpu.sh \
-  server.model_path=models/Qwen3-1.7B-Base
+RECIPE=recipes/Qwen2.5-Math-1.5B/eval/tier1_core.yaml ./scripts/run_eval_tpu.sh \
+  server.model_path=models/Qwen2.5-Math-1.5B
 ```
+
+Preflight will insist that the base's `generation_config.json` lists
+`<|im_end|>`'s id as an EOS, as the export's does; add it to the base's copy
+first.
 
 ### What the summary records
 
@@ -1172,18 +969,12 @@ happens to share a name.
 
 ## Checkpoints and GRPO handoff
 
-Training writes resumable Tunix/Orbax LoRA checkpoints under:
-
-```text
-artifacts/OpenR1-Distill-Qwen3-1.7B/checkpoints
-```
-
-At successful completion, Tunix merges the LoRA delta into the original Qwen3
-weights and writes a standard safetensors model under:
-
-```text
-artifacts/OpenR1-Distill-Qwen3-1.7B/merged
-```
+Training writes resumable Tunix/Orbax checkpoints to
+`training.checkpoint_dir` (for the distillation recipe,
+`artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/checkpoints`). At successful
+completion it writes a standard safetensors model to `export.output_dir`
+(`artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/merged`): the live parameters of
+a full fine-tune, or a LoRA run's adapters merged into the base weights.
 
 The default `export.overwrite=true` replaces that specific merged-output
 directory on a repeated run; checkpoint and model-cache directories are guarded
@@ -1194,7 +985,9 @@ Use that merged directory as the starting point for GRPO: set a GRPO recipe's
 LoRA adapter) and as the frozen reference whose KL term keeps policy updates
 close to the distilled model rather than the original base.
 
-Merged LoRA export uses Tunix's model-specific exporter for Qwen3. The pinned
+A full fine-tune's export maps Tunix parameter names back to Hugging Face ones
+for Qwen2 and Qwen3 (`open_r1_tpu.model.export`). Merged LoRA export uses
+Tunix's model-specific exporter for Qwen3. The pinned
 Tunix has none for Qwen2, so `open_r1_tpu.model.export` supplies one on
 Tunix's generic merge (`save_qwen2_lora_merged_model_as_safetensors`, which
 reuses Qwen3's key rules because the two families name and lay out their
@@ -1217,7 +1010,7 @@ hf download hkust-nlp/SimpleRL-Zoo-Data --repo-type dataset \
   --include "simplelr_abel_level3to5/*" --local-dir data/SimpleRL-Zoo-Data
 hf download Qwen/Qwen2.5-1.5B --local-dir models/Qwen2.5-1.5B
 python -m open_r1_tpu.grpo.run \
-  --config recipes/Qwen2.5-1.5B-SimpleRL-Zoo/grpo/config_grpo.yaml
+  --config recipes/Qwen2.5-1.5B/grpo/simplerl-zoo.yaml
 ```
 
 Its 400 steps take about 14 hours and end with a merged export in
@@ -1228,20 +1021,20 @@ explains. If a multi-chip start fails with `START_SESSION failed` after an
 earlier run crashed, `LIBTPU_INIT_ARGS=--noenable_tpunetd_client` lets libtpu
 build the slice itself.
 
-`recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/grpo/config_grpo.yaml` runs GRPO on
+`recipes/Qwen2.5-Math-1.5B/grpo/dapo-math-17k.yaml` runs GRPO on
 a distilled SFT export with `open-r1/DAPO-Math-17k-Processed` prompts; it has
 not been run.
 
 ### A positive control: reproducing SimpleRL-Zoo on Qwen2.5-1.5B
 
-`recipes/Qwen2.5-1.5B-SimpleRL-Zoo/` checks the GRPO pipeline against a
+`recipes/Qwen2.5-1.5B/` checks the GRPO pipeline against a
 published RL result. SimpleRL-Zoo (arXiv 2503.18892) trained the Qwen2.5-1.5B
 base with GRPO and a correctness-only reward on 8,523 MATH level 3-5 problems
 and reports GSM8K 55.7 → 74.4 and MATH-500 29.6 → 59.0; their trained model
 is public. Scored the same way, this recipe's export reaches GSM8K 68.2 (first
 200 problems) and MATH-500 54.7, against 74.5 and 57.2 for their checkpoint.
 
-- `grpo/config_grpo.yaml` copies their data, plain-text "Abel" prompt (as a
+- `grpo/simplerl-zoo.yaml` copies their data, plain-text "Abel" prompt (as a
   chat template), stop tokens, 1/0 reward (`math_answer_reward`, which reads
   the answer in their order) and GRPO settings (8 rollouts, temperature 1.0,
   KL 1e-4 with the low-variance estimator, token-mean loss). It cannot copy

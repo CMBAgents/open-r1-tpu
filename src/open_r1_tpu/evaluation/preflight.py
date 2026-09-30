@@ -38,7 +38,7 @@ recorded reason.
 Run from the repository root::
 
     python -m open_r1_tpu.evaluation.preflight \
-      --config recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml
+      --config recipes/Qwen2.5-Math-1.5B/eval/tier0_smoke.yaml
 """
 
 from __future__ import annotations

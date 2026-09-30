@@ -3,13 +3,13 @@
 # mesh [4, 1]):
 #
 #   python -m open_r1_tpu.grpo.run \
-#     --config recipes/Qwen2.5-1.5B-SimpleRL-Zoo/grpo/config_grpo.yaml
+#     --config recipes/Qwen2.5-1.5B/grpo/simplerl-zoo.yaml
 #
 # THE TARGET. SimpleRL-Zoo (arXiv 2503.18892, Table 1) trained this base
 # with GRPO and a correctness-only reward and reports GSM8K 55.7 -> 74.4 and
 # MATH-500 29.6 -> 59.0. The trained model is public
 # (hkust-nlp/Qwen-2.5-1.5B-SimpleRL-Zoo), so the test is: score that model
-# and this run's export with ../eval under one protocol, and see whether this
+# and this run's export with ../eval/tier1_core.yaml under one protocol, and see whether this
 # run reaches it. A run that stays at the base's score, or collapses, means
 # the pipeline is broken. This base starts at 30-55% correct, so most rollout
 # groups mix right and wrong answers and carry a learning signal. This

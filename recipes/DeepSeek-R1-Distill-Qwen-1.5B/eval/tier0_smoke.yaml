@@ -1,6 +1,7 @@
 # Tier 0: the smoke test, on the reference model. Same functional check as
-# the Qwen3-1.7B-Math tier 0 -- a short greedy pass over easy problems -- so
-# the reference and the project's own models are tripwired identically.
+# recipes/Qwen2.5-Math-1.5B/eval's tier 0 -- a short greedy pass over easy
+# problems -- so the reference and the project's own models are tripwired
+# identically.
 #
 # Greedy decoding is kept for comparability even though DeepSeek warn the
 # distills can fall into repetition without sampling: a repetition loop is

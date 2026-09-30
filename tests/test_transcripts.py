@@ -7,8 +7,7 @@ from open_r1_tpu.core.config import load_config
 from open_r1_tpu.sft import transcripts
 
 RECIPE = (
-    Path(__file__).parents[1]
-    / "recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml"
+    Path(__file__).parents[1] / "recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml"
 )
 
 
@@ -33,10 +32,11 @@ def test_settings_default_to_disabled_with_derived_cache():
     settings = load_settings(config)
 
     assert settings["enabled"] is False
-    assert settings["every_n_steps"] == 500
-    # An explicit null cache_size means "derive from the sequence budget".
+    assert settings["every_n_steps"] == 250
+    # An explicit null cache_size means "derive from the sequence budget":
+    # the prompt, padded to the attention block, plus the completion.
     assert settings["cache_size"] == (
-        config["dataset"]["max_length"] + settings["max_new_tokens"]
+        config["model"]["flash_attention_block_size"] + settings["max_new_tokens"]
     )
     assert settings["prompts"] == list(transcripts.DEFAULT_PROMPTS)
     assert settings["reasoning_end"] == "</think>"

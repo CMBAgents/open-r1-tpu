@@ -1,14 +1,10 @@
-# Shared across every OpenR1-Distill-Qwen2.5-Math-1.5B eval tier. A tier file
-# `extends` this one and overrides only what actually differs between tiers --
+# Shared across the eval tiers for the Qwen2.5-Math-1.5B distillation
+# (../sft/openr1-math-220k.yaml). A tier file `extends` this one and overrides only what actually differs between tiers --
 # the task list, seeds, the context window, and every measurement-affecting
 # sampling knob, which stays in each tier file on purpose even where two tiers
 # happen to agree (see each tier's own sampling: block).
 #
-# THESE TIERS MIRROR recipes/Qwen3-1.7B-Math/eval TIER FOR TIER: the same
-# tasks, seeds, context windows, sampling parameters and system prompt, which
-# tests/test_evaluate.py checks. The two recipes train the same corpus with the
-# same prompt on different base models, and that comparison only holds if the
-# evaluation protocol is identical too. It is deliberately *not* the
+# These tiers are this project's protocol, deliberately *not* the
 # card-replication protocol most of recipes/DeepSeek-R1-Distill-Qwen-1.5B/eval
 # runs (32768-token budget, 4 and 64 replicates, no system prompt) -- with one
 # exception: that directory's tier 1 adopts *this* tier-1 generation protocol,
@@ -23,9 +19,9 @@
 # for the prompt, which the recipe loader enforces.
 
 server:
-  # The merged export of the final checkpoint (step 4026, the end of the SFT
-  # recipe's max_steps), not an Orbax checkpoint: vLLM reads Hugging Face
-  # safetensors, and this directory is what export.output_dir wrote. Stage it
+  # The merged export the SFT recipe writes at its last step, not an Orbax
+  # checkpoint: vLLM reads Hugging Face safetensors, and this directory is
+  # what export.output_dir wrote. Stage it
   # onto the VM's local disk from the deployment bucket before running; the
   # bucket is deployment-specific and stays in $GCS_BUCKET. Override to
   # models/Qwen2.5-Math-1.5B to measure the untrained base on this identical
@@ -50,19 +46,12 @@ server:
   # ~15 minutes. TPU startup includes weight transfer and an XLA compilation,
   # neither of which is fast the first time.
   startup_timeout_secs: 900
-  # THE EXPORT DECLARES A 4096-TOKEN CONTEXT AND WAS TRAINED PAST IT.
-  # Qwen2.5-Math-1.5B's config.json carries max_position_embeddings 4096, its
-  # pretraining context, and the export copies that file unchanged. vLLM caps
-  # --max-model-len at the declared value and sizes its rotary cache from it,
-  # so without this every tier's window is refused at startup, and a server
-  # forced past it would index positions the cache does not hold. The
-  # training recipe ran a 26,624-token window and the traces this model emits
-  # are long-CoT, so the declaration is what is wrong, not the window. This
-  # raises it to 32768, the smallest power of two above every tier's window
-  # and above the training window. DeepSeek did the same to the same base
-  # (DeepSeek-R1-Distill-Qwen-1.5B declares 131072). rope_theta is not touched:
-  # the weights were trained at the base model's 10000 and serving them at
-  # any other value would be evaluating a model that was never trained.
+  # 32768 POSITIONS. The export copies its config.json from the base it was
+  # trained from. The RoPE-300k base the SFT recipe stages already declares
+  # 32768; stock Qwen2.5-Math-1.5B declares 4096, its pretraining context,
+  # and vLLM refuses any window past the declared value. The override keeps
+  # an export of either servable at every tier's window. rope_theta is never
+  # overridden: the export must be served at the theta it was trained at.
   extra_args: ["--hf-overrides", '{"max_position_embeddings": 32768}']
   # Bounds the runner's concurrent in-flight chat completion requests. One
   # TPU chip serving one model at a time: wide enough to keep the server

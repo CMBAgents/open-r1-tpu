@@ -6,20 +6,18 @@ These instructions apply to the entire repository.
 
 ## Project purpose
 
-`open-r1-tpu` implements the supervised fine-tuning stage of a reasoning
-distillation pipeline on Google TPUs. It follows the broad SFT-to-GRPO workflow
-from Open-R1 while using JAX, Grain, Orbax, Optax, and Google Tunix instead of
-CUDA, PyTorch, or TRL.
+`open-r1-tpu` implements a reasoning post-training pipeline on Google TPUs:
+supervised distillation, GRPO, and benchmark evaluation. It follows the broad
+SFT-to-GRPO workflow from Open-R1 while using JAX, Grain, Orbax, Optax, and
+Google Tunix instead of CUDA, PyTorch, or TRL.
 
-The default path is:
+The SFT path:
 
-1. Load conversational reasoning traces from
-   `open-r1/Mixture-of-Thoughts`.
-2. Apply the Qwen chat template and supervise only the assistant trace.
-3. Fine-tune `Qwen/Qwen3-1.7B-Base` with LoRA on one 32 GiB TPU v6e device.
+1. Load conversational reasoning traces, e.g. `open-r1/OpenR1-Math-220k`.
+2. Apply the model's chat template and supervise only the assistant trace.
+3. Fine-tune the base model (fully, or with LoRA) on a TPU v6e slice.
 4. Save resumable Tunix/Orbax checkpoints.
-5. Merge the LoRA weights into a Hugging Face-style safetensors model for a
-   later Tunix GRPO run.
+5. Export merged Hugging Face-style safetensors for GRPO or evaluation.
 
 ## Repository map
 
@@ -33,7 +31,8 @@ The default path is:
   orchestration for the GRPO reinforcement-learning stage.
 - `src/open_r1_tpu/evaluation/`: LightEval orchestration and reduction, the
   evaluation preflight, immutable stack pins, and generation benchmarking.
-- `recipes/`: versioned model, training, and evaluation configurations.
+- `recipes/<base model>/{sft,grpo,eval}/`: versioned training and evaluation
+  configurations, one YAML per dataset (training) or tier (evaluation).
 - `scripts/setup_tpu_vm.sh`: uv-based TPU VM environment provisioning.
 - `scripts/copy_gcs_bucket_data.sh`: copy GCS bucket data to local disk.
 - `scripts/run_sft_tpu.sh`: standard SFT launcher.
@@ -207,7 +206,7 @@ unresolved-import warning is a real finding.
 Target-TPU preflight:
 
 ```bash
-export RECIPE=recipes/Qwen3-1.7B-Math/sft/config_distill.yaml
+export RECIPE=recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml
 python -m open_r1_tpu.sft.preflight --config "$RECIPE"
 ```
 
@@ -233,7 +232,7 @@ GRPO (the tested recipe needs a v6e-4):
 
 ```bash
 python -m open_r1_tpu.grpo.run \
-  --config recipes/Qwen2.5-1.5B-SimpleRL-Zoo/grpo/config_grpo.yaml
+  --config recipes/Qwen2.5-1.5B/grpo/simplerl-zoo.yaml
 ```
 
 Evaluation preflight and smoke tier, with the `eval` extra installed. Add
@@ -243,8 +242,8 @@ Evaluation preflight and smoke tier, with the `eval` extra installed. Add
 ```bash
 ./scripts/setup_tpu_vm.sh --with-eval
 python -m open_r1_tpu.evaluation.preflight \
-  --config recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml
-RECIPE=recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml ./scripts/run_eval_tpu.sh
+  --config recipes/Qwen2.5-Math-1.5B/eval/tier0_smoke.yaml
+RECIPE=recipes/Qwen2.5-Math-1.5B/eval/tier0_smoke.yaml ./scripts/run_eval_tpu.sh
 ```
 
 The first TPU step includes JAX/XLA compilation and can be much slower than
@@ -274,14 +273,18 @@ subsequent steps.
 
 ## Configuration guidance
 
+- Lay recipes out as `recipes/<base model>/<stage>/<dataset>.yaml`, where the
+  directory is the Hugging Face name of the model the run starts from and
+  `<stage>` is `sft` or `grpo`. Evaluation tiers live in
+  `recipes/<model>/eval/tier<N>_<name>.yaml` and extend that directory's
+  `base.yaml`. Outputs go under `artifacts/<output model name>/`.
 - Keep reusable defaults in YAML recipes and expose experiment-specific values
   through dotted command-line overrides.
 - The product of `model.mesh.shape` must equal the number of visible JAX
   devices, and `axis_names` must have the same rank as `shape`.
 - Keep batch and sharding choices compatible with the target topology.
 - Increase `dataset.max_length` only after observing HBM use on the target TPU.
-  The default 1024 is the validated single-device baseline; also measure how
-  many complete examples remain after overlength filtering.
+  Also measure how many complete examples remain after overlength filtering.
 - Keep a finite `training.max_steps` for predictable resume and checkpoint
   behavior. Ensure `num_train_epochs` supplies enough examples after filtering.
 - When changing model families, disable merged export unless the corresponding

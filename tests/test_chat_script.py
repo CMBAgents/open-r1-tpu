@@ -507,10 +507,19 @@ def test_load_runtime_wires_qwen2_5_into_the_four_chip_mesh(monkeypatch):
     )
 
 
-def test_recipe_restore_settings_match_the_distill_recipe():
-    recipe = (
-        Path(__file__).parents[1]
-        / "recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml"
+DISTILL_RECIPE = (
+    Path(__file__).parents[1] / "recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml"
+)
+
+
+def test_recipe_restore_settings_match_a_lora_recipe(tmp_path):
+    recipe = tmp_path / "lora.yaml"
+    recipe.write_text(
+        f"extends: {DISTILL_RECIPE}\n"
+        "model:\n"
+        "  lora_config: {module_path: '.*q_proj', rank: 64, alpha: 64.0}\n"
+        "training:\n"
+        "  checkpoint_dir: artifacts/lora-run/checkpoints\n"
     )
     lora_config, checkpoint_dir = chat.recipe_restore_settings(str(recipe))
 
@@ -518,20 +527,16 @@ def test_recipe_restore_settings_match_the_distill_recipe():
     # confident nonsense rather than an error, so these must come from there.
     assert lora_config["rank"] == 64
     assert lora_config["alpha"] == 64.0
-    assert checkpoint_dir.endswith("OpenR1-Distill-Qwen3-1.7B/checkpoints")
+    assert checkpoint_dir == "artifacts/lora-run/checkpoints"
 
 
 def test_full_finetune_recipe_restores_all_parameters():
-    # The instruct recipe trains all parameters, so its checkpoints carry the
+    # The distill recipe trains all parameters, so its checkpoints carry the
     # full model state and restore must not be limited to LoRA adapters.
-    recipe = (
-        Path(__file__).parents[1]
-        / "recipes/Qwen3-1.7B-Instruct/sft/config_instruct.yaml"
-    )
-    lora_config, checkpoint_dir = chat.recipe_restore_settings(str(recipe))
+    lora_config, checkpoint_dir = chat.recipe_restore_settings(str(DISTILL_RECIPE))
 
     assert lora_config is None
-    assert checkpoint_dir.endswith("Qwen3-1.7B-Instruct/checkpoints")
+    assert checkpoint_dir.endswith("OpenR1-Distill-Qwen2.5-Math-1.5B/checkpoints")
 
 
 def test_chat_prompt_length_need_not_match_splash_block(tmp_path):

@@ -3,7 +3,7 @@
 Run with::
 
   python -m open_r1_tpu.sft.run --config \
-    recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml
+    recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml
 """
 
 from __future__ import annotations
@@ -96,9 +96,8 @@ def run(config: dict[str, Any]) -> None:
 
     train_ds, eval_ds = load_reasoning_datasets(config["dataset"], tokenizer)
     max_examples = config["dataset"].get("max_examples")
-    # Mixture-of-Thoughts has a known finite split. If max_examples is omitted,
-    # load_reasoning_datasets uses the full split and the configured recipe must
-    # provide max_steps (the default recipe does).
+    # If max_examples is omitted, load_reasoning_datasets uses the full split
+    # and the recipe must provide max_steps.
     max_steps = _compute_max_steps(
         config, int(max_examples) if max_examples is not None else None
     )

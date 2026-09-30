@@ -11,8 +11,8 @@
 #
 # ONLY GENERATIVE TASKS WORK HERE: an OpenAI-compatible endpoint returns no
 # per-token log probabilities, so LightEval's loglikelihood-scored tasks
-# cannot run through this backend. See the Qwen3-1.7B-Math tier 3 for the
-# full reasoning.
+# cannot run through this backend. See recipes/Qwen2.5-Math-1.5B/eval's tier
+# 3 for the full reasoning.
 extends: base.yaml
 
 eval:

@@ -10,9 +10,9 @@ checkpoints can be evaluated the same way as the final export.
 
 Usage (from the repo root, with the pinned environment active):
     python3 scripts/export_checkpoint.py \
-        --recipe recipes/Qwen3-1.7B-Math/sft/config_distill.yaml \
+        --recipe recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml \
         --step 200 \
-        --output artifacts/Qwen3-1.7B-Math/checkpoint-200/merged
+        --output artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/checkpoint-200/merged
 """
 
 from __future__ import annotations

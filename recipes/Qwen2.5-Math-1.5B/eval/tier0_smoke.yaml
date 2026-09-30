@@ -6,16 +6,18 @@
 # greedy pass over easy problems answers that. If Tier 0 looks wrong there is no
 # point paying for Tier 1.
 #
+# This export has two failure modes of its own worth watching here. The
+# training recipe's transcripts were disabled, so whether the model closes
+# </think> and stops at <|im_end|> has never been observed in free generation
+# before this tier: read generation.reasoning_closed_rate and truncation_rate
+# in the summary before anything else. And <think> is plain text to this
+# tokeniser rather than a special token, so a trace that opens with a variant
+# spelling would count as never opened -- format_rate catches that.
+#
 # Greedy, one seed, 200 problems. Seeds exist to average out sampling noise, and
 # at temperature 0 there is none; this tier is a functional check, so its number
 # is a tripwire rather than a result. Everything reported here is a single
 # sample and must not be quoted as a benchmark score.
-#
-# TASK NAMES MOVE BETWEEN RELEASES. LightEval renames tasks, shifts them
-# between suites, and has changed the name syntax itself once already.
-# `open_r1_tpu.evaluation.preflight` resolves every name here against the
-# installed registry, so
-# run the preflight rather than trusting this file.
 extends: base.yaml
 
 eval:
@@ -38,11 +40,13 @@ sampling:
   temperature: 0.0
   top_p: 1.0
   max_new_tokens: 8192
-  system_prompt_file: recipes/Qwen3-1.7B-Math/system_prompt.txt
+  # The same file training injected in front of every example, so the two
+  # stages cannot drift apart without a diff showing it.
+  system_prompt_file: recipes/Qwen2.5-Math-1.5B/system_prompt.txt
 
 reporting:
-  output_dir: artifacts/Qwen3-1.7B-Math/eval/tier0
+  output_dir: artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/eval/tier0
   wandb:
     enabled: false
-    run_name: qwen3-1.7b-math-tier0
+    run_name: qwen2.5-math-1.5b-r1-distill-tier0
     tags: [tpu, eval, smoke]

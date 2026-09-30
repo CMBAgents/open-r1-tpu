@@ -4,7 +4,7 @@
 vLLM renders a chat request with the model directory's chat template and stops
 on the ``eos_token_id`` list in its ``generation_config.json``. A recipe that
 trains under its own ``tokenizer.chat_template`` and extra
-``rollout.eos_token_ids`` (recipes/Qwen2.5-1.5B-SimpleRL-Zoo/grpo) needs both
+``rollout.eos_token_ids`` (recipes/Qwen2.5-1.5B/grpo/simplerl-zoo.yaml) needs both
 in whatever directory the evaluation serves, or the benchmark measures a
 prompt the model never trained on. That holds for the untouched base and a
 published checkpoint as much as for this project's own export, so every model
@@ -26,7 +26,7 @@ copies everything else, and rewrites two files:
 
 Usage, from the repo root:
     python scripts/stage_eval_model.py \
-        --recipe recipes/Qwen2.5-1.5B-SimpleRL-Zoo/grpo/config_grpo.yaml \
+        --recipe recipes/Qwen2.5-1.5B/grpo/simplerl-zoo.yaml \
         --source models/Qwen2.5-1.5B \
         --output models/Qwen2.5-1.5B-abel
 """

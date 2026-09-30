@@ -15,13 +15,13 @@ set -euo pipefail
 # Point at another export or vLLM installation through ordinary recipe
 # overrides/environment values, for example:
 #
-#   MODEL_PATH=models/Qwen3-1.7B-Base \
+#   MODEL_PATH=models/Qwen2.5-Math-1.5B \
 #     ./scripts/benchmark_generation_tpu.sh \
 #       server.serve_command='["/opt/vllm-venv/bin/vllm", "serve"]' \
 #       server.image=null
 
-EVAL_RECIPE="${EVAL_RECIPE:-recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml}"
-SFT_RECIPE="${SFT_RECIPE:-recipes/Qwen3-1.7B-Math/sft/config_distill.yaml}"
+EVAL_RECIPE="${EVAL_RECIPE:-recipes/Qwen2.5-Math-1.5B/eval/tier0_smoke.yaml}"
+SFT_RECIPE="${SFT_RECIPE:-recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml}"
 PROMPT_COUNT="${PROMPT_COUNT:-16}"
 REPEATS="${REPEATS:-2}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-128}"

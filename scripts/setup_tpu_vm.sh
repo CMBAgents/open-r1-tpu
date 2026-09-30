@@ -155,14 +155,12 @@ cat <<NEXT
   source ${ENV_FILE}
   source ${VENV_DIR}/bin/activate
 
-  # 2. Stage the training data (see "Quick start on a TPU VM" in README.md):
-  hf download open-r1/OpenR1-Math-220k --repo-type dataset \\
-    --include 'data/*' --local-dir data/OpenR1-Math-220k
+  # 2. Stage the base model and data: see "Quick start on a TPU VM" in README.md.
 
   # 3. Preflight, then launch:
   python -m open_r1_tpu.sft.preflight \\
-    --config recipes/Qwen3-1.7B-Math/sft/config_distill.yaml
-  RECIPE=recipes/Qwen3-1.7B-Math/sft/config_distill.yaml \\
+    --config recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml
+  RECIPE=recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml \\
     scripts/run_sft_tpu.sh training.project_name="\${WANDB_PROJECT}"
 NEXT
 
@@ -172,7 +170,7 @@ if [[ ${WITH_EVAL} -eq 1 ]]; then
   # Evaluation is installed and the local service image is built. Once a
   # merged export exists, preflight and run the smoke tier:
   python -m open_r1_tpu.evaluation.preflight \
-    --config recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml
-  RECIPE=recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml scripts/run_eval_tpu.sh
+    --config recipes/Qwen2.5-Math-1.5B/eval/tier0_smoke.yaml
+  RECIPE=recipes/Qwen2.5-Math-1.5B/eval/tier0_smoke.yaml scripts/run_eval_tpu.sh
 NEXT_EVAL
 fi
