@@ -304,6 +304,31 @@ def local_base_model_path(config: dict[str, Any]) -> str:
     return path
 
 
+def merged_lora_saver(model_name: str) -> Callable[..., Any]:
+    """The merged-LoRA safetensors saver for a Tunix model: Tunix's own where
+    its params module has one, this module's for Qwen2. Raises
+    NotImplementedError otherwise, so preflight can call it before training.
+    """
+    from tunix.models import automodel
+
+    params_module = automodel.get_model_module(model_name, automodel.ModelModule.PARAMS)
+    save_fn = getattr(params_module, "save_lora_merged_model_as_safetensors", None)
+    if save_fn is None:
+        try:
+            is_qwen2 = safetensors_entry_fn(model_name) is qwen2_safetensors_entry
+        except NotImplementedError:
+            is_qwen2 = False
+        if is_qwen2:
+            save_fn = save_qwen2_lora_merged_model_as_safetensors
+    if save_fn is None:
+        raise NotImplementedError(
+            "This Tunix model does not expose merged-LoRA safetensors "
+            "export. Disable export.enabled or choose a supported model "
+            "such as Qwen2 or Qwen3."
+        )
+    return save_fn
+
+
 def export_model(
     *,
     config: dict[str, Any],
@@ -342,23 +367,7 @@ def export_model(
     output_dir = str(output_path)
     lora = config["model"].get("lora_config")
     if lora:
-        from tunix.models import automodel
-
-        params_module = automodel.get_model_module(
-            config["model"]["model_name"], automodel.ModelModule.PARAMS
-        )
-        save_fn = getattr(params_module, "save_lora_merged_model_as_safetensors", None)
-        if save_fn is None and (
-            safetensors_entry_fn(config["model"]["model_name"])
-            is qwen2_safetensors_entry
-        ):
-            save_fn = save_qwen2_lora_merged_model_as_safetensors
-        if save_fn is None:
-            raise NotImplementedError(
-                "This Tunix model does not expose merged-LoRA safetensors "
-                "export. Disable export.enabled or choose a supported model "
-                "such as Qwen3."
-            )
+        save_fn = merged_lora_saver(str(config["model"]["model_name"]))
         LOGGER.info("Exporting merged LoRA model to %s", output_dir)
         save_fn(
             local_model_path=local_model_path,

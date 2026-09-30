@@ -9,10 +9,10 @@ active::
 The architecture is detected from the directory's ``config.json``. To talk to a
 training run's own weights, before it has finished or been exported, pass the
 SFT recipe it was trained with; its latest checkpoint is restored on top of the
-``--model-path`` weights, which must be the base the run started from::
+base the run started from (the recipe's ``model.model_path`` unless
+``--model-path`` says otherwise)::
 
     python scripts/chat_tpu.py \
-      --model-path models/Qwen2.5-Math-1.5B-RoPE-300k \
       --recipe recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml
 
 Whether the checkpoint holds every parameter or LoRA adapters alone, and the
@@ -70,10 +70,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--model-path",
-        default=DEFAULT_MODEL_PATH,
+        default=None,
         help=(
             "Local Qwen2 or Qwen3 directory containing model.safetensors and "
-            f"config.json (default: {DEFAULT_MODEL_PATH})"
+            "config.json (default: the recipe's model.model_path with --recipe, "
+            f"else {DEFAULT_MODEL_PATH})"
         ),
     )
     parser.add_argument(
@@ -157,6 +158,13 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def recipe_base_model_path(recipe: str) -> str:
+    """The local base a recipe trains from, or the default for a Hub model."""
+    from open_r1_tpu.core.config import load_config
+
+    return str(load_config(recipe)["model"].get("model_path") or DEFAULT_MODEL_PATH)
+
+
 def validate_options(args: argparse.Namespace) -> None:
     """Fail before the expensive model load for invalid options."""
     if args.max_new_tokens <= 0:
@@ -167,6 +175,10 @@ def validate_options(args: argparse.Namespace) -> None:
         raise ValueError("--temperature cannot be negative")
     if not 0 < args.top_p <= 1:
         raise ValueError("--top-p must be in (0, 1]")
+    if args.model_path is None:
+        args.model_path = (
+            recipe_base_model_path(args.recipe) if args.recipe else DEFAULT_MODEL_PATH
+        )
     args.model_path = resolve_model_dir(args.model_path)
 
     if args.checkpoint_dir and not args.recipe:

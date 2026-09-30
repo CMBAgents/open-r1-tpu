@@ -11,9 +11,11 @@ from open_r1_tpu.model.export import (
     collect_safetensors_state,
     export_model,
     local_base_model_path,
+    merged_lora_saver,
     qwen2_safetensors_entry,
     qwen3_safetensors_entry,
     safetensors_entry_fn,
+    save_qwen2_lora_merged_model_as_safetensors,
     write_turn_end_generation_config,
 )
 
@@ -352,3 +354,44 @@ def test_export_keeps_an_existing_directory_without_overwrite(tmp_path):
 def test_export_is_skipped_unless_enabled(tmp_path):
     config = _export_config(Path.cwd(), tmp_path, enabled=False)
     export_model(config=config, model=None, tokenizer=None, local_model_path="")
+
+
+def _stub_params_registry(monkeypatch, family, params_saver=None):
+    """tunix.models.automodel whose model module is `family` and whose params
+    module has `params_saver` as its merged-LoRA saver, if given."""
+    _stub_tunix_registry(monkeypatch, f"tunix.models.{family}.model")
+    automodel = sys.modules["tunix.models.automodel"]
+    model_modules = automodel.get_model_module
+
+    def get_model_module(name, which):
+        if which == automodel.ModelModule.PARAMS:
+            if params_saver is None:
+                return types.SimpleNamespace()
+            return types.SimpleNamespace(
+                save_lora_merged_model_as_safetensors=params_saver
+            )
+        return model_modules(name, which)
+
+    monkeypatch.setattr(automodel, "get_model_module", get_model_module)
+
+
+def test_merged_lora_saver_uses_tunixs_own_when_it_has_one(monkeypatch):
+    def tunix_saver(**kwargs):
+        return None
+
+    _stub_params_registry(monkeypatch, "qwen3", tunix_saver)
+    assert merged_lora_saver("qwen3-1.7b-base") is tunix_saver
+
+
+def test_merged_lora_saver_falls_back_to_this_projects_for_qwen2(monkeypatch):
+    # The pinned Tunix has no merged-LoRA saver for Qwen2; preflight must not
+    # report one missing when export_model would use this module's.
+    _stub_params_registry(monkeypatch, "qwen2")
+    saver = merged_lora_saver("qwen2.5-1.5b")
+    assert saver is save_qwen2_lora_merged_model_as_safetensors
+
+
+def test_merged_lora_saver_rejects_a_family_it_cannot_export(monkeypatch):
+    _stub_params_registry(monkeypatch, "gemma3")
+    with pytest.raises(NotImplementedError, match="merged-LoRA"):
+        merged_lora_saver("gemma-3-1b-pt")

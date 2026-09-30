@@ -289,3 +289,30 @@ def test_checkpoint_dir_without_a_recipe_is_rejected(tmp_path):
 
     with pytest.raises(ValueError, match="--checkpoint-dir needs --recipe"):
         chat.validate_options(args)
+
+
+def test_a_recipe_defaults_the_model_path_to_the_base_it_trains_from(tmp_path):
+    # Restoring onto any other base would serve the checkpoint at the wrong
+    # RoPE theta for the RoPE-300k distillation recipe.
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "model.safetensors").write_bytes(b"")
+    recipe = tmp_path / "recipe.yaml"
+    distill = (
+        Path(__file__).parents[1]
+        / "recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml"
+    )
+    recipe.write_text(f"extends: {distill}\nmodel:\n  model_path: {base}\n")
+    args = SimpleNamespace(
+        max_new_tokens=8,
+        max_prompt_length=17,
+        temperature=0.0,
+        top_p=0.95,
+        model_path=None,
+        recipe=str(recipe),
+        checkpoint_dir=None,
+    )
+
+    chat.validate_options(args)
+
+    assert args.model_path == str(base.resolve())

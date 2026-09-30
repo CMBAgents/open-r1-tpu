@@ -16,7 +16,7 @@ from typing import Any
 from open_r1_tpu.core.cli import parse_recipe_args, recipe_parser
 from open_r1_tpu.core.config import load_config, read_prompt_file
 from open_r1_tpu.core.packages import installed_version
-from open_r1_tpu.model.export import safetensors_entry_fn
+from open_r1_tpu.model.export import merged_lora_saver, safetensors_entry_fn
 from open_r1_tpu.model.loading import create_tokenizer
 from open_r1_tpu.sft.config import validate_sft_config
 from open_r1_tpu.sft.data import (
@@ -61,7 +61,6 @@ def main() -> None:
 
     import jax
     import optax
-    from tunix.models import automodel
     from tunix.sft import peft_trainer
     from tunix.sft import utils as sft_utils
 
@@ -116,19 +115,14 @@ def main() -> None:
     # Export runs after the last training step, so an unsupported model found
     # there costs the whole run. Check the branch export_model will take.
     if config.get("export", {}).get("enabled", False):
-        if config["model"].get("lora_config"):
-            params_module = automodel.get_model_module(
-                config["model"]["model_name"], automodel.ModelModule.PARAMS
-            )
-            if not callable(
-                getattr(params_module, "save_lora_merged_model_as_safetensors", None)
-            ):
-                errors.append("the installed Tunix model lacks merged-LoRA export")
-        else:
-            try:
-                safetensors_entry_fn(str(config["model"]["model_name"]))
-            except NotImplementedError as exc:
-                errors.append(str(exc))
+        model_name = str(config["model"]["model_name"])
+        try:
+            if config["model"].get("lora_config"):
+                merged_lora_saver(model_name)
+            else:
+                safetensors_entry_fn(model_name)
+        except NotImplementedError as exc:
+            errors.append(str(exc))
 
     print(f"JAX {jax.__version__}; Tunix {installed_version('google-tunix')}")
     print(f"Devices ({len(devices)}): {devices}")
