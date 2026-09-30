@@ -151,7 +151,7 @@ cat <<NEXT
   source ${ENV_FILE}
   source ${VENV_DIR}/bin/activate
 
-  # 2. Stage the base model and data: see "Quick start on a TPU VM" in README.md.
+  # 2. Stage the base model and data: see "Quick start: distillation" in README.md.
 
   # 3. Preflight, then launch:
   python -m open_r1_tpu.sft.preflight \\

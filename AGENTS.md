@@ -1,309 +1,213 @@
 # AGENTS.md
 
-## Scope
-
-These instructions apply to the entire repository.
-
-## Project purpose
-
-`open-r1-tpu` implements a reasoning post-training pipeline on Google TPUs:
-supervised distillation, GRPO, and benchmark evaluation. It follows the broad
-SFT-to-GRPO workflow from Open-R1 while using JAX, Grain, Orbax, Optax, and
-Google Tunix instead of CUDA, PyTorch, or TRL.
-
-The SFT path:
-
-1. Load conversational reasoning traces, e.g. `open-r1/OpenR1-Math-220k`.
-2. Apply the model's chat template and supervise only the assistant trace.
-3. Fine-tune the base model (fully, or with LoRA) on a TPU v6e slice.
-4. Save resumable Tunix/Orbax checkpoints.
-5. Export merged Hugging Face-style safetensors for GRPO or evaluation.
+These instructions apply to the whole repository. [README.md](README.md) says
+what the project does and how to run it; [docs/](docs/) holds the operating
+guides. This file holds the rules for changing the code.
 
 ## Repository map
 
-- `src/open_r1_tpu/core/`: configuration parsing and shared logging.
-- `src/open_r1_tpu/model/`: model creation, optimizer, metrics logging,
-  tokenizing helpers, and checkpoint/export handling shared by the SFT and
-  GRPO training stages (and by evaluation's generation benchmarking).
-- `src/open_r1_tpu/sft/`: dataset preparation, packing, transcripts, and the
-  training preflight for the supervised reasoning-distillation stage.
-- `src/open_r1_tpu/grpo/`: prompt dataset loading, reward functions, and
-  orchestration for the GRPO reinforcement-learning stage.
-- `src/open_r1_tpu/evaluation/`: LightEval orchestration and reduction, the
-  evaluation preflight, immutable stack pins, and generation benchmarking.
-- `recipes/<base model>/{sft,grpo,eval}/`: versioned training and evaluation
-  configurations, one YAML per dataset (training) or tier (evaluation).
-- `scripts/setup_tpu_vm.sh`: uv-based TPU VM environment provisioning.
-- `scripts/copy_gcs_bucket_data.sh`: copy GCS bucket data to local disk.
-- `scripts/run_sft_tpu.sh`: standard SFT launcher.
-- `scripts/run_eval_tpu.sh`: evaluation launcher; owns the vLLM server's
-  lifecycle.
-- `scripts/run_vllm_tpu_container.sh`: pinned vLLM TPU container boundary;
-  owns device/cache mounts and Docker-level cleanup.
-- `scripts/benchmark_generation_tpu.sh`: runs vLLM and Tunix sequentially on
-  one TPU and writes their speed comparison.
-- `tests/`: unit and integration tests. They run on the TPU VM.
+- `src/open_r1_tpu/core/`: recipe loading and validation, the shared command
+  line (`cli.py`), logging, installed-package lookups.
+- `src/open_r1_tpu/model/`: model and tokenizer creation, LoRA, optimizer,
+  metrics logging, checkpoint restore and merged export, shared by SFT and
+  GRPO.
+- `src/open_r1_tpu/sft/`: recipe schema (`config.py`), data preparation and
+  packing, transcripts, training (`run.py`) and the TPU preflight.
+- `src/open_r1_tpu/grpo/`: recipe schema, prompt loading, rewards and training.
+- `src/open_r1_tpu/evaluation/`: recipe schema and settings (`config.py`), the
+  vLLM command and readiness wait (`server.py`), generation (`generate.py`),
+  scoring (`scoring.py`), records and the summary (`summary.py`), cons@n,
+  optional Langfuse tracing (`traced.py`), the entry point (`run.py`), the
+  task pack, the stack pins and the preflight.
+- `recipes/<base model>/{sft,grpo,eval}/`: one YAML per dataset (training) or
+  tier (evaluation).
+- `scripts/`: shell launchers (`setup_tpu_vm.sh`, `run_sft_tpu.sh`,
+  `run_eval_tpu.sh`, `run_vllm_tpu_container.sh`, `copy_gcs_bucket_data.sh`,
+  with shared helpers in `scripts/lib/`) and standalone tools (chat,
+  completion, checkpoint export, RoPE editing, staging a model for
+  evaluation, generation benchmarking, Langfuse setup).
+- `docker/vllm-tpu/`: the pinned vLLM TPU image. `docker/langfuse/`: the
+  optional self-hosted Langfuse stack.
+- `configs/`: the frozen LightEval task pack and the tracing config template.
+- `tests/`: unit tests, plus `integration` (live vLLM server) and `network`
+  (Hugging Face Hub) tests that are deselected by default.
 
 ## Architectural invariants
 
-- Keep the training path TPU-native. Do not introduce CUDA, PyTorch, TRL,
-  Accelerate, DeepSpeed, or GPU vLLM dependencies into the SFT stage.
-- Keep heavyweight JAX/Tunix imports inside runtime functions where practical,
-  so that importing a module does not initialize the TPU.
+Training:
+
+- Keep the training path TPU-native. Do not add CUDA, PyTorch, TRL,
+  Accelerate, DeepSpeed or GPU vLLM dependencies.
+- Keep JAX and Tunix imports inside runtime functions where practical, so that
+  importing a module does not initialise the TPU.
 - Preserve assistant-only loss by default. The prompt boundary must come from
-  an exact chat-template prefix; do not guess it from string lengths or special
-  token IDs.
+  an exact chat-template prefix, never from string lengths or special token
+  IDs.
 - Derive valid attention positions from the supervised sequence boundary. Do
   not assume padding and EOS have different token IDs.
-- Require complete `<think>...</think>` traces by default, and filter overlength
-  examples by default instead of truncating away reasoning or final answers.
-  `dataset.overlength_policy: truncate` is opt-in, for corpora whose traces were
-  themselves generated under a context cap and are mostly incomplete; it must
-  leave the truncated sequence unterminated, since appending a terminator would
-  teach the model to stop mid-reasoning.
-- Keep integer-label cross-entropy. Tunix's default vocabulary-sized one-hot
-  target is unnecessarily expensive at long sequence lengths.
-- If LoRA is requested, fail when no model modules match the configured regex.
-  Never silently fall back to full-model fine-tuning.
-- Preserve denominator-aware `LossOutput`/`WeightedMetric` normalization so
+- Require complete `<think>...</think>` traces by default, and drop overlength
+  examples rather than truncate them. `dataset.overlength_policy: truncate` is
+  opt-in, for corpora whose traces were themselves cut off; it must leave the
+  truncated sequence unterminated, since a terminator would teach the model to
+  stop mid-reasoning.
+- Keep integer-label cross-entropy. Tunix's default one-hot target is
+  vocabulary-sized and expensive at long sequence lengths.
+- If LoRA is requested, fail when no module matches the configured regex.
+  Never fall back silently to full fine-tuning.
+- Preserve denominator-aware `LossOutput`/`WeightedMetric` normalisation, so
   gradient accumulation weights tokens correctly across microbatches.
-- Keep *scalar* W&B logging restricted to stepped `train/*` and `eval/*`
-  metrics. Raw global JAX/Orbax events may omit `step`; Metrax maps those
-  events to step zero and causes W&B to discard them after training advances.
-  Transcript tables are text and cannot travel through that scalar path at all,
-  so they are logged straight to the W&B run with the real training step, which
-  preserves the ordering the scalar filter exists to protect.
-- Keep qualitative sampling optional and non-fatal. Free-running generation adds
-  a decode compilation and a KV cache to a validated single-device memory
-  profile, so it stays disabled by default, and any sampling failure must
-  disable transcripts and let training continue rather than end the run.
-- Treat checkpoint, model-cache, dataset, and export paths as potentially
-  large. Keep `artifacts/`, `data/`, and `models/` untracked.
-- Maintain the export-path safety checks. Merged export must never replace the
-  repository, home directory, base-model cache, or checkpoint directory.
-- Keep `open_r1_tpu.evaluation.run` free of JAX, Tunix, and vLLM imports. It drives
-  LightEval as a subprocess and the server over a socket, so it stays coupled
-  to their command line and wire format rather than to their Python API, both
-  of which move faster. Only one process can hold the chip, so evaluation runs
-  after training, not beside it.
-- Keep Langfuse optional. An evaluation without `--tracing-config` must need
-  nothing but the vLLM server, and the local and Langfuse paths in
-  `open_r1_tpu.evaluation.experiment` must write identical JSONL records.
-- Keep vLLM out of the project's dependencies. It is a service this package
-  invokes, not a library it imports, and its inference stack does not belong in
-  the Python 3.13 LightEval/training environment. Use the local image derived
-  from `docker/vllm-tpu` through `server.serve_command` by default; an external
-  environment must set `server.image=null` and is reported as reproducibility-unchecked.
-- Treat the evaluation environment as a protocol. Keep `.python-version`, the
-  exact direct pins in the `eval` extra, `uv.lock`,
-  `open_r1_tpu.evaluation.stack`, and `docker/vllm-tpu`'s base digest and lock
-  in sync. Never use a mutable remote container tag for a reported result.
-- Never report a benchmark number from a single seed. Seed variance alone moves
-  small reasoning benchmarks by 5-15 points, so results carry a mean and a
-  standard deviation, and one seed reports a null spread rather than `0.0`.
-- Keep generation-level metrics honest about missing data. Truncation rate and
-  mean completion length are `null` when LightEval's detail shards carry no
-  token counts; do not substitute a character-length estimate.
-- Treat LightEval's CLI and detail-column names as unstable. Task strings and
-  extra flags belong in the recipe, and detail fields are probed with a failure
-  that names the keys that were actually present.
+- Log only stepped `train/*` and `eval/*` scalars through the metrics path.
+  JAX and Orbax events without a step land at step zero and W&B discards them
+  once training has advanced. Transcript tables go straight to the W&B run
+  with the real training step.
+- Keep transcript sampling optional and non-fatal. It adds a decode
+  compilation and a KV cache to a validated memory profile, so it is off by
+  default, and a sampling failure disables transcripts rather than ending the
+  run.
+- Keep the export-path safety checks. A merged export must never replace the
+  repository, the home directory, the base-model cache or the checkpoint
+  directory.
 
-## Tunix compatibility
+Evaluation:
 
-Tunix is pinned to an exact Git commit in `pyproject.toml`. The pin is a Git
-commit rather than a PyPI release for two reasons:
+- Keep `open_r1_tpu.evaluation` free of JAX, Tunix and vLLM imports. vLLM is a
+  service reached over HTTP, not a library: it stays out of the project's
+  dependencies and runs from the image built from `docker/vllm-tpu`. An
+  external server sets `server.image=null` and is reported as
+  reproducibility-unchecked.
+- LightEval is used only as a library: its task registry, `Doc` and
+  `ModelResponse` types and metrics. Never its runner, models or litellm
+  client. `taskpack.py` and `scoring.py` name the internals they rely on.
+- Keep Langfuse optional. Without `--tracing-config` an evaluation needs
+  nothing but the vLLM server, and the local and Langfuse paths must write
+  identical JSONL records.
+- Score on the main thread: LightEval's maths metrics time out with
+  `signal.alarm`, which works only there.
+- Treat the evaluation environment as part of the protocol. Keep
+  `.python-version`, the exact pins in the `eval` extra, `uv.lock`,
+  `open_r1_tpu.evaluation.stack` and `docker/vllm-tpu`'s base digest and lock
+  in step. Never report a result from a mutable container tag.
+- Never report a benchmark number from a single seed. Seed variance alone
+  moves small reasoning benchmarks by 5-15 points, so results carry a mean and
+  a standard deviation, and one seed reports a null spread, not `0.0`.
+- Keep generation statistics honest about missing data. Truncation rate and
+  completion length are `null` when the server returned no finish reason or
+  token count; never estimate them from characters.
 
-- The code relies on APIs that exist only on `main`. Concretely,
-  `WeightedMetric` — which the custom loss in `src/open_r1_tpu/sft/run.py` returns
-  so that loss sums and denominators aggregate correctly across gradient
-  accumulation — is absent from the newest release (`v0.1.7`, checked
-  2026-08-18), so installing any released version breaks training at the first
-  step. Tunix cuts releases roughly quarterly while `main` moves daily.
-- Given a Git dependency, an exact hash rather than a branch ref keeps the
-  installed code byte-stable: `@main` re-resolves on every install, so two VMs
-  set up days apart would silently run different Tunix. Training runs are
-  recorded with verbatim launch commands, and that reproducibility is only
-  meaningful if the environment is fixed.
+## Tunix pin
 
-Do not move the pin casually; nothing currently upstream earns it. The two
-upstream changes that would are a native full-model (non-LoRA) safetensors
-saver, which would replace `src/open_r1_tpu/model/export.py`, and the
-sampler passing `segment_ids` into Qwen splash attention, which would fix
-padded splash inference. (The pinned model itself already accepts
-`segment_ids`; training-side packing uses that directly through the custom
-`gen_model_input`/loss in `src/open_r1_tpu/sft/run.py` — the gap is only that the
-sampler never supplies them.) Any pin update requires a fresh review of:
+Tunix is pinned to an exact Git commit in `pyproject.toml`, not a PyPI
+release:
 
-- `PeftTrainer`, `TrainingConfig`, and `with_loss_fn`;
-- `TrainingInput`, `LossOutput`, and `WeightedMetric`;
+- The code needs APIs that exist only on `main`. `WeightedMetric`, which the
+  SFT loss returns so that loss sums and denominators aggregate across
+  gradient accumulation, is absent from the newest release (`v0.1.7`, checked
+  2026-08-18).
+- An exact hash keeps the installed code identical across VMs; a branch ref
+  would re-resolve on every install.
+
+Do not move the pin without a reason upstream. Two changes would earn it: a
+native full-model safetensors saver, which would replace
+`model/export.py`'s own mapping, and the sampler passing `segment_ids` to
+Qwen splash attention, which would fix padded splash inference. Any pin update
+needs a fresh review of:
+
+- `PeftTrainer`, `TrainingConfig` and `with_loss_fn`;
+- `TrainingInput`, `LossOutput` and `WeightedMetric`;
 - model and tokenizer creation helpers;
-- Qwen3 internal LoRA module paths;
-- Qwen3 merged-LoRA safetensors export;
-- the Qwen3 loader key/transform mapping in `tunix/models/qwen3/params.py`,
-  which `src/open_r1_tpu/model/export.py` inverts; and
-- checkpoint option construction.
+- the Qwen2 LoRA module paths;
+- the Qwen2 and Qwen3 loader key mappings in `tunix/models/*/params.py`,
+  which `model/export.py` inverts, and the merged-LoRA export
+  `model/export.py` supplies for Qwen2;
+- checkpoint option construction;
+- the GRPO dtype and attention constraints in the README.
 
-Do not claim that training is TPU-compatible merely because the unit suite
-passes. Runtime compatibility requires the TPU-side preflight and a compiled
-smoke run.
+A passing unit suite does not show that training works on TPU; that needs the
+preflight and a compiled smoke run.
 
-## Environment and Hugging Face
+## Environment
 
-- Use standard CPython 3.13 on the TPU VM; `.python-version` pins the tested
-  patch release, and the free-threaded `3.13t` build is unsupported.
-- Install with `python -m pip install -e '.[test]'` on the TPU VM. The Tunix
-  dependency installs `jax[tpu]`, so avoid treating an unrelated local virtual
-  environment as authoritative.
-- Set `HF_TOKEN` in the environment. Never print, commit, log, or embed token
-  values in commands or configuration.
-- When model and dataset artifacts are already staged in GCS, copy them to
-  ignored local `models/` and `data/` directories. Use `model_source=local` and
-  the Parquet builder with `dataset.data_files`; do not redownload them from the
-  Hub.
-- Use the current `hf` CLI, not the deprecated `huggingface-cli`. A safe
-  authentication check is `hf auth whoami`.
-- Do not upload models, datasets, checkpoints, or traces to the Hub unless the
-  user explicitly requests the upload and identifies the destination.
+- Use standard CPython 3.13 at the patch release in `.python-version`; the
+  free-threaded `3.13t` build is unsupported.
+- Install with `./scripts/setup_tpu_vm.sh`, or `uv sync --frozen` with the
+  extras you need (`test`, `eval`, `dev`). The Tunix dependency pulls in
+  `jax[tpu]`, so a virtual environment off the TPU VM is not authoritative.
+- Read `HF_TOKEN` from the environment. Never print, log, commit or embed a
+  token.
+- When models and datasets are already in a GCS bucket, copy them to the
+  ignored `models/` and `data/` directories and use `model_source: local`
+  rather than downloading them again.
+- Use the `hf` CLI, not the deprecated `huggingface-cli`.
+- Do not upload models, datasets, checkpoints or traces anywhere unless the
+  user asks and names the destination.
 
-## Development commands
-
-Host-independent checks:
+## Checks
 
 ```bash
-python -m pytest
-python -m compileall -q src tests
-for script in scripts/*.sh; do bash -n "$script"; done
-git diff --check
+python -m pytest                       # unit suite, no TPU needed
+pre-commit run --all-files             # ruff, ruff format, pyright
+for script in scripts/*.sh scripts/lib/*.sh; do bash -n "$script"; done
 ```
 
-Lint, format, and type checks run through pre-commit. Install the dev extra and
-the hook once per clone:
+Pyright resolves imports from `.venv`, so install the `dev`, `test` and `eval`
+extras there; on the TPU VM an unresolved-import warning is a real finding.
+Run `python -m pytest -m integration` with a vLLM server up, and
+`python -m pytest -m network` with Hub access.
 
-```bash
-python -m pip install -e '.[dev]'
-pre-commit install
-```
+The TPU checks are the SFT and evaluation preflights and the four-step smoke
+run in the README's quick start. The first step includes XLA compilation and
+is much slower than the rest.
 
-The hooks then run on every commit, and across the whole tree on demand:
+## Tests
 
-```bash
-pre-commit run --all-files
-```
-
-The same tools can be driven directly:
-
-```bash
-ruff check .
-ruff format .
-pyright
-```
-
-Ruff and pyright settings live in `pyproject.toml`. Pyright runs in `standard`
-mode and resolves imports from `.venv`, so keep that environment installed with
-the `dev`, `test`, and `eval` extras. On the TPU VM every import resolves and an
-unresolved-import warning is a real finding.
-
-Target-TPU preflight:
-
-```bash
-export RECIPE=recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml
-python -m open_r1_tpu.sft.preflight --config "$RECIPE"
-```
-
-Short TPU smoke run, with `RECIPE` set:
-
-```bash
-./scripts/run_sft_tpu.sh \
-  dataset.max_examples=128 \
-  training.max_steps=4 \
-  training.gradient_accumulation_steps=1 \
-  training.checkpointing_options.save_interval_steps=2 \
-  training.checkpoint_dir=/tmp/sft-smoke/checkpoints \
-  export.enabled=false
-```
-
-Full run:
-
-```bash
-./scripts/run_sft_tpu.sh
-```
-
-GRPO (the tested recipe needs a v6e-4):
-
-```bash
-python -m open_r1_tpu.grpo.run \
-  --config recipes/Qwen2.5-1.5B/grpo/simplerl-zoo.yaml
-```
-
-Evaluation preflight and smoke tier, with the `eval` extra installed. Add
-`TRACE_CONFIG=configs/tracing.yaml` to trace the run in Langfuse
-(`docker/langfuse/README.md`):
-
-```bash
-./scripts/setup_tpu_vm.sh --with-eval
-python -m open_r1_tpu.evaluation.preflight \
-  --config recipes/Qwen2.5-Math-1.5B/eval/tier0_smoke.yaml
-RECIPE=recipes/Qwen2.5-Math-1.5B/eval/tier0_smoke.yaml ./scripts/run_eval_tpu.sh
-```
-
-The first TPU step includes JAX/XLA compilation and can be much slower than
-subsequent steps.
-
-## Testing expectations
-
-- Add or update unit tests for changes to configuration parsing, message
-  validation, tag filtering, token boundaries, padding, or loss masking, or to
-  evaluation recipe validation, command construction, or metric reduction.
-- Test against the real thing. Use the configured Qwen tokenizer, real Parquet
-  shards, and a real served model rather than fakes; the suite runs on the TPU
-  VM, where the whole stack is installed. Reach for a stub only where the real
-  dependency cannot be reached at all, and say so at the test.
-- Mark tests that need a live vLLM server `@pytest.mark.integration`. They are
-  deselected by default and run with `pytest -m integration` once a server is
-  up.
-- Run the smallest relevant tests during development, then the complete unit
-  suite before handoff.
+- Add or update tests when changing recipe validation, message handling, tag
+  filtering, token boundaries, padding, loss masking, command construction,
+  scoring or metric reduction.
+- Test against the real thing: the configured tokenizer, real Parquet shards,
+  a real served model. Stub only what cannot be reached at all, and say so at
+  the test.
+- Mark tests that need a live vLLM server `integration` and tests that need
+  the Hub `network`. Skip tests that need the `eval` extra with
+  `pytest.importorskip`, so the training-only environment still collects.
 - When changing model topology, LoRA paths, sequence length, sharding, remat,
-  flash attention, optimizer behavior, or checkpointing, also run the TPU
-  preflight and smoke job.
-- Report validation precisely. Distinguish source inspection, the unit suite,
-  the integration suite, TPU preflight, JAX compilation, completed optimizer
-  steps, checkpoint writes, and merged export; they are not interchangeable
-  evidence.
+  flash attention, the optimizer or checkpointing, also run the preflight and
+  the smoke run.
+- Report validation precisely. Source inspection, the unit suite, the
+  integration suite, the preflight, compilation, completed optimizer steps,
+  checkpoint writes and merged export are different evidence.
 
-## Configuration guidance
+## Recipes
 
 - Lay recipes out as `recipes/<base model>/<stage>/<dataset>.yaml`, where the
-  directory is the Hugging Face name of the model the run starts from and
-  `<stage>` is `sft` or `grpo`. Evaluation tiers live in
-  `recipes/<model>/eval/tier<N>_<name>.yaml` and extend that directory's
+  directory is the Hugging Face name of the model the run starts from.
+  Evaluation tiers are `recipes/<model>/eval/tier<N>_<name>.yaml` and extend
   `base.yaml`. Outputs go under `artifacts/<output model name>/`.
-- Keep reusable defaults in YAML recipes and expose experiment-specific values
-  through dotted command-line overrides.
+- Recipes reject unknown keys. Add a new key to its schema, with a test: the
+  stage's own (`sft/config.py`, `grpo/config.py`, `evaluation/config.py`) or
+  a shared one (`model/optimizer.py`, `model/metrics.py` for metrics and
+  `training.wandb`, `model/export.py`). `model`, `tokenizer` and
+  `training.checkpointing_options` pass through to Tunix unchecked.
 - The product of `model.mesh.shape` must equal the number of visible JAX
-  devices, and `axis_names` must have the same rank as `shape`.
-- Keep batch and sharding choices compatible with the target topology.
-- Increase `dataset.max_length` only after observing HBM use on the target TPU.
-  Also measure how many complete examples remain after overlength filtering.
-- Keep a finite `training.max_steps` for predictable resume and checkpoint
-  behavior. Ensure `num_train_epochs` supplies enough examples after filtering.
-- When changing model families, disable merged export unless the corresponding
-  Tunix params module implements
-  `save_lora_merged_model_as_safetensors`.
-- Orbax checkpoints can target GCS, but merged safetensors export must target a
-  local directory and be synced to GCS only after export completes.
+  devices, and `axis_names` must have the same rank.
+- Raise `dataset.max_length` only after measuring HBM on the target TPU, and
+  check how many examples survive overlength filtering.
+- Keep a finite `training.max_steps`, and check `num_train_epochs` supplies
+  enough examples after filtering.
+- Orbax checkpoints may target GCS; merged export must target a local
+  directory and be copied to GCS afterwards.
 
-## Code and change discipline
+## Change discipline
 
-- Target Python 3.13 and prefer typed, small functions with explicit failure
-  messages for conditions that would waste TPU time.
+- Target Python 3.13. Prefer small typed functions, and fail early with a
+  clear message on anything that would waste TPU time.
 - Preserve existing user changes and avoid unrelated refactors.
-- Keep committed defaults neutral and deployment-independent. W&B entity and
-  project names, bucket names, hostnames, and paths belong in the environment
-  or in dotted command-line overrides, not in tracked files.
-- Do not commit generated datasets, downloaded model weights, checkpoints,
-  logs, profiler output, secrets, or merged artifacts.
-- Update `README.md`, the recipe, tests, and preflight together when a behavior
-  or operator-facing command changes.
-- Do not start a full training run, download large artifacts, publish outputs,
-  or delete checkpoints without explicit user authorization.
+- Keep committed defaults neutral. W&B entities and projects, bucket names,
+  hostnames and personal paths belong in the environment or in dotted
+  overrides, never in tracked files, including examples and comments.
+- Do not commit datasets, model weights, checkpoints, logs, profiler output,
+  secrets or merged artifacts. `artifacts/`, `data/` and `models/` are
+  ignored.
+- When a behaviour or command changes, update the README or the relevant
+  `docs/` guide, the recipe, the tests and the preflight together.
+- Do not start a full training run, download large artifacts, publish
+  outputs or delete checkpoints without the user's explicit permission.

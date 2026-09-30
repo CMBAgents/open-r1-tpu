@@ -1,6 +1,5 @@
 """Reward functions run on CPU with plain strings -- no TPU, JAX, or Tunix
-needed, so these run in every environment this repository's tests already
-run in (see AGENTS.md: "this container has no project deps").
+needed, so these run in every environment the tests run in.
 """
 
 import pytest

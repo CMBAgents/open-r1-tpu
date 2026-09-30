@@ -373,9 +373,9 @@ def test_langfuse_port_rejects_a_non_port(tmp_path):
 
 
 def test_the_two_host_split_agrees_on_one_endpoint(tmp_path):
-    """The pair of invocations README.md prescribes, run against two trees:
-    what the server publishes is what the client dials, and each host writes
-    only its own half."""
+    """The pair of invocations docker/langfuse/README.md prescribes, run
+    against two trees: what the server publishes is what the client dials, and
+    each host writes only its own half."""
     server = tmp_path / "server"
     client = tmp_path / "client"
     server.mkdir()

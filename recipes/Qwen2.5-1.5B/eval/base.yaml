@@ -20,6 +20,13 @@
 #       --source "${pair%%:*}" --output "${pair##*:}"
 #   done
 #
+# The reported numbers served all three in bfloat16, adding
+# "server.extra_args=[--dtype,bfloat16]" and pinning the server to one chip
+# (TPU_VISIBLE_CHIPS=0, TPU_CHIPS_PER_PROCESS_BOUNDS=1,1,1,
+# TPU_PROCESS_BOUNDS=1,1,1). SimpleRL-Zoo's checkpoint is float32, which vLLM
+# TPU keeps despite --dtype and then fails to serve, so its staged copy was
+# cast to bfloat16 first. GSM8K was scored on its first 200 problems.
+#
 # Still unlike theirs: LightEval's scorers, not Qwen2.5-Math's grader; three
 # seeds, not one; and their stop strings "Question:" and "Answer:" become
 # tokens, which also stop at a line-initial "Question" or "Answer".
