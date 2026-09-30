@@ -1,4 +1,4 @@
-"""Reasoning-trace normalization, tokenization, packing, and loading for SFT."""
+"""Reasoning-trace normalisation, tokenisation, packing and loading for SFT."""
 
 from __future__ import annotations
 
@@ -54,9 +54,8 @@ OVERLENGTH_POLICIES = (DROP_OVERLENGTH, TRUNCATE_OVERLENGTH)
 def message_schema_from_config(value: Any) -> MessageSchema:
     """Build a :class:`MessageSchema` from a ``dataset.message_schema`` block.
 
-    A mismatched schema is invisible at runtime — every record fails validation
-    and is filtered, leaving an empty dataset rather than an error — so the
-    block itself is validated strictly and as early as possible.
+    Validated strictly, because a mismatched schema filters every record and
+    leaves an empty dataset rather than an error.
     """
     if value is None:
         return DEFAULT_MESSAGE_SCHEMA
@@ -88,11 +87,7 @@ def message_schema_from_config(value: Any) -> MessageSchema:
 def normalize_messages(
     value: Any, *, schema: MessageSchema = DEFAULT_MESSAGE_SCHEMA
 ) -> list[dict[str, str]]:
-    """Normalize a Hugging Face conversation value to role/content dictionaries.
-
-    ``schema`` adapts corpora that name the fields or the roles differently.
-    The default reads ``role``/``content`` and renames nothing.
-    """
+    """Normalise a conversation to role/content dicts, reading it per ``schema``."""
     if isinstance(value, str):
         value = json.loads(value)
     if isinstance(value, np.ndarray):
@@ -140,13 +135,12 @@ def _assistant_turn_spans(
 ) -> list[tuple[int, int]] | None:
     """Locate every assistant turn of the rendered conversation in ``full_ids``.
 
-    Each turn's start comes from rendering the preceding messages with the
-    generation prompt, which is prefix-stable. Its end cannot come from a
-    sub-render: Qwen3's template re-renders whichever assistant message is last
-    with a think block, so ``render(messages[:i + 1])`` is not a prefix of the
-    full render. The end is instead the next occurrence of the closing token
-    sequence that terminates every assistant message. Any mismatch returns None
-    so the example is dropped rather than trained with a wrong mask.
+    A turn starts where the render of the preceding messages with the
+    generation prompt ends, which must be an exact prefix. Its end cannot come
+    from a sub-render, because some templates (Qwen3's) render the last
+    assistant message differently, so it is the next occurrence of the closing
+    sequence every assistant turn ends with. Any mismatch returns None, so the
+    example is dropped rather than trained with a wrong mask.
     """
     closing = assistant_closing_ids(tokenizer)
     spans: list[tuple[int, int]] = []
@@ -177,9 +171,7 @@ def _assistant_turn_spans(
 def _pad_id(tokenizer: Any) -> int:
     pad_id_method: Any = getattr(tokenizer, "pad_id", None)
     if callable(pad_id_method):
-        # `callable()` narrows Any to a callable returning object, so restate
-        # the dynamic result before coercing it.
-        resolved: Any = pad_id_method()
+        resolved: Any = pad_id_method()  # callable() narrows Any to object
         return int(resolved)
     pad_id: Any = getattr(tokenizer, "pad_token_id", None)
     if pad_id is None:
@@ -204,27 +196,19 @@ def encode_reasoning_example(
     message_schema: MessageSchema = DEFAULT_MESSAGE_SCHEMA,
     overlength_policy: str = DROP_OVERLENGTH,
 ) -> EncodedExample | None:
-    """Tokenize one trace under the configured overlength policy.
+    """Tokenise one trace, or return None to filter it.
 
-    With ``assistant_only_loss`` every assistant turn in the conversation is
-    supervised, not just the final one; user and system tokens never carry
-    loss. ``prompt_length`` still reports the context length of the final turn.
+    With ``assistant_only_loss`` every assistant turn is supervised, located
+    by exact chat-template prefixes; user and system tokens never carry loss.
+    ``prompt_length`` is the context length of the final turn.
 
-    ``overlength_policy`` decides what happens to a conversation whose render
-    exceeds ``max_length``. Under ``drop``, the default, the example is
-    filtered: cutting a reasoning trace teaches incomplete chains and usually
-    removes the final answer, which is a poor default for reasoning
-    distillation. Under ``truncate`` the render is cut on the right, keeping the
-    prompt and as much of the reasoning as fits, for corpora whose traces were
-    themselves generated under a context cap and mostly stop mid-sentence —
-    there, dropping is an exclusion policy over most of the corpus.
-
-    Truncation deliberately leaves the sequence unterminated. The chat
-    template's closing ``<|im_end|>`` is cut away with the rest of the tail, and
-    appending any terminator in its place would teach the model to stop
-    mid-reasoning, which is exactly the failure the policy exists to avoid. An
-    example whose prompt alone fills the window is still dropped, since nothing
-    of the trace survives to supervise.
+    A render longer than ``max_length`` is dropped under the default ``drop``
+    policy, since cutting a reasoning trace teaches incomplete chains and
+    usually removes the answer. ``truncate`` keeps the prompt and as much of
+    the trace as fits, for corpora whose traces were themselves generated
+    under a context cap. The truncated sequence is left unterminated:
+    appending a terminator would teach the model to stop mid-reasoning. An
+    example whose prompt alone fills the window is dropped either way.
     """
     if overlength_policy not in OVERLENGTH_POLICIES:
         raise ValueError(
@@ -256,22 +240,19 @@ def encode_reasoning_example(
         return None
     if len(full_ids) > max_length and overlength_policy == DROP_OVERLENGTH:
         return None
-    # Right-truncation, so the prompt survives and the tail is cut. No
-    # terminator replaces the closing sequence this removes.
+    # Right-truncation: the prompt survives and nothing replaces the cut tail.
     length = min(len(full_ids), max_length)
 
     mask = np.zeros((max_length,), dtype=np.bool_)
     try:
         if assistant_only_loss:
-            # Spans are located in the untruncated render: the prefix renders
-            # they are matched against are of whole messages, so deriving them
-            # from cut ids would misplace the mask.
+            # Located in the untruncated render, which the whole-message
+            # prefix renders are matched against.
             spans = _assistant_turn_spans(tokenizer, messages, full_ids)
             if spans is None:
                 return None
             for start, end in spans:
                 if start >= length:
-                    # This turn begins past the truncation boundary.
                     continue
                 mask[start : min(end, length)] = True
             if not mask.any():
@@ -285,8 +266,7 @@ def encode_reasoning_example(
                 len(prompt_ids) >= len(full_ids)
                 or full_ids[: len(prompt_ids)] != prompt_ids
             ):
-                # An exact prompt prefix is still required so prompt_length is
-                # meaningful; a guessed boundary would misreport it.
+                # prompt_length still needs an exact prefix, never a guess.
                 return None
             if len(prompt_ids) >= length:
                 return None
@@ -302,8 +282,7 @@ def encode_reasoning_example(
         input_tokens=tokens,
         input_mask=mask,
         prompt_length=prompt_length,
-        # Post-truncation: the packer slices by this, so a pre-truncation
-        # value would silently corrupt every window it lands in.
+        # Post-truncation: the packer slices by this.
         unpadded_length=length,
     )
 
@@ -330,9 +309,8 @@ class _OpenWindow:
         start, end = self.used, self.used + length
         self.input_tokens[start:end] = example.input_tokens[:length]
         self.input_mask[start:end] = example.input_mask[:length]
-        # After the causal shift, a segment's first token would be predicted
-        # from the previous segment's final position, so it never carries loss.
-        # Chat headers make this a no-op under assistant-only supervision.
+        # After the causal shift a segment's first token would be predicted
+        # from the previous segment, so it never carries loss.
         self.input_mask[start] = False
         self.positions[start:end] = np.arange(length, dtype=np.int32)
         self.segments += 1
@@ -363,8 +341,7 @@ def pack_encoded_examples(
     for example in examples:
         length = int(example.unpadded_length)
         if length > max_length:
-            # Unreachable through the encoder, which drops or truncates to the
-            # same window; kept so a hand-built example cannot corrupt one.
+            # The encoder never emits one; a hand-built example could.
             raise ValueError("example is longer than the packing window")
         window = next((w for w in pool if w.used + length <= max_length), None)
         if window is None:
@@ -485,9 +462,7 @@ def load_reasoning_datasets(config: dict[str, Any], tokenizer: Any) -> tuple[Any
             test_size=eval_fraction, seed=int(config.get("seed", 42))
         )
         train_source, eval_source = split["train"], split["test"]
-        # A fraction of a large corpus is a large evaluation set, and the
-        # trainer walks all of it at every eval. Cap it so evaluation costs a
-        # bounded number of steps rather than scaling with the corpus.
+        # The trainer walks the whole eval split at every eval, so cap it.
         eval_max_examples = config.get("eval_max_examples")
         if eval_max_examples is not None:
             eval_source = eval_source.select(
@@ -499,20 +474,13 @@ def load_reasoning_datasets(config: dict[str, Any], tokenizer: Any) -> tuple[Any
     encode_kwargs = {
         "max_length": int(config["max_length"]),
         "messages_column": config.get("messages_column", "messages"),
-        "system_prompt": (
-            read_prompt_file(config["system_prompt_file"])
-            if config.get("system_prompt_file") is not None
-            else None
-        ),
+        "system_prompt": read_prompt_file(config.get("system_prompt_file")),
         "assistant_only_loss": bool(config.get("assistant_only_loss", True)),
         "require_reasoning_tags": bool(config.get("require_reasoning_tags", True)),
         "reasoning_start": config.get("reasoning_start", "<think>"),
         "reasoning_end": config.get("reasoning_end", "</think>"),
-        # Corpora that name messages differently — ShareGPT's from/value with
-        # human/gpt roles, for one — are adapted here from the recipe rather
-        # than by a special case in the encoder, and lazily rather than by
-        # rewriting the corpus: the rename costs nothing per record, while
-        # materializing a renamed copy of a million-row dataset costs a lot.
+        # Renamed per record rather than by rewriting the corpus, which for a
+        # million-row dataset would cost far more.
         "message_schema": message_schema_from_config(config.get("message_schema")),
         "overlength_policy": str(config.get("overlength_policy", DROP_OVERLENGTH)),
     }

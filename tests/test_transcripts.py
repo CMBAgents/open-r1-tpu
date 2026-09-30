@@ -5,6 +5,7 @@ import pytest
 
 from open_r1_tpu.core.config import load_config
 from open_r1_tpu.sft import transcripts
+from open_r1_tpu.sft.config import validate_sft_config
 
 RECIPE = (
     Path(__file__).parents[1] / "recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml"
@@ -28,7 +29,7 @@ class FakeSamplerOutput:
 
 
 def test_settings_default_to_disabled_with_derived_cache():
-    config = load_config(RECIPE)
+    config = load_config(RECIPE, validator=validate_sft_config)
     settings = load_settings(config)
 
     assert settings["enabled"] is False
@@ -54,6 +55,7 @@ def test_explicit_prompts_and_cache_size_win():
             "training.transcripts.prompts=[first, second]",
             "training.transcripts.cache_size=99",
         ],
+        validator=validate_sft_config,
     )
     settings = load_settings(config)
 
@@ -196,7 +198,7 @@ def test_prompt_length_satisfies_the_splash_kernel(model_config, expected):
 
 
 def test_default_settings_pad_prompts_to_the_attention_block():
-    config = load_config(RECIPE)
+    config = load_config(RECIPE, validator=validate_sft_config)
     settings = transcripts.resolve_settings(config)
 
     # Short prompts would otherwise pad to 128 and raise
@@ -211,7 +213,9 @@ def test_default_settings_pad_prompts_to_the_attention_block():
 
 
 def test_disabling_flash_attention_leaves_prompt_padding_to_the_sampler():
-    config = load_config(RECIPE, ["model.use_flash_attention=false"])
+    config = load_config(
+        RECIPE, ["model.use_flash_attention=false"], validator=validate_sft_config
+    )
     settings = transcripts.resolve_settings(config)
 
     assert settings["max_prompt_length"] is None

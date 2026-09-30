@@ -1,4 +1,4 @@
-"""TPU-native supervised reasoning distillation orchestration with Tunix.
+"""Supervised reasoning distillation with Tunix.
 
 Run with::
 
@@ -9,25 +9,25 @@ Run with::
 from __future__ import annotations
 
 import logging
-import math
 from typing import Any
 
 from open_r1_tpu.core.cli import parse_recipe_args, recipe_parser
 from open_r1_tpu.core.config import load_config
-from open_r1_tpu.model.export import export_model
-from open_r1_tpu.model.loading import absolute_checkpoint_dir, create_model
+from open_r1_tpu.model.export import export_model, local_base_model_path
+from open_r1_tpu.model.loading import (
+    absolute_checkpoint_dir,
+    create_mesh,
+    create_model,
+    create_tokenizer,
+    require_lora,
+)
 from open_r1_tpu.model.metrics import metrics_logger_options
 from open_r1_tpu.model.optimizer import create_optimizer
 from open_r1_tpu.sft import transcripts
+from open_r1_tpu.sft.config import validate_sft_config
 from open_r1_tpu.sft.data import load_reasoning_datasets
 
 LOGGER = logging.getLogger(__name__)
-
-
-def _model_config(config: dict[str, Any]) -> dict[str, Any]:
-    model = dict(config["model"])
-    model.pop("mesh")
-    return model
 
 
 def _compute_max_steps(
@@ -47,33 +47,16 @@ def _compute_max_steps(
 
 
 def run(config: dict[str, Any]) -> None:
-    import jax
     import jax.numpy as jnp
     import optax
-    from tunix.cli.utils import model as model_utils
     from tunix.sft import checkpoint_options, metrics_logger, peft_trainer
     from tunix.sft import utils as sft_utils
-    from tunix.utils import mesh as mesh_utils
 
-    mesh_shape = tuple(config["model"]["mesh"]["shape"])
-    axis_names = tuple(config["model"]["mesh"]["axis_names"])
-    if math.prod(mesh_shape) != jax.device_count():
-        raise ValueError(
-            f"Configured mesh {mesh_shape} needs {math.prod(mesh_shape)} devices, "
-            f"but JAX sees {jax.device_count()}. Override model.mesh.shape."
-        )
-    mesh = mesh_utils.create_mesh(mesh_shape, axis_names)
-
-    model_config = _model_config(config)
+    mesh = create_mesh(config)
     model, tokenizer_path = create_model(config, mesh)
-    if model_config.get("lora_config") and not sft_utils.is_lora_enabled(model):
-        raise RuntimeError(
-            "LoRA was requested but Tunix found no matching modules. Check "
-            "model.lora_config.module_path before training."
-        )
-    tokenizer = model_utils.create_tokenizer(config["tokenizer"], tokenizer_path)
-    if config["tokenizer"].get("chat_template"):
-        tokenizer.tokenizer.chat_template = config["tokenizer"]["chat_template"]
+    if config["model"].get("lora_config"):
+        require_lora(model)
+    tokenizer = create_tokenizer(config, tokenizer_path)
 
     train_ds, eval_ds = load_reasoning_datasets(config["dataset"], tokenizer)
     max_examples = config["dataset"].get("max_examples")
@@ -148,7 +131,11 @@ def run(config: dict[str, Any]) -> None:
         attention_mask,
         segment_ids=None,
     ):
-        """Assistant-only causal loss without a vocabulary-sized one-hot target."""
+        """Masked causal loss on integer labels, not a vocabulary-sized one-hot.
+
+        Returned as a sum and a token count rather than a mean, so gradient
+        accumulation weights every supervised token equally.
+        """
         logits, _ = model(
             input_tokens, positions, None, attention_mask, segment_ids=segment_ids
         )
@@ -186,31 +173,25 @@ def run(config: dict[str, Any]) -> None:
     LOGGER.info(
         "Starting reasoning SFT: model=%s mesh=%s max_steps=%d",
         config["model"]["model_id"],
-        mesh_shape,
+        tuple(config["model"]["mesh"]["shape"]),
         max_steps,
     )
-    # Tunix 0.1.8 still reads JAX's legacy thread-local physical mesh inside
-    # PeftTrainer, so jax.set_mesh(mesh) is not sufficient here yet.
+    # PeftTrainer reads JAX's legacy thread-local mesh, so jax.set_mesh(mesh)
+    # alone is not enough.
     with mesh:
         trainer.train(train_ds, eval_ds)
 
-    if model_config["model_source"] == "huggingface":
-        local_model_path = model_config.get("model_download_path")
-    else:
-        local_model_path = model_config.get("model_path")
-    if not local_model_path:
-        raise ValueError("No local base-model path is available for merged export")
     export_model(
         config=config,
         model=model,
         tokenizer=tokenizer,
-        local_model_path=local_model_path,
+        local_model_path=local_base_model_path(config),
     )
 
 
 def main() -> None:
     args = parse_recipe_args(recipe_parser(__doc__))
-    config = load_config(args.config, args.overrides)
+    config = load_config(args.config, args.overrides, validator=validate_sft_config)
     run(config)
 
 

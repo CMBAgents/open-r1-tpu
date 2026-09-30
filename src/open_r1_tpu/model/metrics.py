@@ -3,27 +3,28 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
 
-_WANDB_INIT_KEYS = {
-    "entity",
-    "group",
-    "job_type",
-    "mode",
-    "notes",
-    "resume",
-    "save_code",
-    "tags",
-}
+from open_r1_tpu.core.config import reject_unknown_keys
+
+# `training.wandb` keys passed through to wandb.init.
+_WANDB_INIT_KEYS = frozenset(
+    {"entity", "group", "job_type", "mode", "notes", "resume", "save_code", "tags"}
+)
+WANDB_KEYS = _WANDB_INIT_KEYS | {"enabled"}
+# Every `training` key this module reads.
+METRICS_KEYS = frozenset(
+    {"metrics_log_dir", "flush_every_n_steps", "project_name", "run_name", "wandb"}
+)
 
 _WANDB_METRIC_PREFIXES = ("train/", "eval/")
 # Tunix's RL metrics are named "<group>/<mode>/<name>", e.g.
 # "rewards/train/mean", "actor/train/kl", "completions/eval/mean_length".
 _RL_EVENT = re.compile(r"^(?P<group>[^/]+)/(?P<mode>train|eval)/(?P<name>.+)$")
-# jax.monitoring's own events (compile times, Orbax I/O) are not training
-# metrics and carry no training step.
+# jax.monitoring's own events (compile times, Orbax I/O).
 _EXCLUDED_GROUPS = {"jax"}
 STEP_METRIC = "global_step"
 
@@ -35,7 +36,8 @@ class SteppedTrainingMetricsBackend:
     Tunix's RL loop are ``<group>/<mode>/<name>``; they are renamed to
     ``<mode>/<group>/<name>`` so a dashboard groups them by train and eval
     (``train/rewards/mean``, ``eval/behaviour/answer_line_frac``). Anything
-    else, and anything without a step, is dropped.
+    else, and anything without a step, is dropped: metrax would log an
+    unstepped event at step zero, which W&B discards once training advances.
     """
 
     def __init__(self, backend: Any):
@@ -59,12 +61,11 @@ class SteppedTrainingMetricsBackend:
 class StepAxisWandbBackend:
     """One W&B row per training step, plotted against ``global_step``.
 
-    Wraps an initialised W&B backend (metrax's ``WandbBackend``, which owns
-    ``wandb.init``). Its own ``log_scalar`` passes ``step=`` to
-    ``wandb.log``, and W&B silently drops any row whose step is below the
-    last one logged, which interleaved RL, actor and eval metrics can
-    trigger. Here metrics are collected per step and written as one row
-    carrying ``global_step``, declared as every metric's x-axis, so late
+    Wraps metrax's ``WandbBackend``, which owns ``wandb.init`` but passes
+    ``step=`` to ``wandb.log``, and W&B silently drops any row whose step is
+    below the last one logged, as interleaved RL, actor and eval metrics can
+    be. Metrics are instead collected per step and written as one row
+    carrying ``global_step``, every metric's declared x-axis, so late
     arrivals still land at the right step.
     """
 
@@ -106,8 +107,23 @@ class StepAxisWandbBackend:
         self._backend.close()
 
 
+def validate_wandb_config(training: Mapping[str, Any]) -> None:
+    """Check `training.wandb` before a run spends TPU time reaching wandb.init."""
+    wandb = training.get("wandb", {})
+    if not isinstance(wandb, dict):
+        raise ValueError("training.wandb must be a configuration mapping")
+    reject_unknown_keys("training.wandb", wandb, WANDB_KEYS)
+    if not isinstance(wandb.get("enabled", False), bool):
+        raise ValueError("training.wandb.enabled must be a boolean")
+    if wandb.get("mode", "online") not in {"online", "offline", "disabled"}:
+        raise ValueError("training.wandb.mode must be online, offline, or disabled")
+    tags = wandb.get("tags", [])
+    if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
+        raise ValueError("training.wandb.tags must be a list of strings")
+
+
 def wandb_backend_kwargs(config: dict[str, Any]) -> dict[str, Any]:
-    """Build W&B initialization arguments without putting credentials in config."""
+    """Build W&B initialisation arguments without putting credentials in config."""
     training = config["training"]
     wandb_config = training.get("wandb", {})
     if not wandb_config.get("enabled", False):

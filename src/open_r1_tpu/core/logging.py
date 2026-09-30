@@ -1,19 +1,9 @@
 """Stderr logging shared by training and evaluation workflows.
 
-Tunix, Orbax and JAX all log through absl, which routes every one of them
-through a single logger named "absl" at INFO. Neither the level nor the logger
-name can tell a training step from a library's internal bookkeeping, and the
-loudest bookkeeping in this stack sits on a hot path: PeftTrainer calls
-CheckpointManager.save on every optimizer step and lets Orbax's save policy
-decide whether to write, so Orbax rebuilds its handler registry and logs six
-INFO lines around each step's single loss line whether or not anything is
-saved.
-
-Records from the packages in NOISY_PACKAGES are demoted to DEBUG rather than
-dropped, so --log-level debug brings them back and nothing is lost. Only INFO
-is demoted; warnings and errors keep their level whatever their source. To
-quieten another package that hides behind absl, add its import name to
-NOISY_PACKAGES.
+Tunix, Orbax and JAX all log through absl at INFO, and Orbax logs several lines
+on every optimizer step. INFO records from NOISY_PACKAGES are demoted to DEBUG
+rather than dropped, so --log-level debug brings them back; warnings and
+errors keep their level.
 """
 
 from __future__ import annotations
@@ -61,19 +51,14 @@ def configure_logging(
     packages: tuple[str, ...] = NOISY_PACKAGES,
 ) -> None:
     """Log to stderr at `level`, with `packages` demoted to DEBUG."""
-    # Imported here rather than at module scope for the side effect of its
-    # ordering: absl builds its ABSLLogger through logging.getLogger("absl"),
-    # so if anything registers a plain logger under that name first, absl keeps
-    # using the standard library's findCaller and every record then reports
-    # absl's own file instead of the calling module's, which is all the filter
-    # above has to go on. Importing it late also keeps this module importable
-    # without absl installed.
+    # Records name the calling module's file, which is all the filter above
+    # goes on, only if absl registered its "absl" logger before anything else
+    # created a plain one. Imported here so this module loads without absl.
     from absl import logging as absl_logging
 
     handler = logging.StreamHandler()
-    # basicConfig sets the level on the root logger and leaves handlers at
-    # NOTSET. A demoted record is suppressed by a handler level, so the handler
-    # needs one of its own.
+    # A demoted record is suppressed by a handler level, which basicConfig
+    # leaves at NOTSET.
     handler.setLevel(level)
     handler.setFormatter(logging.Formatter(_FORMAT))
     logging.basicConfig(level=level, handlers=[handler])

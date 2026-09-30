@@ -1,1 +1,1 @@
-"""TPU-native supervised fine-tuning workflow."""
+"""Supervised fine-tuning (reasoning distillation) workflow."""

@@ -7,7 +7,7 @@ on the completion text of every rollout in the step (train and eval alike):
 ``behaviour/*`` -- shape of the answers:
   answer_line_frac      a line starting "Answer:"
   boxed_frac            a ``\\boxed{...}`` answer
-  number_found_frac     a final number the correctness reward can read
+  number_found_frac     a final number answer_correctness_reward can read
   chars_mean            length in characters
   repeated_line_frac    some non-empty line occurs 3+ times (loops)
   distinct_4gram_mean   unique / total word 4-grams (low = repetitive)
@@ -16,7 +16,7 @@ on the completion text of every rollout in the step (train and eval alike):
   groups_any_reward_frac   at least one rollout earned reward
   groups_mixed_frac        rewards differ within the group, so its
                            advantages are non-zero; 0 means no gradient
-  groups_all_reward_frac   every rollout earned the same positive reward
+  groups_all_reward_frac   every rollout earned positive reward
   correct_per_group_mean   mean count of positive-reward rollouts per group
 
 Every value is a per-step scalar with ``np.mean`` as its aggregation, the

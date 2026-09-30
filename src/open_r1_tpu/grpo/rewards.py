@@ -1,46 +1,20 @@
-"""GRPO reward functions for the reasoning-math actor.
+"""GRPO reward functions.
 
-Every function here matches the calling convention Tunix's
-``tunix.rl.reward_manager.SequenceRewardManager`` uses: it invokes each
-``reward_fn`` as ``reward_fn(prompts=prompts, completions=completions,
-**extra_columns)``, where ``extra_columns`` is whatever the training batch
-carries beyond ``prompts``/``completions`` -- here, ``question`` and
-``answer`` from :mod:`open_r1_tpu.grpo.data`. Multiple reward
-functions are summed per sample (``np.nansum`` over the reward-function
-axis), so each function returns points on its own scale rather than a
-normalized [0, 1] score, following the convention of Tunix's own
-``examples/grpo_gemma.ipynb`` (3.0 for a fully correct answer, fractional
-credit below that).
+Each follows the calling convention of Tunix's ``SequenceRewardManager``,
+``reward_fn(prompts=..., completions=..., **columns)``, where the columns are
+the batch's ``question`` and ``answer`` from :mod:`open_r1_tpu.grpo.data`, and
+returns one score per completion. Tunix sums the scores of every function, so
+each scores on its own scale. A recipe names its rewards in
+``grpo.reward_functions``; the default is ``format_reward`` plus
+``correctness_reward``.
 
-Two rewards are built for this core implementation, mirroring the first two
-of that example's four (format-exact/format-approximate folded into one,
-answer-correctness) but adapted to this project's own SFT format rather than
-Gemma's ``<reasoning>``/``<answer>`` tags:
-
-- ``format_reward``: the completion opens with ``<think>``, closes it with a
-  single ``</think>``, and carries a ``\\boxed{...}`` afterward -- the shape
-  SFT was teaching (see ``reporting.reasoning_start``/``reasoning_end``/
-  ``answer_marker`` in every eval recipe's ``base.yaml``).
-- ``correctness_reward``: the boxed answer matches the corpus's gold answer,
-  with partial credit for a close numeric match.
-
-A third, repetition-penalty reward (suppressing the verbatim-loop truncation
-failure mode seen in the SFT checkpoints' evaluation completions) is
-deliberately deferred rather than built here, to keep this first pipeline to
-a core GRPO implementation. Revisit once format/correctness rewards alone
-have been run and measured.
-
-``answer_correctness_reward`` is a third, format-free option: 1.0 when the
-final number (boxed if present, else the last number written) equals gold,
-else 0.0. ``math_answer_reward`` is SimpleRL-Zoo's 1/0 reward for LaTeX
-golds (MATH-style answers such as ``\\frac{3}{4}``): the answer is read as
-they read it and compared with the Hendrycks MATH normaliser. A recipe picks
-its rewards by name with ``grpo.reward_functions``; without it,
-``DEFAULT_REWARD_FNS`` (format plus correctness) is used.
-
-The rewards are independent reward_fns (not folded into one), so a recipe can
-scale or drop either of them by omitting it from ``grpo_run``'s reward list,
-and so each is unit-testable on its own without a rollout.
+- ``format_reward``: a single closed ``<think>`` block followed by a
+  ``\\boxed{...}`` answer, with signed partial credit per structural element.
+- ``correctness_reward``: the boxed answer matches gold, with partial credit
+  for a number within 10%.
+- ``answer_correctness_reward``: 1 when the final number, boxed or else the
+  last one written, equals gold; no format requirement.
+- ``math_answer_reward``: SimpleRL-Zoo's 1/0 reward for MATH-style LaTeX golds.
 """
 
 from __future__ import annotations
@@ -53,13 +27,8 @@ REASONING_START = "<think>"
 REASONING_END = "</think>"
 ANSWER_MARKER = r"\boxed{"
 
-# Loose normalization for comparing a boxed answer to the corpus's gold
-# string. Not LightEval's math-verify-successor LaTeX parser (see
-# pyproject.toml's lighteval pin note: "LightEval used Math-Verify for this
-# until 0.13 and now parses LaTeX directly, so nothing here should name
-# Math-Verify") -- reward shaping tolerates being looser than a benchmark
-# scorer, and re-deriving LightEval's internal comparator here would create a
-# second, driftable copy of it rather than reusing one.
+# Loose normalisation for comparing a boxed answer with a gold string. Reward
+# shaping tolerates being looser than the evaluation's LaTeX-aware comparator.
 _LATEX_SPACING = re.compile(r"\\[,!;:]|\\ |~")
 _DFRAC_TFRAC = re.compile(r"\\d?frac")
 _TRAILING_PUNCTUATION = re.compile(r"[.\s]+$")
@@ -68,10 +37,7 @@ _TRAILING_PUNCTUATION = re.compile(r"[.\s]+$")
 def extract_boxed_answer(text: str) -> str | None:
     """Return the contents of the last well-formed ``\\boxed{...}``.
 
-    Brace-matched rather than a lazy regex: ``\\boxed{\\frac{1}{2}}`` has a
-    nested ``}``, which ``\\\\boxed\\{(.*?)\\}`` would truncate at the first
-    close brace. The *last* occurrence is used, matching the "final answer"
-    convention this project's traces and eval scoring both follow.
+    Brace-matched, since answers such as ``\\frac{1}{2}`` nest braces.
     """
     marker = ANSWER_MARKER
     start = text.rfind(marker)
@@ -108,14 +74,11 @@ def _as_float(value: str) -> float | None:
 
 
 def answers_match(predicted: str, gold: str) -> tuple[bool, bool]:
-    """Compare a predicted boxed answer to gold. Returns (exact, close).
+    """Compare a predicted boxed answer with gold. Returns (exact, close).
 
-    ``exact`` is a normalized string match (order-of-magnitude looser than
-    the eval harness's LaTeX-aware comparator, tight enough for the common
-    case of a bare number or a simple fraction). ``close`` is a numeric
-    within-10% match when both sides parse as plain floats -- credit for "in
-    the right neighborhood", following ``examples/grpo_gemma.ipynb``'s
-    ``check_answer``.
+    ``exact`` is a normalised string match, enough for a bare number or a
+    simple fraction. ``close`` is a match within 10% when both sides parse as
+    plain numbers.
     """
     norm_pred = _normalize_answer(predicted)
     norm_gold = _normalize_answer(gold)
@@ -144,11 +107,8 @@ def format_reward(
 ) -> list[float]:
     """Full credit for a closed ``<think>`` block followed by a boxed answer.
 
-    Partial, signed credit otherwise -- one point per structural element
-    present or absent (closed reasoning, a boxed answer after it, no
-    duplicate tags) -- so a model that is close to the shape still gets a
-    gradient toward it, matching ``match_format_approximately`` in
-    ``examples/grpo_gemma.ipynb``.
+    Otherwise half a point up or down per structural element present or
+    missing, so a model close to the shape still gets a gradient towards it.
     """
     scores: list[float] = []
     for completion in completions:
@@ -157,8 +117,6 @@ def format_reward(
         if (
             closed
             and boxed is not None
-            # Both substrings are confirmed present in this branch, so a
-            # plain find() ordering check is safe -- neither side is -1.
             and completion.find(REASONING_END) < completion.find(ANSWER_MARKER)
         ):
             scores.append(3.0)
@@ -206,10 +164,8 @@ _NUMBER = re.compile(r"(?<!\d)-?\d[\d,]*(?:\.\d+)?")
 def extract_final_number(text: str) -> str | None:
     """The completion's final answer: a boxed answer if any, else the last number.
 
-    For a model that writes free-form worked solutions rather than a fixed
-    answer shape, the last number is the conventional GSM8K fallback (the
-    "flexible extract" of common harnesses). ``\\boxed{}`` still wins when
-    present, so a model that learns to box its answer is read exactly.
+    The last number is the conventional GSM8K fallback for free-form worked
+    solutions.
     """
     boxed = extract_boxed_answer(text)
     if boxed is not None:
@@ -227,10 +183,8 @@ def answer_correctness_reward(
 ) -> list[float]:
     """1.0 when the final number equals the gold number, else 0.0.
 
-    No format requirement and no partial credit: only whether the answer is
-    right. The final number is read by :func:`extract_final_number`; gold
-    and prediction are compared as numbers, so ``20,000``, ``$20000`` and
-    ``20000.00`` all match a gold of ``20000``.
+    Compared as numbers, so ``20,000``, ``$20000`` and ``20000.00`` all match
+    a gold of ``20000``.
     """
     if len(completions) != len(answer):
         raise ValueError(
@@ -252,11 +206,8 @@ def answer_correctness_reward(
 
 
 # The MATH answer normaliser from Hendrycks et al.'s MATH release
-# (math_equivalence.py), the de facto grader for MATH-style golds in RL
-# recipes: two answers are equal when their normalised strings are. It is
-# string-level on purpose -- no symbolic parsing, so it cannot hang on a
-# pathological completion -- and it is looser than the eval harness's
-# comparator, which reward shaping tolerates.
+# (math_equivalence.py): two answers are equal when their normalised strings
+# are. String-level on purpose, so a pathological completion cannot hang it.
 
 
 def _fix_fracs(value: str) -> str:
@@ -373,14 +324,11 @@ def math_answer_reward(
 ) -> list[float]:
     """1.0 when the completion's answer equals the gold answer, else 0.0.
 
-    SimpleRL-Zoo's reward: correctness only, no format reward and nothing
-    below zero, with the answer read by :func:`extract_math_answer`. Two
-    differences from theirs. The grader is :func:`math_answers_equal`, a
-    string normaliser, where theirs is the symbolic ``math_verify``; it misses
-    some equivalent forms, which costs signal but never credits a wrong
-    answer. And only the completion is searched, where theirs searches prompt
-    and completion together, which only matters when the completion holds no
-    number at all.
+    SimpleRL-Zoo's reward, with two differences. The grader is the string
+    normaliser :func:`math_answers_equal` rather than symbolic ``math_verify``,
+    which misses some equivalent forms but never credits a wrong answer. And
+    only the completion is searched, not the prompt with it, which matters only
+    when the completion holds no number at all.
     """
     if len(completions) != len(answer):
         raise ValueError(
@@ -415,8 +363,7 @@ REWARD_FNS_BY_NAME = {
 def reward_fns_from_names(names: Sequence[str] | None) -> tuple:
     """The reward functions a recipe's ``grpo.reward_functions`` names.
 
-    ``None`` keeps :data:`DEFAULT_REWARD_FNS`, so recipes written before the
-    option existed are unchanged.
+    ``None`` selects :data:`DEFAULT_REWARD_FNS`.
     """
     if names is None:
         return DEFAULT_REWARD_FNS

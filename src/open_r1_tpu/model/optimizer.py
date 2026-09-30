@@ -4,8 +4,23 @@ from __future__ import annotations
 
 from typing import Any
 
+# Every `optimizer` key create_optimizer reads.
+OPTIMIZER_KEYS = frozenset(
+    {
+        "learning_rate",
+        "warmup_ratio",
+        "min_lr_ratio",
+        "b1",
+        "b2",
+        "eps",
+        "weight_decay",
+        "max_grad_norm",
+    }
+)
+
 
 def create_optimizer(config: dict[str, Any], max_steps: int):
+    """AdamW on a warmup-cosine schedule, optionally after global-norm clipping."""
     import optax
 
     optimizer = config["optimizer"]

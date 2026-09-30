@@ -1,26 +1,28 @@
-"""Preflight the installed training stack before consuming TPU time."""
+"""Preflight the installed training stack against an SFT recipe before
+consuming TPU time.
+
+Run with::
+
+  python -m open_r1_tpu.sft.preflight --config \
+    recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml
+"""
 
 from __future__ import annotations
 
 import math
 import os
-from importlib import metadata
 from typing import Any
 
 from open_r1_tpu.core.cli import parse_recipe_args, recipe_parser
 from open_r1_tpu.core.config import load_config, read_prompt_file
+from open_r1_tpu.core.packages import installed_version
 from open_r1_tpu.model.export import safetensors_entry_fn
+from open_r1_tpu.model.loading import create_tokenizer
+from open_r1_tpu.sft.config import validate_sft_config
 from open_r1_tpu.sft.data import (
     encode_reasoning_example,
     message_schema_from_config,
 )
-
-
-def _version(distribution: str) -> str:
-    try:
-        return metadata.version(distribution)
-    except metadata.PackageNotFoundError:
-        return "unknown"
 
 
 def _preflight_example(
@@ -28,11 +30,10 @@ def _preflight_example(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Build a probe conversation in the shape the recipe's own corpus uses.
 
-    The recipe chooses the conversation column and how a turn spells its role
-    and content, so a hardcoded role/content record would fail the boundary
-    check on a ShareGPT-style corpus and report a tokenizer fault that is not
-    there. Inverting the role map writes the probe in the corpus's own
-    vocabulary, which exercises the mapping on the way through.
+    A hardcoded role/content record would fail the boundary check on, say, a
+    ShareGPT-style corpus and report a tokenizer fault that is not there, so
+    the probe is written through the inverted role map, which also exercises
+    the mapping.
     """
     schema = message_schema_from_config(dataset.get("message_schema"))
     sources = {target: source for source, target in schema.role_map.items()}
@@ -48,11 +49,7 @@ def _preflight_example(
     }
     encode_kwargs = {
         "messages_column": column,
-        "system_prompt": (
-            read_prompt_file(dataset["system_prompt_file"])
-            if dataset.get("system_prompt_file") is not None
-            else None
-        ),
+        "system_prompt": read_prompt_file(dataset.get("system_prompt_file")),
         "message_schema": schema,
     }
     return record, encode_kwargs
@@ -60,11 +57,10 @@ def _preflight_example(
 
 def main() -> None:
     args = parse_recipe_args(recipe_parser(__doc__))
-    config = load_config(args.config, args.overrides)
+    config = load_config(args.config, args.overrides, validator=validate_sft_config)
 
     import jax
     import optax
-    from tunix.cli.utils import model as model_utils
     from tunix.models import automodel
     from tunix.sft import peft_trainer
     from tunix.sft import utils as sft_utils
@@ -104,11 +100,7 @@ def main() -> None:
         except ImportError:
             errors.append("GCS checkpointing requires the gcsfs package")
 
-    tokenizer = model_utils.create_tokenizer(
-        config["tokenizer"], config["tokenizer"]["tokenizer_path"]
-    )
-    if config["tokenizer"].get("chat_template"):
-        tokenizer.tokenizer.chat_template = config["tokenizer"]["chat_template"]
+    tokenizer = create_tokenizer(config, config["tokenizer"]["tokenizer_path"])
     sample, encode_kwargs = _preflight_example(config["dataset"])
     encoded = encode_reasoning_example(
         sample,
@@ -121,10 +113,8 @@ def main() -> None:
             "the installed tokenizer did not produce a valid assistant boundary"
         )
 
-    # Export runs after the last training step, so an unsupported combination
-    # discovered there costs the whole run. Check the same branch export_model
-    # will take: a LoRA run merges adapters through Tunix, a full fine-tune
-    # walks live parameters through this repository's own mapping.
+    # Export runs after the last training step, so an unsupported model found
+    # there costs the whole run. Check the branch export_model will take.
     if config.get("export", {}).get("enabled", False):
         if config["model"].get("lora_config"):
             params_module = automodel.get_model_module(
@@ -140,7 +130,7 @@ def main() -> None:
             except NotImplementedError as exc:
                 errors.append(str(exc))
 
-    print(f"JAX {jax.__version__}; Tunix {_version('google-tunix')}")
+    print(f"JAX {jax.__version__}; Tunix {installed_version('google-tunix')}")
     print(f"Devices ({len(devices)}): {devices}")
     if encoded is not None:
         print(

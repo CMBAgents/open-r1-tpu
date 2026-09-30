@@ -1,6 +1,7 @@
 import json
 import sys
 import types
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -8,6 +9,8 @@ import pytest
 from open_r1_tpu.model.export import (
     SAFETENSORS_ENTRY_FNS,
     collect_safetensors_state,
+    export_model,
+    local_base_model_path,
     qwen2_safetensors_entry,
     qwen3_safetensors_entry,
     safetensors_entry_fn,
@@ -287,3 +290,65 @@ def test_missing_generation_config_is_created(tmp_path):
     )
     written = json.loads((tmp_path / "generation_config.json").read_text())
     assert written == {"eos_token_id": [TURN_END]}
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        ({"model_source": "local", "model_path": "models/base"}, "models/base"),
+        (
+            {"model_source": "huggingface", "model_download_path": "/tmp/base"},
+            "/tmp/base",
+        ),
+    ],
+)
+def test_merged_export_starts_from_the_local_base_model(model, expected):
+    assert local_base_model_path({"model": model}) == expected
+
+
+def test_merged_export_needs_a_local_base_model():
+    with pytest.raises(ValueError, match="No local base-model path"):
+        local_base_model_path({"model": {"model_source": "huggingface"}})
+
+
+def _export_config(output_dir, checkpoint_dir, **export):
+    return {
+        "model": {"model_name": "qwen2.5-math-1.5b"},
+        "training": {"checkpoint_dir": str(checkpoint_dir)},
+        "export": {"enabled": True, "output_dir": str(output_dir), **export},
+    }
+
+
+@pytest.mark.parametrize("target", ["base", "checkpoints", "parent", "cwd"])
+def test_export_refuses_to_replace_protected_directories(tmp_path, target):
+    base, checkpoints = tmp_path / "base", tmp_path / "checkpoints"
+    output = {
+        "base": base,
+        "checkpoints": checkpoints,
+        "parent": tmp_path,
+        "cwd": Path.cwd(),
+    }[target]
+    with pytest.raises(ValueError, match="Refusing unsafe merged export"):
+        export_model(
+            config=_export_config(output, checkpoints, overwrite=True),
+            model=None,
+            tokenizer=None,
+            local_model_path=str(base),
+        )
+
+
+def test_export_keeps_an_existing_directory_without_overwrite(tmp_path):
+    output = tmp_path / "merged"
+    output.mkdir()
+    with pytest.raises(FileExistsError, match=r"export\.overwrite=true"):
+        export_model(
+            config=_export_config(output, tmp_path / "checkpoints"),
+            model=None,
+            tokenizer=None,
+            local_model_path=str(tmp_path / "base"),
+        )
+
+
+def test_export_is_skipped_unless_enabled(tmp_path):
+    config = _export_config(Path.cwd(), tmp_path, enabled=False)
+    export_model(config=config, model=None, tokenizer=None, local_model_path="")

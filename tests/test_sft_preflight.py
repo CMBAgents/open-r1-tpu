@@ -1,6 +1,9 @@
+"""The SFT preflight's probe conversation, which needs no TPU."""
+
 from pathlib import Path
 
 from open_r1_tpu.core.config import load_config
+from open_r1_tpu.sft.config import validate_sft_config
 from open_r1_tpu.sft.data import encode_reasoning_example
 from open_r1_tpu.sft.preflight import _preflight_example
 
@@ -40,7 +43,7 @@ def test_probe_defaults_to_role_and_content_messages():
 
 
 def test_probe_is_written_in_the_recipe_corpus_vocabulary():
-    config = load_config(RECIPE, SHAREGPT)
+    config = load_config(RECIPE, SHAREGPT, validator=validate_sft_config)
 
     record, encode_kwargs = _preflight_example(config["dataset"])
 

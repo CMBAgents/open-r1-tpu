@@ -1,78 +1,28 @@
 """GRPO prompt-and-gold-answer dataset loading.
 
-Unlike :mod:`open_r1_tpu.sft.data` (SFT: full conversations, packed into
-fixed-shape token windows with an assistant-only loss mask), a GRPO training
-batch needs only a rendered prompt string for the rollout sampler plus enough
-of the source row for the reward functions in
-:mod:`open_r1_tpu.grpo.rewards` to judge the sampler's own completions --
-here, the bare gold answer. There is nothing to tokenize or pack here: Tunix's
-rollout takes prompt strings and tokenizes them itself.
-
-The recipe ``recipes/Qwen2.5-Math-1.5B/grpo/dapo-math-17k.yaml`` reads
-``open-r1/DAPO-Math-17k-Processed``'s ``en`` config: one ``prompt`` string
-(the bare problem, no instruction wrapper) and one ``solution`` string (a
-bare integer) per row, named via ``dataset.question_column`` and
-``dataset.answer_column`` so any two-column prompt/gold corpus can be
-substituted by override. It is deliberately *not* the SFT corpus: the actor
-has already imitated those traces for six epochs, and GRPO's signal is the
-within-group variance of rollouts, which memorised prompts collapse.
+A GRPO batch needs only the rendered prompt string, which Tunix's rollout
+tokenizes itself, plus the columns the reward functions in
+:mod:`open_r1_tpu.grpo.rewards` judge completions against: the question and
+the gold answer, read from ``dataset.question_column`` and
+``dataset.answer_column``.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Any
 
 from open_r1_tpu.core.config import read_prompt_file
+from open_r1_tpu.model.tokenizing import render_ids, user_turn
 
 
 def render_prompt(question: str, tokenizer: Any, *, system_prompt: str | None) -> str:
-    """Render one user turn with the generation prompt open, as raw text.
-
-    ``add_generation_prompt=True`` and ``tokenize=False`` mirror how the
-    eval stack's own chat completions are built (the served model sees
-    exactly this shape at evaluation time too) and how
-    ``examples/grpo_gemma.ipynb``'s ``TEMPLATE.format(...)`` renders its
-    prompts, just via the tokenizer's own chat template instead of a
-    hand-written one.
-    """
-    rendered = _render(question, tokenizer, system_prompt=system_prompt, tokenize=False)
+    """Render one user turn as text, with the assistant turn opened."""
+    rendered = tokenizer.apply_chat_template(
+        user_turn(question, system_prompt), tokenize=False, add_generation_prompt=True
+    )
     if not isinstance(rendered, str):
         raise ValueError("chat template did not return a rendered string")
     return rendered
-
-
-def _render(
-    question: str, tokenizer: Any, *, system_prompt: str | None, tokenize: bool
-) -> Any:
-    messages: list[dict[str, str]] = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": question})
-    return tokenizer.apply_chat_template(
-        messages, tokenize=tokenize, add_generation_prompt=True
-    )
-
-
-def _prompt_token_count(
-    question: str, tokenizer: Any, *, system_prompt: str | None
-) -> int:
-    # A second apply_chat_template call rather than tokenizer.encode() on the
-    # already-rendered text: the tokenizer here may be Tunix's own adapter
-    # (tunix.generate.tokenizer_adapter), which apply_chat_template is known
-    # to support (model.tokenizing's render_ids relies on the same call) but
-    # whose plain encode() is not exercised anywhere else in this project.
-    # Recent transformers return a BatchEncoding (a mapping) here, not a list,
-    # and len() of that counts its keys: every prompt read as 2 tokens and the
-    # budget never dropped anything.
-    ids = _render(question, tokenizer, system_prompt=system_prompt, tokenize=True)
-    if isinstance(ids, Mapping):
-        ids = ids["input_ids"]
-    if hasattr(ids, "tolist"):
-        ids = ids.tolist()
-    if ids and isinstance(ids[0], list):
-        ids = ids[0]
-    return len(ids)
 
 
 def build_row_encoder(
@@ -85,21 +35,19 @@ def build_row_encoder(
 ) -> Any:
     """Build the per-row transform ``load_grpo_prompts`` hands to Grain.
 
-    A separate function -- rather than a closure inline in
-    ``load_grpo_prompts`` -- so it can be unit-tested directly against a fake
-    tokenizer and plain dict rows, without a real HF ``datasets`` object or
-    Grain installed. Returns ``None`` for a row Grain should drop: missing a
-    gold answer, or (when ``max_prompt_length`` is set) too long for the
-    rollout's prompt budget.
+    The transform returns ``None`` for a row whose rendered prompt is longer
+    than ``max_prompt_length`` tokens, when that is set, so Grain drops it.
     """
 
     def to_record(row: dict[str, Any]) -> dict[str, Any] | None:
         question = str(row[question_column])
         if max_prompt_length is not None:
-            token_count = _prompt_token_count(
-                question, tokenizer, system_prompt=system_prompt
+            prompt_ids = render_ids(
+                tokenizer,
+                user_turn(question, system_prompt),
+                add_generation_prompt=True,
             )
-            if token_count > int(max_prompt_length):
+            if len(prompt_ids) > int(max_prompt_length):
                 return None
         prompt = render_prompt(question, tokenizer, system_prompt=system_prompt)
         return {
@@ -120,14 +68,7 @@ def build_grain_prompt_batches(
     shuffle: bool,
     seed: int,
 ) -> Any:
-    """Wrap a Hugging Face split in a lazy, batched Grain prompt dataset.
-
-    The seam ``load_grpo_prompts`` calls through (rather than building this
-    inline), so a test can monkeypatch it exactly as
-    ``tests/test_grpo_data.py`` does for ``grpo.data.build_grain_prompt_batches``
-    and exercise the row-shaping and splitting logic without Grain
-    installed.
-    """
+    """Wrap a Hugging Face split in a lazy, batched Grain prompt dataset."""
     from grain import python as grain
 
     dataset = grain.MapDataset.source(source)
@@ -142,12 +83,11 @@ def build_grain_prompt_batches(
 
 
 def load_grpo_prompts(config: dict[str, Any], tokenizer: Any) -> tuple[Any, Any]:
-    """Load a Hugging Face math corpus as Tunix-ready GRPO prompt batches.
+    """Load a prompt corpus as Tunix-ready GRPO prompt batches.
 
-    Returns ``(train_ds, eval_ds)``, the second ``None`` unless
-    ``dataset.eval_fraction`` is set -- mirroring
-    ``sft.data.load_reasoning_datasets``'s split convention, minus the
-    tokenization/packing that only SFT needs.
+    Rows missing a question or a gold answer are dropped. Returns
+    ``(train_ds, eval_ds)``, the second ``None`` unless
+    ``dataset.eval_fraction`` is set.
     """
     from datasets import load_dataset
 
@@ -180,23 +120,17 @@ def load_grpo_prompts(config: dict[str, Any], tokenizer: Any) -> tuple[Any, Any]
     else:
         train_source, eval_source = raw, None
 
-    system_prompt = (
-        read_prompt_file(config["system_prompt_file"])
-        if config.get("system_prompt_file") is not None
-        else None
-    )
     to_record = build_row_encoder(
         tokenizer,
         question_column=question_column,
         answer_column=answer_column,
-        system_prompt=system_prompt,
+        system_prompt=read_prompt_file(config.get("system_prompt_file")),
         max_prompt_length=config.get("max_prompt_length"),
     )
     common = {"to_record": to_record, "seed": int(config.get("seed", 42))}
     batch_size = int(config["batch_size"])
-    # Tunix scores each eval batch's rollouts in one un-micro-batched pass
-    # (the actor trainer's eval loss), so a large-vocabulary model can need a
-    # smaller eval batch than its training batch.
+    # Tunix scores each eval batch in one pass without micro-batching, so a
+    # large-vocabulary model can need a smaller eval batch than its training one.
     eval_batch_size = int(config.get("eval_batch_size") or batch_size)
 
     train_ds = build_grain_prompt_batches(

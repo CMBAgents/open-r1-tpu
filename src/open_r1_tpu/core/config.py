@@ -1,9 +1,11 @@
-"""Shared configuration loading and validation."""
+"""YAML recipe loading shared by training and evaluation: `extends`, dotted
+overrides, and the schema checks each stage's validator builds on."""
 
 from __future__ import annotations
 
 import copy
-from collections.abc import Callable
+import difflib
+from collections.abc import Callable, Collection, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -38,9 +40,9 @@ def parse_override(raw: str) -> tuple[str, Any]:
 
 
 def _deep_merge(base: dict[str, Any], child: dict[str, Any]) -> dict[str, Any]:
-    """Merge `child` onto `base`. Mappings merge recursively; everything else
-    -- lists and scalars alike -- is replaced wholesale by the child's value,
-    since there is no sound way to merge a list of tasks or seeds element-wise.
+    """Merge `child` onto `base`. Mappings merge recursively; lists and scalars
+    are replaced wholesale, since a list of tasks or seeds has no sound
+    element-wise merge.
     """
     merged = dict(base)
     for key, value in child.items():
@@ -63,11 +65,9 @@ def _load_yaml_mapping(path: Path) -> dict[str, Any]:
 def _resolve_extends(config: dict[str, Any], declaring_path: Path) -> dict[str, Any]:
     """Resolve a top-level `extends: <path>` key into a merged mapping.
 
-    The base path is relative to the file that declares it, matching how a
-    recipe is normally read from the repository root regardless of which
-    directory `extends` it. One level only: a base recipe with its own
-    `extends` raises rather than chasing a chain, which keeps the merge order
-    obvious from reading a single file.
+    The base path is relative to the declaring file. One level only: a base
+    recipe with its own `extends` raises, so the merge order is obvious from
+    reading a single file.
     """
     extends = config.pop("extends", None)
     if extends is None:
@@ -81,15 +81,16 @@ def _resolve_extends(config: dict[str, Any], declaring_path: Path) -> dict[str, 
     return _deep_merge(base, config)
 
 
-def read_prompt_file(path: str | Path) -> str:
+def read_prompt_file(path: str | Path | None) -> str | None:
     """Read a system-prompt text file shared between training and evaluation.
 
-    Strips a trailing newline (`.rstrip("\\n")`) so an editor-added final
-    newline cannot make two otherwise-identical prompt files diverge. Missing
-    files fail with the path named, rather than a bare `FileNotFoundError`
-    surfacing deep inside a recipe loader -- a recipe that wants no system
-    prompt spells that as an explicit `null` instead of a missing file.
+    `None` means the recipe wants no system prompt and returns `None`. A
+    trailing newline is stripped so an editor-added one cannot make two
+    otherwise identical prompt files diverge, and a missing file fails with
+    its path named.
     """
+    if path is None:
+        return None
     file_path = Path(path)
     if not file_path.is_file():
         raise ValueError(f"system prompt file not found: {file_path}")
@@ -101,111 +102,53 @@ def load_config(
     overrides: list[str] | None = None,
     validator: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    """Load a YAML recipe and apply dotted command-line overrides.
+    """Load a YAML recipe, apply dotted command-line overrides, and validate it.
 
-    `validator` defaults to `validate_config`, which checks a training recipe.
-    Evaluation recipes are a different shape entirely -- no optimizer, no
-    dataset -- so they pass their own validator rather than being forced into
-    the training schema.
-
-    A top-level `extends: <path>` key merges onto a base recipe before
-    overrides and validation run, so the validator never sees the key itself.
+    `extends` is merged first, then the overrides, so `validator` sees the
+    final recipe without the `extends` key. Each stage passes its own
+    validator; `None` validates an SFT recipe, which some scripts rely on.
     """
     recipe_path = Path(path)
-    loaded = _load_yaml_mapping(recipe_path)
-    merged = _resolve_extends(loaded, recipe_path)
-
-    config = copy.deepcopy(merged)
+    config = copy.deepcopy(
+        _resolve_extends(_load_yaml_mapping(recipe_path), recipe_path)
+    )
     for raw_override in overrides or []:
         key, value = parse_override(raw_override)
         _set_dotted(config, key, value)
-    (validator or validate_config)(config)
+    if validator is None:
+        from open_r1_tpu.sft.config import validate_sft_config
+
+        validator = validate_sft_config
+    validator(config)
     return config
 
 
-def validate_config(config: dict[str, Any]) -> None:
-    """Fail early for recipe mistakes that would otherwise waste TPU time."""
-    for section in ("model", "tokenizer", "dataset", "optimizer", "training"):
+def reject_unknown_keys(
+    prefix: str, section: Mapping[str, Any], allowed: Collection[str]
+) -> None:
+    """Reject a key outside a section's schema, suggesting the nearest match.
+
+    An empty `prefix` names the recipe's top-level sections.
+    """
+    for key in section:
+        if key not in allowed:
+            close = difflib.get_close_matches(str(key), sorted(allowed), n=1)
+            hint = f"; did you mean {close[0]!r}?" if close else ""
+            name = f"key {prefix}.{key}" if prefix else f"configuration section {key}"
+            raise ValueError(f"Unknown {name}{hint}")
+
+
+def check_sections(
+    config: Mapping[str, Any],
+    required: Collection[str],
+    optional: Collection[str] = (),
+) -> None:
+    """Require each `required` section to be a mapping, allow `optional` ones
+    (also mappings when present), and reject every other top-level key."""
+    reject_unknown_keys("", config, {*required, *optional})
+    for section in required:
         if not isinstance(config.get(section), dict):
             raise ValueError(f"Missing configuration section: {section}")
-
-    mesh = config["model"].get("mesh", {})
-    shape = mesh.get("shape")
-    axis_names = mesh.get("axis_names")
-    if (
-        not isinstance(shape, list)
-        or not shape
-        or not all(isinstance(size, int) and size > 0 for size in shape)
-    ):
-        raise ValueError("model.mesh.shape must be a non-empty list of integers")
-    if not isinstance(axis_names, list) or len(axis_names) != len(shape):
-        raise ValueError("model.mesh.axis_names must have one name per mesh dimension")
-
-    batch_size = config["dataset"].get("batch_size")
-    if not isinstance(batch_size, int) or batch_size <= 0:
-        raise ValueError("dataset.batch_size must be a positive integer")
-
-    max_length = config["dataset"].get("max_length")
-    if not isinstance(max_length, int) or max_length < 2:
-        raise ValueError("dataset.max_length must be at least 2")
-
-    accumulation = config["training"].get("gradient_accumulation_steps", 1)
-    if not isinstance(accumulation, int) or accumulation <= 0:
-        raise ValueError(
-            "training.gradient_accumulation_steps must be a positive integer"
-        )
-
-    wandb = config["training"].get("wandb", {})
-    if not isinstance(wandb, dict):
-        raise ValueError("training.wandb must be a configuration mapping")
-    if not isinstance(wandb.get("enabled", False), bool):
-        raise ValueError("training.wandb.enabled must be a boolean")
-    mode = wandb.get("mode", "online")
-    if mode not in {"online", "offline", "disabled"}:
-        raise ValueError("training.wandb.mode must be online, offline, or disabled")
-    tags = wandb.get("tags", [])
-    if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
-        raise ValueError("training.wandb.tags must be a list of strings")
-
-    # Imported here so the data module stays out of this module's import
-    # graph; both checks are cheap and catch a recipe that would otherwise
-    # filter every example and train on an empty dataset.
-    from open_r1_tpu.sft.data import (
-        OVERLENGTH_POLICIES,
-        message_schema_from_config,
-    )
-
-    overlength_policy = config["dataset"].get("overlength_policy", "drop")
-    if overlength_policy not in OVERLENGTH_POLICIES:
-        raise ValueError(
-            "dataset.overlength_policy must be one of " + ", ".join(OVERLENGTH_POLICIES)
-        )
-    message_schema_from_config(config["dataset"].get("message_schema"))
-
-    eval_fraction = config["dataset"].get("eval_fraction", 0.0)
-    if not isinstance(eval_fraction, (int, float)) or not 0.0 <= eval_fraction < 1.0:
-        raise ValueError("dataset.eval_fraction must be in [0.0, 1.0)")
-    eval_max_examples = config["dataset"].get("eval_max_examples")
-    if eval_max_examples is not None and (
-        not isinstance(eval_max_examples, int) or eval_max_examples <= 0
-    ):
-        raise ValueError("dataset.eval_max_examples must be a positive integer or null")
-
-    transcripts = config["training"].get("transcripts", {})
-    if not isinstance(transcripts, dict):
-        raise ValueError("training.transcripts must be a configuration mapping")
-    if not isinstance(transcripts.get("enabled", False), bool):
-        raise ValueError("training.transcripts.enabled must be a boolean")
-    for key in ("every_n_steps", "max_new_tokens"):
-        value = transcripts.get(key, 1)
-        if not isinstance(value, int) or value <= 0:
-            raise ValueError(f"training.transcripts.{key} must be a positive integer")
-    prompts = transcripts.get("prompts")
-    if prompts is not None and (
-        not isinstance(prompts, list)
-        or not prompts
-        or not all(isinstance(prompt, str) for prompt in prompts)
-    ):
-        raise ValueError(
-            "training.transcripts.prompts must be a non-empty list of strings or null"
-        )
+    for section in optional:
+        if section in config and not isinstance(config[section], dict):
+            raise ValueError(f"{section} must be a configuration mapping")

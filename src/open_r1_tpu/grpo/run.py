@@ -1,45 +1,22 @@
-"""GRPO reinforcement learning on top of a merged SFT export, via Tunix.
+"""GRPO reinforcement learning with Tunix.
 
 Run with::
 
   python -m open_r1_tpu.grpo.run --config \
     recipes/Qwen2.5-1.5B/grpo/simplerl-zoo.yaml
 
-Prerequisites: the merged SFT export and the prompt corpus must already be
-staged on local disk (the recipe's model and dataset sections say where).
-This module performs no preflight of its own, matching
-``sft.run``/``sft.preflight``'s split.
+The starting model and the prompt corpus must already be staged on local
+disk. The actor and the reference are the same checkpoint loaded twice: the
+actor gets a fresh LoRA adapter, the only thing GRPO trains, and the reference
+stays frozen as the anchor of GRPO's KL term. Rollouts run in process on
+Tunix's "vanilla" engine, the one it recommends for a single host.
 
-Design, verified directly against this project's pinned Tunix commit
-(``google-tunix @ 984bf89b...`` in ``pyproject.toml``) rather than assumed
-from an example notebook, since Tunix's RL API has moved under the ``rl_``
-prefix since some published examples were written (``GRPOLearner``'s
-constructor parameter is ``rl_engine``, not the ``rl_cluster`` an older
-example passes; ``RLCluster`` is confirmed to still be an alias for
-``RLEngine``, so passing an ``RLCluster`` instance as ``rl_engine=`` is
-correct). See ``tunix.readthedocs.io``'s rollout page for why the "vanilla"
-rollout engine (in-process JAX/Flax, no external server) is the right choice
-for a single TPU VM: it is what that page recommends for single-host
-setups, and it is what every published Tunix GRPO example uses.
-
-The actor and the reference are the *same* merged SFT checkpoint, loaded
-twice: the actor gets a fresh LoRA adapter (the only thing GRPO trains here),
-the reference stays the frozen full model that GRPO's KL term constrains
-policy updates against (README's "Checkpoints and GRPO handoff" section).
-Both loads go through ``model.loading.create_model``, the same helper
-``sft.run.run`` uses for SFT, so a change to how this project loads a local
-safetensors checkpoint cannot drift between the two training stages.
-
-Generation stops on the first token of the tokenizer's assistant turn-end
-sequence (Qwen's ``<|im_end|>``) unless the recipe lists the token IDs to
-stop on in ``rollout.eos_token_ids``.
-
-With ``dataset.eval_fraction`` set, Tunix samples the held-out prompts every
-``training.eval_every_n_steps`` (including step 0) and logs their reward
-means under the eval mode, but throws the completion text away. When
-``training.eval_rollouts_path`` is set, every eval completion is appended to
-that JSONL file with its prompt, gold answer and per-function rewards, so how
-the model is responding can be read, not just scored.
+Generation stops on the first token of the chat template's assistant turn-end
+sequence unless ``rollout.eos_token_ids`` lists the tokens to stop on. With
+``dataset.eval_fraction`` set, Tunix scores held-out prompts every
+``training.eval_every_n_steps`` but discards the completions;
+``training.eval_rollouts_path`` appends each one, with its prompt, gold answer
+and per-function rewards, to a JSONL file.
 """
 
 from __future__ import annotations
@@ -47,7 +24,6 @@ from __future__ import annotations
 import copy
 import json
 import logging
-import math
 import os
 import threading
 from collections.abc import Callable, Sequence
@@ -56,185 +32,30 @@ from typing import Any
 from open_r1_tpu.core.cli import parse_recipe_args, recipe_parser
 from open_r1_tpu.core.config import load_config
 from open_r1_tpu.grpo.behaviour import build_behaviour_metric_fn
+from open_r1_tpu.grpo.config import validate_grpo_config
 from open_r1_tpu.grpo.data import load_grpo_prompts
 from open_r1_tpu.grpo.rewards import reward_fns_from_names
-from open_r1_tpu.model.export import export_model
-from open_r1_tpu.model.loading import absolute_checkpoint_dir, create_model
+from open_r1_tpu.model.export import export_model, local_base_model_path
+from open_r1_tpu.model.loading import (
+    absolute_checkpoint_dir,
+    create_mesh,
+    create_model,
+    create_tokenizer,
+    require_lora,
+)
 from open_r1_tpu.model.metrics import metrics_logger_options
 from open_r1_tpu.model.optimizer import create_optimizer
 from open_r1_tpu.model.tokenizing import assistant_turn_end_id
 
 LOGGER = logging.getLogger(__name__)
 
-# GRPOConfig values the pinned Tunix accepts (tunix/rl/common.py's
-# aggregate_loss and compute_kl_divergence). A recipe that sets neither keeps
-# Tunix's defaults: sequence-mean-token-mean and the plain "kl" estimator.
-LOSS_AGG_MODES = frozenset(
-    {
-        "token-mean",
-        "sequence-mean-token-mean",
-        "sequence-mean-token-scale",
-        "seq-mean-token-sum",
-        "sequence-mean-token-sum-norm",
-    }
-)
-KL_LOSS_MODES = frozenset({"kl", "mse_kl", "low_var_kl"})
-
-
-def validate_grpo_config(config: dict[str, Any]) -> None:
-    """Fail early for a GRPO recipe mistake, before any TPU time is spent.
-
-    A different shape from ``core.config.validate_config`` (SFT: a packed,
-    tokenized dataset, no rollout section; GRPO: raw prompts, a rollout
-    section, a required LoRA actor), so it is its own validator rather than
-    an extension of that one -- mirroring how
-    ``evaluation.config.validate_eval_config`` is its own function rather than
-    a variant of the training validator.
-    """
-    for section in (
-        "model",
-        "tokenizer",
-        "dataset",
-        "optimizer",
-        "training",
-        "grpo",
-        "rollout",
-    ):
-        if not isinstance(config.get(section), dict):
-            raise ValueError(f"Missing configuration section: {section}")
-
-    mesh = config["model"].get("mesh", {})
-    shape = mesh.get("shape")
-    axis_names = mesh.get("axis_names")
-    if (
-        not isinstance(shape, list)
-        or not shape
-        or not all(isinstance(size, int) and size > 0 for size in shape)
-    ):
-        raise ValueError("model.mesh.shape must be a non-empty list of integers")
-    if not isinstance(axis_names, list) or len(axis_names) != len(shape):
-        raise ValueError("model.mesh.axis_names must have one name per mesh dimension")
-
-    if not config["model"].get("lora_config"):
-        raise ValueError(
-            "model.lora_config is required: the GRPO actor trains a LoRA "
-            "adapter over a frozen reference, never a full fine-tune here"
-        )
-
-    batch_size = config["dataset"].get("batch_size")
-    if not isinstance(batch_size, int) or batch_size <= 0:
-        raise ValueError("dataset.batch_size must be a positive integer")
-
-    max_steps = config["training"].get("max_steps")
-    if not isinstance(max_steps, int) or max_steps <= 0:
-        raise ValueError("training.max_steps must be a positive integer")
-    if not isinstance(config["training"].get("checkpoint_dir"), str):
-        raise ValueError("training.checkpoint_dir must be a string path")
-    eval_rollouts_path = config["training"].get("eval_rollouts_path")
-    if eval_rollouts_path is not None and (
-        not isinstance(eval_rollouts_path, str) or not eval_rollouts_path
-    ):
-        raise ValueError("training.eval_rollouts_path must be a non-empty string")
-    if eval_rollouts_path and not float(config["dataset"].get("eval_fraction", 0.0)):
-        raise ValueError(
-            "training.eval_rollouts_path needs dataset.eval_fraction > 0: "
-            "there are no eval rollouts to record otherwise"
-        )
-
-    eval_batch_size = config["dataset"].get("eval_batch_size")
-    if eval_batch_size is not None and (
-        isinstance(eval_batch_size, bool)
-        or not isinstance(eval_batch_size, int)
-        or eval_batch_size <= 0
-    ):
-        raise ValueError("dataset.eval_batch_size must be a positive integer")
-
-    training = config["training"]
-    for key in (
-        "mini_batch_size",
-        "train_micro_batch_size",
-        "rollout_micro_batch_size",
-        "compute_logps_micro_batch_size",
-    ):
-        value = training.get(key)
-        if value is not None and (
-            isinstance(value, bool) or not isinstance(value, int) or value <= 0
-        ):
-            raise ValueError(f"training.{key} must be a positive integer")
-    mini_batch = training.get("mini_batch_size", batch_size)
-    train_micro = training.get("train_micro_batch_size", batch_size)
-    if mini_batch % train_micro:
-        raise ValueError(
-            "training.train_micro_batch_size must divide training.mini_batch_size "
-            "(dataset.batch_size by default)"
-        )
-
-    rollout = config["rollout"]
-    for key in ("max_prompt_length", "max_tokens_to_generate", "kv_cache_size"):
-        value = rollout.get(key)
-        if not isinstance(value, int) or value <= 0:
-            raise ValueError(f"rollout.{key} must be a positive integer")
-    # tunix.readthedocs.io/en/latest/rollout.html: the vanilla rollout raises
-    # ValueError at run time if this does not hold. Checked here too so the
-    # failure names the recipe field instead of surfacing after model
-    # loading has already spent several minutes of TPU time.
-    if (
-        rollout["kv_cache_size"]
-        < rollout["max_prompt_length"] + rollout["max_tokens_to_generate"]
-    ):
-        raise ValueError(
-            "rollout.kv_cache_size must be at least "
-            "max_prompt_length + max_tokens_to_generate"
-        )
-
-    eos_token_ids = rollout.get("eos_token_ids")
-    if eos_token_ids is not None and (
-        not isinstance(eos_token_ids, list)
-        or not eos_token_ids
-        or any(
-            isinstance(token, bool) or not isinstance(token, int) or token < 0
-            for token in eos_token_ids
-        )
-    ):
-        raise ValueError(
-            "rollout.eos_token_ids must be a non-empty list of non-negative integers"
-        )
-
-    grpo = config["grpo"]
-    reward_names = grpo.get("reward_functions")
-    if reward_names is not None:
-        if (
-            not isinstance(reward_names, list)
-            or not reward_names
-            or any(not isinstance(name, str) for name in reward_names)
-        ):
-            raise ValueError("grpo.reward_functions must be a non-empty list of names")
-        reward_fns_from_names(reward_names)  # raises on an unknown name
-    for key in ("num_generations", "num_iterations"):
-        value = grpo.get(key)
-        if not isinstance(value, int) or value <= 0:
-            raise ValueError(f"grpo.{key} must be a positive integer")
-    for key in ("beta", "epsilon"):
-        value = grpo.get(key)
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
-            raise ValueError(f"grpo.{key} must be a number")
-    for key, allowed in (
-        ("loss_agg_mode", LOSS_AGG_MODES),
-        ("kl_loss_mode", KL_LOSS_MODES),
-    ):
-        value = grpo.get(key)
-        if value is not None and value not in allowed:
-            raise ValueError(f"grpo.{key} must be one of {sorted(allowed)}")
-
 
 def _is_per_completion_column(value: Any, width: int) -> bool:
-    """True when ``value`` is one entry per completion.
+    """True when ``value`` holds one entry per completion.
 
-    Tunix hands the reward manager its extra dataset columns as numpy
-    arrays, not lists, so this tests for a sized non-string sequence of the
-    right length rather than for ``list``/``tuple``. Getting this wrong
-    drops the column silently and the reward functions are then called
-    without the argument they need.
+    Tunix passes extra dataset columns as numpy arrays, not lists, so this
+    accepts any sized non-string of the right length; a narrower test would
+    silently drop the columns the reward functions need.
     """
     if isinstance(value, (str, bytes, dict)):
         return False
@@ -249,12 +70,11 @@ def build_eval_table_logger(
 ) -> tuple[Callable[..., None], Callable[[], None]]:
     """Return ``(add, flush)`` that log each eval's rollouts as a W&B table.
 
-    Tunix scores eval rollouts one eval batch at a time, so ``add`` collects
-    rows until a call arrives for a different step, then logs the finished
-    step as ``eval/rollouts`` (step, question, gold answer, completion,
-    reward) against the run's ``global_step`` axis. ``flush`` logs whatever
-    is pending; call it once training returns. Without an active W&B run
-    both are no-ops.
+    Tunix scores eval rollouts one batch at a time, so ``add`` collects rows
+    until a call arrives for a different step, then logs the finished step as
+    ``eval/rollouts`` against the ``global_step`` axis. ``flush`` logs what is
+    pending; call it once training returns. Both are no-ops without an active
+    W&B run.
     """
     rows: list[list[Any]] = []
     state: dict[str, int | None] = {"step": None}
@@ -310,12 +130,10 @@ def build_rollout_recorder(
     """Return ``record(prompts, completions, rewards, step, mode, **columns)``.
 
     Each call appends one JSON line per completion to ``path``: the step and
-    mode, the rendered prompt, every extra dataset column Tunix handed the
-    reward manager (``question`` and ``answer`` here), the raw completion,
-    the summed reward Tunix used, and each reward function's own score under
-    its ``__name__`` (recomputed on the strings; the functions are pure and
-    cheap). Kept free of Tunix so it is unit-testable; ``run`` wires it into
-    the learner's eval path.
+    mode, the rendered prompt, every per-completion dataset column
+    (``question`` and ``answer``), the completion, the summed reward Tunix
+    used, and each reward function's own score under its ``__name__``,
+    recomputed from the strings.
     """
     lock = threading.Lock()
 
@@ -357,40 +175,23 @@ def build_rollout_recorder(
 
 
 def run(config: dict[str, Any]) -> None:
-    import jax
-    from tunix.cli.utils import model as model_utils
     from tunix.rl import rl_cluster as rl_cluster_lib
     from tunix.rl.grpo.grpo_learner import GRPOConfig, GRPOLearner
     from tunix.rl.rollout import base_rollout
     from tunix.sft import checkpoint_options, metrics_logger
-    from tunix.sft import utils as sft_utils
-    from tunix.utils import mesh as mesh_utils
 
-    mesh_shape = tuple(config["model"]["mesh"]["shape"])
-    axis_names = tuple(config["model"]["mesh"]["axis_names"])
-    if math.prod(mesh_shape) != jax.device_count():
-        raise ValueError(
-            f"Configured mesh {mesh_shape} needs {math.prod(mesh_shape)} devices, "
-            f"but JAX sees {jax.device_count()}. Override model.mesh.shape."
-        )
-    mesh = mesh_utils.create_mesh(mesh_shape, axis_names)
+    mesh = create_mesh(config)
 
-    # Reference: the frozen merged SFT export, no LoRA -- GRPO's KL anchor.
+    # Reference: the frozen starting model, no LoRA -- GRPO's KL anchor.
     reference_config = copy.deepcopy(config)
     reference_config["model"].pop("lora_config", None)
     reference_model, tokenizer_path = create_model(reference_config, mesh)
 
     # Actor: the identical weights, with a fresh LoRA adapter to train.
     actor_model, _ = create_model(config, mesh)
-    if not sft_utils.is_lora_enabled(actor_model):
-        raise RuntimeError(
-            "LoRA was requested but Tunix found no matching modules. Check "
-            "model.lora_config.module_path before training."
-        )
+    require_lora(actor_model)
 
-    tokenizer = model_utils.create_tokenizer(config["tokenizer"], tokenizer_path)
-    if config["tokenizer"].get("chat_template"):
-        tokenizer.tokenizer.chat_template = config["tokenizer"]["chat_template"]
+    tokenizer = create_tokenizer(config, tokenizer_path)
     rollout = config["rollout"]
     eos_token_ids = [int(token) for token in rollout.get("eos_token_ids") or ()] or [
         assistant_turn_end_id(tokenizer)
@@ -449,8 +250,7 @@ def run(config: dict[str, Any]) -> None:
     )
 
     grpo = config["grpo"]
-    # Optional settings are passed only when the recipe sets them, so older
-    # recipes keep running on Tunix's own defaults.
+    # Passed only when set, so an unset mode keeps Tunix's own default.
     optional = {
         key: grpo[key]
         for key in ("loss_agg_mode", "kl_loss_mode")
@@ -479,11 +279,9 @@ def run(config: dict[str, Any]) -> None:
         class RecordingGRPOLearner(GRPOLearner):
             """GRPOLearner that keeps the text of every eval completion.
 
-            ``RLLearner._compute_rewards(prompts, completions, mode, step=None,
-            **columns)`` is the one place in the pinned Tunix that sees the
-            completion strings together with the mode, so it is the seam
-            used; the pinned commit's signature is mirrored exactly and
-            checked at import by the smoke test.
+            ``RLLearner._compute_rewards`` is the one place in the pinned Tunix
+            that sees the completion strings together with the mode; its
+            signature is mirrored exactly.
             """
 
             def _compute_rewards(self, prompts, completions, mode, step=None, **kw):
@@ -509,8 +307,6 @@ def run(config: dict[str, Any]) -> None:
         rl_engine=rl_cluster,
         algo_config=grpo_config,
         reward_fns=reward_fns,
-        # behaviour/* and signal/* per step, train and eval, next to Tunix's
-        # own rewards/*, completions/* and actor/* metrics.
         metric_fns=[build_behaviour_metric_fn(grpo_config.num_generations)],
     )
 
@@ -518,31 +314,24 @@ def run(config: dict[str, Any]) -> None:
         "Starting GRPO: model=%s mesh=%s max_steps=%d num_generations=%d beta=%s "
         "eos_token_ids=%s eval_rollouts_path=%s",
         config["model"]["model_id"],
-        mesh_shape,
+        tuple(config["model"]["mesh"]["shape"]),
         max_steps,
         grpo_config.num_generations,
         grpo_config.beta,
         eos_token_ids,
         eval_rollouts_path,
     )
-    # Same reason as sft.run.run: Tunix 0.1.8's PeftTrainer (which
-    # GRPOLearner's actor update goes through) still reads JAX's legacy
-    # thread-local physical mesh, so jax.set_mesh(mesh) alone is not enough.
+    # The actor update goes through PeftTrainer, which reads JAX's legacy
+    # thread-local mesh, so jax.set_mesh(mesh) alone is not enough.
     with mesh:
         grpo_trainer.train(train_ds, eval_ds)
     table_flush()
 
-    if config["model"].get("model_source") == "huggingface":
-        local_model_path = config["model"].get("model_download_path")
-    else:
-        local_model_path = config["model"].get("model_path")
-    if not local_model_path:
-        raise ValueError("No local base-model path is available for merged export")
     export_model(
         config=config,
         model=actor_model,
         tokenizer=tokenizer,
-        local_model_path=local_model_path,
+        local_model_path=local_base_model_path(config),
     )
 
 

@@ -1,1 +1,1 @@
-"""GRPO reinforcement learning on top of a merged SFT export, via Tunix."""
+"""GRPO reinforcement-learning workflow."""

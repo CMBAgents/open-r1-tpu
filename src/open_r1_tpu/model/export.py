@@ -1,23 +1,17 @@
 """Full-parameter and merged-LoRA safetensors export for Tunix models.
 
-Tunix (at the pinned commit) only ships ``save_lora_merged_model_as_safetensors``,
-which starts from the base checkpoint and adds LoRA deltas. A full fine-tune has
-no adapters, so this module walks the live model parameters instead and writes
-them back under Hugging Face names, inverting the loader's key and transform
-mapping in ``tunix/models/<family>/params.py``. The export is validated against
-the base checkpoint's key set so a mapping gap fails loudly instead of silently
+The pinned Tunix only ships ``save_lora_merged_model_as_safetensors``, which
+adds LoRA deltas to the base checkpoint. A full fine-tune has no adapters, so
+this module walks the live parameters instead and writes them back under
+Hugging Face names, inverting the loader's key and transform mapping in
+``tunix/models/<family>/params.py``. The export is checked against the base
+checkpoint's key set, so a mapping gap fails loudly instead of silently
 dropping a trained tensor.
 
-The two families share every rule that touches a tensor's shape, and differ in
-which parameters exist at all: Qwen3 carries per-head query and key norms, and
-Qwen2 carries biases on its query, key and value projections. The shared rules
-live in ``_shared_safetensors_entry`` so the two mappings cannot drift apart in
-the parts that are meant to agree.
-
-Tied embeddings put no ``lm_head`` in the live model and no ``lm_head.weight``
-in the base checkpoint -- Qwen2.5-Math-1.5B and the Qwen3 Base models are tied,
-DeepSeek-R1-Distill-Qwen-1.5B is not -- so that rule is simply never exercised
-on a tied model, and the key-set check below is what proves it.
+Qwen2 and Qwen3 share every rule that touches a tensor's shape and differ only
+in which parameters exist: Qwen3 has per-head query and key norms, Qwen2 has
+query, key and value biases. A model with tied embeddings has no ``lm_head``
+at all, and the key-set check proves the export agrees.
 """
 
 from __future__ import annotations
@@ -36,6 +30,9 @@ import numpy as np
 from open_r1_tpu.model.tokenizing import assistant_turn_end_id
 
 LOGGER = logging.getLogger(__name__)
+
+# Every `export` key export_model reads.
+EXPORT_KEYS = frozenset({"enabled", "output_dir", "overwrite"})
 
 # One live parameter path and value in, one Hugging Face safetensors entry out.
 SafetensorsEntryFn = Callable[[str, np.ndarray], "tuple[str, np.ndarray]"]
@@ -140,11 +137,9 @@ SAFETENSORS_ENTRY_FNS: dict[str, SafetensorsEntryFn] = {
 def safetensors_entry_fn(model_name: str) -> SafetensorsEntryFn:
     """Pick the parameter mapping for a Tunix model name.
 
-    The family is read off the module Tunix itself would load rather than
-    guessed from the name, because the name does not always carry it:
-    ``deepseek-r1-distill-qwen-1.5b`` is a Qwen2 architecture, and Tunix
-    registers new names against existing families all the time. Asking the
-    registry means this cannot fall out of step with what actually loaded.
+    The family is read off the module Tunix itself loads rather than guessed
+    from the name, which does not always carry it:
+    ``deepseek-r1-distill-qwen-1.5b`` is a Qwen2 architecture.
     """
     from tunix.models import automodel
 
@@ -163,12 +158,10 @@ def safetensors_entry_fn(model_name: str) -> SafetensorsEntryFn:
     return SAFETENSORS_ENTRY_FNS[family]
 
 
-# Merged-LoRA export for Qwen2, which the pinned Tunix's qwen2/params.py does
-# not provide. Tunix's generic saver (tunix.models.safetensors_saver) does the
-# merge; what it needs per family is the adapter path -> safetensors key rule
-# and the transposes, and both are Qwen3's: the two families name their
-# projections identically (the shared rules above) and store them in the same
-# layouts.
+# Merged-LoRA export for Qwen2, which the pinned Tunix's qwen2/params.py lacks.
+# Tunix's generic saver does the merge given the adapter-path-to-key rule and
+# the transposes, and both are Qwen3's: the two families name and lay out their
+# projections identically.
 QWEN_LORA_MODULES = (
     "q_proj",
     "k_proj",
@@ -231,17 +224,15 @@ def export_full_model(
 ) -> None:
     """Write the model's live parameters as an unsharded HF checkpoint.
 
-    The key set must match the base checkpoint's exactly: a missing key means
-    the mapping above has a gap, an extra key means the architecture diverged
-    (for example an untied lm_head the base never had). Either aborts the
-    export rather than producing a checkpoint that silently loses training.
+    The key set must match the base checkpoint's exactly: a missing key is a
+    gap in the mapping, an extra one a diverged architecture (an untied
+    lm_head the base never had). Either aborts the export.
     """
     import jax.numpy as jnp
     import safetensors.flax as safe_flax
     from flax import nnx
 
-    # Resolved before any work, so an unsupported architecture fails here
-    # rather than after the parameters have been walked.
+    # Resolved first, so an unsupported architecture fails before any work.
     entry_fn = safetensors_entry_fn(model_name)
 
     named_params: list[tuple[str, np.ndarray]] = []
@@ -281,9 +272,8 @@ def export_full_model(
 def write_turn_end_generation_config(*, output_dir: str, tokenizer: Any) -> None:
     """Put the assistant turn-end token first in the export's EOS ids.
 
-    Qwen's ``<|im_end|>`` must be token-level EOS: serving commonly strips
-    special tokens before matching stop strings, so a stop string cannot end
-    the turn.
+    It must be a token-level EOS: serving commonly strips special tokens
+    before matching stop strings, so a stop string cannot end the turn.
     """
     path = os.path.join(output_dir, "generation_config.json")
     generation_config: dict[str, Any] = {}
@@ -302,6 +292,18 @@ def write_turn_end_generation_config(*, output_dir: str, tokenizer: Any) -> None
         handle.write("\n")
 
 
+def local_base_model_path(config: dict[str, Any]) -> str:
+    """The local base-model directory a merged export starts from."""
+    model = config["model"]
+    if model.get("model_source") == "huggingface":
+        path = model.get("model_download_path")
+    else:
+        path = model.get("model_path")
+    if not path:
+        raise ValueError("No local base-model path is available for merged export")
+    return path
+
+
 def export_model(
     *,
     config: dict[str, Any],
@@ -309,11 +311,12 @@ def export_model(
     tokenizer: Any,
     local_model_path: str,
 ) -> None:
-    """Merge and export the trained model, if ``export.enabled`` in the recipe.
+    """Export the trained model as safetensors if ``export.enabled``.
 
-    Branches on whether the recipe trains a LoRA adapter (merge through
-    Tunix's own exporter) or a full fine-tune (walk the live parameters
-    through this module's own key mapping).
+    A LoRA run merges its adapter into the base checkpoint at
+    `local_model_path`; a full fine-tune writes its live parameters. The
+    output directory may never be, or contain, the filesystem root, the home
+    or working directory, the base model or the checkpoint directory.
     """
     export = config.get("export", {})
     if not export.get("enabled", False):
@@ -356,7 +359,7 @@ def export_model(
                 "export. Disable export.enabled or choose a supported model "
                 "such as Qwen3."
             )
-        LOGGER.info("Exporting merged SFT model to %s", output_dir)
+        LOGGER.info("Exporting merged LoRA model to %s", output_dir)
         save_fn(
             local_model_path=local_model_path,
             output_dir=output_dir,
@@ -365,10 +368,6 @@ def export_model(
             alpha=float(lora["alpha"]),
         )
     else:
-        # Full fine-tune: no adapters to merge, so write the live parameters.
-        # export_full_model resolves the key mapping from the model's Tunix
-        # architecture and raises NotImplementedError if there is none, so the
-        # supported set lives in one place rather than being restated here.
         LOGGER.info("Exporting full fine-tuned model to %s", output_dir)
         export_full_model(
             model=model,
