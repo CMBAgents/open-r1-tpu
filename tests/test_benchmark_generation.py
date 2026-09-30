@@ -130,7 +130,7 @@ def test_comparison_matches_batch_sizes_and_reports_the_ratio():
     assert comparison["rows"][1]["tunix_over_vllm"] == 0.75
     markdown = benchmark.comparison_markdown(comparison)
     assert "| 1 | 20.00 | 30.00 | 1.50x |" in markdown
-    assert "current serial LightEval" in markdown
+    assert "concurrent vLLM HTTP requests" in markdown
 
 
 def test_comparison_rejects_different_prompt_sets():

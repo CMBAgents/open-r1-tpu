@@ -1,26 +1,27 @@
+"""scripts/chat_tpu.py and scripts/complete_tpu.py, without a TPU. The model
+loading they share is tested in test_model_checkpoint.py."""
+
 import importlib.util
-import sys
 from collections import UserDict
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from typing import Any, ClassVar
 
 import pytest
 
-SCRIPT_PATH = Path(__file__).parents[1] / "scripts" / "chat_qwen_tpu.py"
-SPEC = importlib.util.spec_from_file_location("chat_qwen_tpu", SCRIPT_PATH)
-assert SPEC is not None and SPEC.loader is not None
-chat = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(chat)
-sys.modules["chat_qwen_tpu"] = chat
+SCRIPTS = Path(__file__).parents[1] / "scripts"
 
-COMPLETION_SCRIPT_PATH = Path(__file__).parents[1] / "scripts" / "complete_qwen_tpu.py"
-COMPLETION_SPEC = importlib.util.spec_from_file_location(
-    "complete_qwen_tpu", COMPLETION_SCRIPT_PATH
-)
-assert COMPLETION_SPEC is not None and COMPLETION_SPEC.loader is not None
-completion = importlib.util.module_from_spec(COMPLETION_SPEC)
-COMPLETION_SPEC.loader.exec_module(completion)
+
+def _load_script(name: str) -> Any:
+    spec = importlib.util.spec_from_file_location(name, SCRIPTS / f"{name}.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+chat = _load_script("chat_tpu")
+completion = _load_script("complete_tpu")
 
 
 class FakeTokenizer:
@@ -142,22 +143,6 @@ def test_raw_completion_pads_the_sampler_batch_for_fsdp():
     ]
 
 
-def test_completion_runtime_disables_flash_attention(monkeypatch):
-    sentinel = object()
-    captured = {}
-
-    def fake_load_runtime(args, *, use_flash_attention):
-        captured["args"] = args
-        captured["use_flash_attention"] = use_flash_attention
-        return sentinel
-
-    monkeypatch.setattr(completion, "load_runtime", fake_load_runtime)
-    args = SimpleNamespace()
-
-    assert completion.load_completion_runtime(args) is sentinel
-    assert captured == {"args": args, "use_flash_attention": False}
-
-
 def test_completion_prompt_length_need_not_match_splash_block(tmp_path):
     model_path = tmp_path / "model"
     model_path.mkdir()
@@ -212,8 +197,8 @@ def test_clean_reply_drops_only_the_trailing_turn_marker():
 
 
 def test_visible_reply_hides_the_empty_reasoning_scaffold():
-    # The template opens every assistant turn with this when the message
-    # carries no trace, so a model trained on SmolTalk learns to emit it.
+    # Qwen3's template opens an assistant turn with this when the message
+    # carries no trace, so a model trained on such data learns to emit it.
     assert chat.visible_reply("<think>\n\n</think>\n\nParis.<|im_end|>") == "Paris."
 
 
@@ -249,45 +234,6 @@ def test_colour_reasoning_leaves_a_plain_reply_untouched():
     assert chat.colour_reasoning("Paris.") == "Paris."
 
 
-def test_model_config_carries_lora_only_when_asked():
-    assert "lora_config" not in chat.model_config(
-        "/models/base",
-        0,
-        use_flash_attention=False,
-        model_name="qwen3-1.7b-base",
-        mesh_shape=(1, 1),
-    )
-    lora = {"rank": 8, "alpha": 8.0, "module_path": ".*q_proj"}
-    assert (
-        chat.model_config(
-            "/models/base",
-            0,
-            use_flash_attention=False,
-            model_name="qwen3-1.7b-base",
-            mesh_shape=(1, 1),
-            lora_config=lora,
-        )["lora_config"]
-        == lora
-    )
-
-
-def test_model_config_loads_inference_weights_in_float32():
-    # Regression guard: under the pinned Tunix on v6e, the jitted bfloat16
-    # Qwen2 forward returns all-NaN logits for KV caches of 1536+ slots
-    # (the sampler then emits token id 0, "!", forever). float32 is clean
-    # to at least 27,648 slots, so the chat clients must stay on it.
-    config = chat.model_config(
-        "/models/base",
-        0,
-        use_flash_attention=False,
-        model_name="qwen2.5-math-1.5b",
-        mesh_shape=(2, 2),
-    )
-
-    assert config["dtype"] == "float32"
-    assert config["load_dtype"] == "float32"
-
-
 def test_sampler_top_p_gates_the_stochastic_sampling_mode():
     # The pinned sampler greedy-decodes whenever top_p is None, silently
     # ignoring temperature and seed, so temperature 0 must map to None and
@@ -312,233 +258,6 @@ def test_validate_options_rejects_top_p_out_of_range(tmp_path):
         chat.validate_options(args)
 
 
-def test_model_config_carries_the_discovered_mesh_shape():
-    assert chat.model_config(
-        "/models/base",
-        0,
-        use_flash_attention=False,
-        model_name="qwen3-1.7b-base",
-        mesh_shape=(1, 4),
-    )["mesh"] == {"shape": [1, 4], "axis_names": ["fsdp", "tp"]}
-
-
-def test_model_settings_are_derived_from_the_local_config(tmp_path):
-    (tmp_path / "config.json").write_text(
-        '{"_name_or_path":"Qwen/Qwen2.5-Math-1.5B","num_key_value_heads":2}',
-        encoding="utf-8",
-    )
-
-    assert chat.model_settings_for_path(str(tmp_path)) == (
-        "qwen2.5-math-1.5b",
-        2,
-        None,
-    )
-
-
-def test_model_settings_accept_an_explicit_name_when_source_metadata_is_missing(
-    tmp_path,
-):
-    (tmp_path / "config.json").write_text('{"num_key_value_heads":2}', encoding="utf-8")
-
-    assert chat.model_settings_for_path(str(tmp_path), "qwen2.5-math-1.5b") == (
-        "qwen2.5-math-1.5b",
-        2,
-        None,
-    )
-
-
-def test_a_re_based_rope_theta_is_read_from_the_export_and_served(tmp_path):
-    # Tunix takes rope_theta from its registered config for the model name, so
-    # a base re-based to a different theta would otherwise be served at the
-    # stock value and answer badly with nothing to say why.
-    (tmp_path / "config.json").write_text(
-        '{"_name_or_path":"Qwen/Qwen2.5-Math-1.5B","num_key_value_heads":2,'
-        '"rope_theta":300000}',
-        encoding="utf-8",
-    )
-
-    assert chat.model_settings_for_path(str(tmp_path)) == (
-        "qwen2.5-math-1.5b",
-        2,
-        300000.0,
-    )
-    served = chat.model_config(
-        str(tmp_path),
-        0,
-        use_flash_attention=False,
-        model_name="qwen2.5-math-1.5b",
-        mesh_shape=(1, 1),
-        rope_theta=300000.0,
-    )
-    assert served["rope_theta"] == 300000.0
-    # A config that does not name one must not invent a value.
-    assert "rope_theta" not in chat.model_config(
-        str(tmp_path),
-        0,
-        use_flash_attention=False,
-        model_name="qwen2.5-math-1.5b",
-        mesh_shape=(1, 1),
-    )
-
-
-def test_mesh_shape_uses_every_visible_tpu_device():
-    devices = [SimpleNamespace(platform="tpu", id=device_id) for device_id in range(4)]
-
-    assert chat.mesh_shape_for_devices(devices, num_kv_heads=8) == (1, 4)
-
-
-def test_qwen2_5_mesh_uses_fully_sharded_data_parallelism_after_tp():
-    devices = [SimpleNamespace(platform="tpu", id=device_id) for device_id in range(4)]
-
-    assert chat.mesh_shape_for_devices(devices, num_kv_heads=2) == (2, 2)
-    assert chat.pad_input_strings_for_fsdp(["prompt"], fsdp_size=2) == [
-        "prompt",
-        "prompt",
-    ]
-
-
-def test_mesh_shape_rejects_no_devices_or_non_tpu_devices():
-    with pytest.raises(RuntimeError, match="at least one visible TPU"):
-        chat.mesh_shape_for_devices([], num_kv_heads=8)
-    with pytest.raises(RuntimeError, match="every visible JAX device"):
-        chat.mesh_shape_for_devices(
-            [SimpleNamespace(platform="cpu", id=0)], num_kv_heads=8
-        )
-
-
-def test_mesh_shape_rejects_a_tpu_count_that_cannot_tensor_parallelize_qwen3():
-    devices = [SimpleNamespace(platform="tpu", id=device_id) for device_id in range(3)]
-
-    with pytest.raises(RuntimeError, match="dividing its 8 KV heads"):
-        chat.mesh_shape_for_devices(devices, num_kv_heads=8)
-
-
-def test_load_runtime_wires_qwen2_5_into_the_four_chip_mesh(monkeypatch):
-    captured: dict[str, Any] = {}
-    mesh = object()
-    tokenizer = object()
-    sampler_instance = object()
-    model = SimpleNamespace(
-        config=SimpleNamespace(num_layers=28, num_kv_heads=2, head_dim=128)
-    )
-
-    def create_mesh(shape, axis_names):
-        captured["mesh"] = (shape, axis_names)
-        return mesh
-
-    def create_model(config, received_mesh):
-        captured["model"] = (config, received_mesh)
-        return model, "tokenizer-path"
-
-    def cache_config(**kwargs):
-        captured["cache"] = kwargs
-        return SimpleNamespace(**kwargs)
-
-    def sampler(**kwargs):
-        captured["sampler"] = kwargs
-        return sampler_instance
-
-    fake_jax: Any = ModuleType("jax")
-    fake_jax.devices = lambda: [
-        SimpleNamespace(platform="tpu", id=device_id) for device_id in range(4)
-    ]
-    fake_model_utils: Any = ModuleType("tunix.cli.utils.model")
-    fake_model_utils.create_tokenizer = lambda _config, _path: tokenizer
-    fake_sampler_lib: Any = ModuleType("tunix.generate.sampler")
-    fake_sampler_lib.CacheConfig = cache_config
-    fake_sampler_lib.Sampler = sampler
-    fake_mesh_utils: Any = ModuleType("tunix.utils.mesh")
-    fake_mesh_utils.create_mesh = create_mesh
-    fake_model_loading: Any = ModuleType("open_r1_tpu.model.loading")
-    fake_model_loading.create_model = create_model
-    monkeypatch.setattr(
-        chat,
-        "model_settings_for_path",
-        lambda *_args: ("qwen2.5-math-1.5b", 2, 300000.0),
-    )
-
-    for name, module in {
-        "jax": fake_jax,
-        "tunix": ModuleType("tunix"),
-        "tunix.cli": ModuleType("tunix.cli"),
-        "tunix.cli.utils": ModuleType("tunix.cli.utils"),
-        "tunix.cli.utils.model": fake_model_utils,
-        "tunix.generate": ModuleType("tunix.generate"),
-        "tunix.generate.sampler": fake_sampler_lib,
-        "tunix.utils": ModuleType("tunix.utils"),
-        "tunix.utils.mesh": fake_mesh_utils,
-        "open_r1_tpu.model.loading": fake_model_loading,
-    }.items():
-        monkeypatch.setitem(sys.modules, name, module)
-
-    args = SimpleNamespace(
-        model_path="/models/base",
-        seed=42,
-        checkpoint_dir=None,
-        recipe=None,
-        max_prompt_length=1024,
-        max_new_tokens=128,
-        model_name=None,
-    )
-
-    loaded_mesh, loaded_tokenizer, loaded_sampler, loaded_model = chat.load_runtime(
-        args
-    )
-
-    assert (loaded_mesh, loaded_tokenizer, loaded_model) == (mesh, tokenizer, model)
-    assert loaded_sampler is sampler_instance
-    assert args.sampler_fsdp_size == 2
-    assert captured["mesh"] == ((2, 2), ("fsdp", "tp"))
-    assert captured["model"] == (
-        {
-            "model": {
-                **chat.model_config(
-                    "/models/base",
-                    42,
-                    use_flash_attention=False,
-                    model_name="qwen2.5-math-1.5b",
-                    mesh_shape=(2, 2),
-                    rope_theta=300000.0,
-                )
-            },
-            "tokenizer": chat.tokenizer_config("/models/base"),
-        },
-        mesh,
-    )
-
-
-DISTILL_RECIPE = (
-    Path(__file__).parents[1] / "recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml"
-)
-
-
-def test_recipe_restore_settings_match_a_lora_recipe(tmp_path):
-    recipe = tmp_path / "lora.yaml"
-    recipe.write_text(
-        f"extends: {DISTILL_RECIPE}\n"
-        "model:\n"
-        "  lora_config: {module_path: '.*q_proj', rank: 64, alpha: 64.0}\n"
-        "training:\n"
-        "  checkpoint_dir: artifacts/lora-run/checkpoints\n"
-    )
-    lora_config, checkpoint_dir = chat.recipe_restore_settings(str(recipe))
-
-    # Restoring under a different geometry than training wrote would produce
-    # confident nonsense rather than an error, so these must come from there.
-    assert lora_config["rank"] == 64
-    assert lora_config["alpha"] == 64.0
-    assert checkpoint_dir == "artifacts/lora-run/checkpoints"
-
-
-def test_full_finetune_recipe_restores_all_parameters():
-    # The distill recipe trains all parameters, so its checkpoints carry the
-    # full model state and restore must not be limited to LoRA adapters.
-    lora_config, checkpoint_dir = chat.recipe_restore_settings(str(DISTILL_RECIPE))
-
-    assert lora_config is None
-    assert checkpoint_dir.endswith("OpenR1-Distill-Qwen2.5-Math-1.5B/checkpoints")
-
-
 def test_chat_prompt_length_need_not_match_splash_block(tmp_path):
     (tmp_path / "model.safetensors").write_bytes(b"")
     args = SimpleNamespace(
@@ -560,7 +279,7 @@ def test_checkpoint_dir_without_a_recipe_is_rejected(tmp_path):
     (tmp_path / "model.safetensors").write_bytes(b"")
     args = SimpleNamespace(
         max_new_tokens=8,
-        max_prompt_length=chat.FLASH_ATTENTION_BLOCK_SIZE,
+        max_prompt_length=chat.DEFAULT_MAX_PROMPT_LENGTH,
         temperature=0.0,
         top_p=0.95,
         model_path=str(tmp_path),
@@ -570,38 +289,3 @@ def test_checkpoint_dir_without_a_recipe_is_rejected(tmp_path):
 
     with pytest.raises(ValueError, match="--checkpoint-dir needs --recipe"):
         chat.validate_options(args)
-
-
-def _checkpoint_root(tmp_path, steps):
-    for step in steps:
-        (tmp_path / str(step)).mkdir()
-    (tmp_path / "not-a-step").mkdir()
-    return str(tmp_path)
-
-
-def test_available_steps_ignores_non_step_directories(tmp_path):
-    root = _checkpoint_root(tmp_path, [1500, 1000])
-
-    assert chat.available_steps(root) == [1000, 1500]
-
-
-def test_available_steps_tolerates_a_missing_root(tmp_path):
-    assert chat.available_steps(str(tmp_path / "absent")) == []
-
-
-def test_resolve_step_defaults_to_the_latest_written():
-    assert chat.resolve_step("/absent", None) is None
-
-
-def test_resolve_step_rejects_a_step_that_was_never_saved(tmp_path):
-    # A run killed at 1744 saved 1500, and 1744 is the step its log reported.
-    root = _checkpoint_root(tmp_path, [1000, 1500])
-
-    with pytest.raises(FileNotFoundError, match="1000, 1500"):
-        chat.resolve_step(root, 1744)
-
-
-def test_resolve_step_accepts_a_step_that_was_saved(tmp_path):
-    root = _checkpoint_root(tmp_path, [1000, 1500])
-
-    assert chat.resolve_step(root, 1000) == 1000

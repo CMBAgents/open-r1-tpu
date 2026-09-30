@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
 """Compare vLLM service generation speed with Tunix's direct sampler.
 
-Accuracy harness timings are not backend benchmarks. LightEval currently sends
-one HTTP request at a time, while vLLM's main advantage is serving concurrent
-requests; Tunix's sampler compiles once per static batch shape and then decodes
-the whole batch in-process. This module measures both at matching batch sizes
-with the same merged weights, rendered prompts, greedy decoding, and output
-token budget.
+Both backends decode the same rendered prompts with the same merged weights,
+greedily, at matching batch sizes: concurrent HTTP requests for vLLM, one
+static batch for Tunix, which compiles once per batch shape. End-of-turn
+stopping is disabled so both perform the same number of decode steps, which
+makes this a speed measurement, not one of answer quality. Model loading or
+server start-up and the first compilation are recorded apart from steady-state
+generation.
 
-Model loading/server startup and the first compilation are recorded separately
-from steady-state generation. Fixed-length mode disables normal end-of-turn
-stopping so both backends perform the same number of decode steps; these runs
-measure speed, not answer quality or termination behavior.
-
-The launcher runs the backends sequentially because only one process can own a
-TPU chip::
+Run it through the launcher, which runs the backends one after the other
+because only one process can hold the TPU::
 
     ./scripts/benchmark_generation_tpu.sh
 """
@@ -311,9 +307,8 @@ def _run_vllm(
         return int(usage["completion_tokens"]), request_seconds
 
     def run_batch(batch: Sequence[str], batch_size: int) -> BatchOutput:
-        # Concurrent individual requests match how an async evaluation harness
-        # would expose work to vLLM's continuous batching. Batch size one is the
-        # current LightEval path.
+        # Concurrent single requests, as the evaluation sends them, let vLLM's
+        # continuous batching do the batching.
         if batch_size == 1:
             results = [one_completion(batch[0])]
         else:
@@ -609,10 +604,10 @@ def comparison_markdown(comparison: Mapping[str, Any]) -> str:
             f"warm-up): vLLM {_format_seconds(startup.get('vllm'))}; Tunix "
             f"{_format_seconds(startup.get('tunix'))}.",
             "",
-            "Batch/concurrency 1 represents the current serial LightEval request "
-            "path. Higher values compare vLLM concurrent HTTP requests with one "
-            "static Tunix batch. HTTP client and response decoding are included "
-            "for vLLM; Tunix output transfer and decoding are included for Tunix.",
+            "Batch/concurrency 1 is one request at a time. Higher values compare "
+            "that many concurrent vLLM HTTP requests with one static Tunix batch. "
+            "HTTP client and response decoding are included for vLLM; Tunix "
+            "output transfer and decoding are included for Tunix.",
             "",
         ]
     )
@@ -697,9 +692,7 @@ def _run_command(args: argparse.Namespace) -> None:
     model_path = str(args.model_path or eval_settings["model_path"])
     tokenizer = _load_tokenizer(model_path)
     questions = benchmark_questions(args.prompt_count)
-    # The recipe's own prompt, verbatim -- None renders with no system message.
-    # A recipe that deliberately sets no prompt must be benchmarked that way;
-    # substituting one here would benchmark a prompt the recipe never asked for.
+    # The recipe's own system prompt, verbatim; None renders no system message.
     prompts = render_prompts(tokenizer, questions, eval_settings["system_prompt"])
     prompt_tokens = [len(tokenizer.encode(prompt)) for prompt in prompts]
     longest = max(prompt_tokens)

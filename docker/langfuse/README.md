@@ -1,12 +1,12 @@
-# Local Langfuse (self-hosted)
+# Self-hosted Langfuse
 
-Self-hosted Langfuse (web, worker, Postgres, ClickHouse, Redis, MinIO), for
-tracing evaluations. It is optional: without it, `scripts/run_eval_tpu.sh`
-runs locally and writes the same results. With `TRACE_CONFIG` set, each run
-syncs the recipe's tasks into Langfuse datasets, then
-`dataset.run_experiment()` generates and scores each document and posts its
-trace and scores here. This file covers only operating the stack; see
-`open_r1_tpu.evaluation.run` for the pipeline itself.
+Self-hosted Langfuse (web, worker, Postgres, ClickHouse, Redis, MinIO) for
+tracing evaluations. It is optional: without it, `scripts/run_eval_tpu.sh` runs
+locally and writes the same results. With `TRACE_CONFIG` set, each run syncs
+the recipe's tasks into Langfuse datasets, then `dataset.run_experiment()`
+generates and scores each document and posts its trace and scores here. This
+file covers operating the stack; see `open_r1_tpu.evaluation.run` for the
+pipeline.
 
 ## Setup
 
@@ -19,37 +19,29 @@ TRACE_CONFIG=configs/tracing.yaml \
   RECIPE=recipes/Qwen2.5-Math-1.5B/eval/tier0_smoke.yaml ./scripts/run_eval_tpu.sh
 ```
 
-The first command writes `docker/langfuse/.env` and `configs/tracing.yaml`
-together, with a fresh set of secrets and every value that must match already
-matching:
-`DATABASE_URL`'s embedded password, the `LANGFUSE_S3_*` MinIO credentials, and
-`langfuse.port` against `LANGFUSE_WEB_PORT`. `.env` has no variable
-interpolation, so those are the pairs a hand-edit of `.env.example` gets wrong.
-Both files are gitignored; re-running is refused without `--force` so a live
+The first command writes two gitignored files: `docker/langfuse/.env`, the
+stack's settings, filled in from `.env.example` with fresh secrets, and
+`configs/tracing.yaml`, where the evaluation's client connects. Every value
+that must match another already does: `DATABASE_URL`'s embedded password, the
+`LANGFUSE_S3_*` MinIO credentials, and `langfuse.port` against
+`LANGFUSE_WEB_PORT`. Re-running is refused without `--force`, so a running
 stack's secrets are not rotated out from under its volumes.
 
-That is the single-host setup, where both files land on the same machine and
-both point at loopback. If the evaluation runs somewhere else, see "Running
-the stack on its own host" below instead.
-
-To hand-edit instead, `cp docker/langfuse/.env.example docker/langfuse/.env` and
-fill in every value, keeping the inline "must equal" notes. Either way,
-`.env`'s `LANGFUSE_WEB_BIND`/`LANGFUSE_WEB_PORT` and the tracing config's
-`langfuse.host`/`langfuse.port` describe the same endpoint -- the first pair as
-the server publishes it, the second as the client reaches it -- and must agree,
-or the evaluation will connect to the wrong instance.
+To write `.env` by hand instead, copy `.env.example` and replace every
+`changeme`, keeping the pairs its comments mark as equal. Either way, `.env`'s
+`LANGFUSE_WEB_BIND`/`LANGFUSE_WEB_PORT` and the tracing config's
+`langfuse.host`/`langfuse.port` name the same endpoint, from the server's and
+the client's side.
 
 ## Running the stack on its own host
 
-The stack and the evaluation do not have to share a machine, and there are
-good reasons to separate them: the evaluation host may be a flex-start TPU VM
-that auto-deletes, taking every trace with it, and the six containers here
-otherwise compete for the CPU and disk the generation benchmark is trying to
-measure. Split that way, each host gets one of the two files, and the endpoint
-is the only thing they must agree on.
+The stack and the evaluation need not share a machine. A separate host keeps
+the traces when the evaluation host is deleted, and keeps six containers from
+competing with a throughput measurement. Each host then gets one of the two
+files.
 
-On the host running the stack -- publish langfuse-web on an interface the
-evaluation host can reach, instead of the loopback default:
+On the host running the stack, publish langfuse-web on an address the
+evaluation host can reach:
 
 ```bash
 scripts/gen_langfuse_env.sh --web-bind <stack host address> --no-tracing-config
@@ -57,30 +49,27 @@ scripts/run_langfuse_stack.sh up
 scripts/gen_langfuse_env.sh --print-keys      # copy the two lines across
 ```
 
-On the host running the evaluation -- the client half only, no secrets and no
-`.env`:
+On the host running the evaluation, write the client config only:
 
 ```bash
 scripts/gen_langfuse_env.sh --tracing-only --langfuse-host <stack host address>
 ```
 
 then append the two `export` lines from `--print-keys` to
-`~/.open-r1-tpu.env` on *this* host, source it, and launch as usual with
+`~/.open-r1-tpu.env` on this host, source it, and launch as usual with
 `TRACE_CONFIG=configs/tracing.yaml`.
 
 Three things this does not do for you:
 
 - **The firewall.** `--web-bind` only decides which interface Docker publishes
-  on; nothing here controls who may connect. Admit that port from the
-  evaluation host alone. Note that on a cloud VPC a broad
-  "allow all internal traffic" rule may already permit it from every host on
-  the network -- adding a narrower rule does not revoke a broader one.
+  on. Admit that port from the evaluation host alone; on a cloud VPC, a broad
+  "allow internal traffic" rule may already admit every host on the network,
+  and a narrower rule does not revoke it.
 - **The datastores.** Postgres, ClickHouse, Redis and MinIO stay bound to
-  loopback in every deployment. Only langfuse-web's bind address is
-  configurable, and it is the only port anything outside the host needs.
-- **Encryption.** The client speaks plain HTTP to `langfuse.host`. That is
-  fine inside a trusted private network and nowhere else; a stack reachable
-  beyond one needs a TLS terminator in front of it.
+  loopback in every deployment. Only langfuse-web's address is configurable.
+- **Encryption.** The client speaks plain HTTP to `langfuse.host`, which is fine
+  inside a trusted private network only; anything wider needs a TLS terminator
+  in front.
 
 ## Start, stop, inspect
 
@@ -91,35 +80,21 @@ scripts/run_langfuse_stack.sh logs langfuse-web
 scripts/run_langfuse_stack.sh down
 ```
 
-Everything binds to `127.0.0.1` by default, so out of the box the stack is
-not reachable from outside the host it runs on (see "Viewing the UI" below).
-`LANGFUSE_WEB_BIND` is the one exception, and only for langfuse-web -- see
-"Running the stack on its own host".
+## Durability
 
-## Durability is a property of the host, not of this stack
-
-Nothing here is backed up: the Postgres, ClickHouse, Redis and MinIO volumes
-hold the only copy of every trace and score, and the trace proxy that once
-mirrored them to GCS is gone. So how long the data lives is decided entirely
-by which host you put it on. On a flex-start TPU VM that auto-deletes, it is
-gone with the VM -- which is the strongest argument for the separate host
-above. On a long-lived VM it persists, and rebuilding is an exception rather
-than the routine.
-
-Either way, on a freshly provisioned host, rebuild the instance with the three
-setup commands above (`.env` and `configs/tracing.yaml` are gone with the old
-host). The datasets come back on their own: every traced run syncs its
-recipe's tasks first, and the deterministic item ids
-(`uuid5(dataset_name, doc_id)`) make that an upsert. Old traces and scores are
-not recovered; the results JSONL and summary on the evaluation host are the
-durable record.
+Nothing here is backed up: the volumes hold the only copy of every trace and
+score, so they live exactly as long as the host does. To rebuild on a new host,
+run the setup commands above (`.env` and `configs/tracing.yaml` go with the old
+host). Datasets come back on their own: every traced run syncs its recipe's
+tasks first, and the deterministic item ids (`uuid5(dataset_name, doc_id)`)
+make that an upsert. Old traces and scores are not recovered; the results JSONL
+and summary on the evaluation host are the durable record.
 
 ## Viewing the UI
 
-The UI is always reached by SSH port-forward, never by exposing it publicly.
-Run from a workstation, with the placeholders filled in for the real project,
-zone, and VM name (`gcloud compute ssh` for an ordinary VM,
-`gcloud compute tpus tpu-vm ssh` for a TPU one):
+The UI is reached by SSH port-forward, never exposed publicly. From a
+workstation, with the placeholders filled in (`gcloud compute ssh` for an
+ordinary VM, `gcloud compute tpus tpu-vm ssh` for a TPU one):
 
 ```bash
 gcloud compute ssh <vm-name> \
@@ -127,48 +102,27 @@ gcloud compute ssh <vm-name> \
   -- -L <port>:<bind>:<port>
 ```
 
-`<port>` is `LANGFUSE_WEB_PORT` from `docker/langfuse/.env` on that VM (default
-`3000`) and `<bind>` is its `LANGFUSE_WEB_BIND` (default `127.0.0.1`). The
-forward target must be the bind address: sshd opens the connection from the VM
-itself, so once the stack publishes on a routable interface rather than
-loopback, `127.0.0.1` there has nothing listening on it. Note this is the VM
-running the *stack*, which in a two-host deployment is not the VM running the
-evaluation.
+`<port>` is `LANGFUSE_WEB_PORT` from the stack host's `docker/langfuse/.env`
+(default `3000`) and `<bind>` its `LANGFUSE_WEB_BIND` (default `127.0.0.1`).
+The target must be the bind address because sshd connects from the VM itself.
 
 With the tunnel open, browse to `http://localhost:<port>` and sign in with
 `LANGFUSE_INIT_USER_EMAIL` / `LANGFUSE_INIT_USER_PASSWORD`. The browser origin
-stays `localhost` whatever the bind address is, which is why `NEXTAUTH_URL`
-does too.
+is `localhost` whatever the bind address, which is why `NEXTAUTH_URL` is too.
 
-## Resource note
+After standing up a new instance, or changing `evaluation.run`, `.generate`,
+`.traced` or `.scoring`, run the tier-0 smoke tier and check in the UI that the
+experiment for each `(task, seed)` has traces with their input, output and
+scores.
 
-On a single-host deployment this stack (web, worker, Postgres, ClickHouse,
-Redis, MinIO) shares the host with the vLLM container during an evaluation
-run. The host has ample CPU and RAM for both, but any run whose *throughput*
-is being measured -- the generation speed benchmark -- should be launched with
-this stack stopped (`scripts/run_langfuse_stack.sh down`), since it is one
-more set of processes competing for the same CPU cores and disk I/O that a
-speed number is trying to isolate.
+## Throughput measurements
 
-Moving the stack to its own host removes that contention outright, which is
-the other reason to do it. The generation client still shares the evaluation
-process, so a speed benchmark is not perfectly isolated either way -- but six
-database containers are no longer in the picture.
-
-## The manual UI check
-
-Nothing here automates looking at the result: after a tier-0 smoke run,
-open the UI (above), find the experiment `evaluation.run` just
-created for that `(task, seed)`, and confirm a trace is there with its
-input, output, and scores attached. That is a human confirming a web page
-renders what it should -- do it once after standing up a new Langfuse
-instance, and again after any change to `evaluation.run`/`.task_fn`/
-`.scoring`.
+On a single host this stack shares CPU and disk with the vLLM container. Stop
+it (`scripts/run_langfuse_stack.sh down`), or run it on its own host, before
+the generation speed benchmark.
 
 ## Python environment
 
-The `langfuse` client is part of the frozen evaluation environment
-(`pyproject.toml`'s `eval` extra), beside `openai` and `lighteval`, and is
-used only when `TRACE_CONFIG` is set. `uv sync --extra eval` (or
-`scripts/setup_tpu_vm.sh --with-eval`) is the whole setup, on the VM and on a
-Mac alike.
+The `langfuse` client is part of the `eval` extra (`uv sync --extra eval`, or
+`scripts/setup_tpu_vm.sh --with-eval`) and is used only when `TRACE_CONFIG` is
+set.

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Run the locally built vLLM TPU OpenAI server without installing its Python 3.12
-# dependency tree into the host's Python 3.13 evaluation environment.
+# Serve a model with the pinned vLLM TPU image (docker/vllm-tpu), whose Python
+# 3.12 stack cannot be installed beside the host's Python 3.13 environment.
 #
-# The model export is mounted read-only at the same absolute path. Hugging Face
-# and vLLM/XLA caches use named volumes so an ephemeral container does not
-# download or compile everything again, and so root-owned cache files do not
-# leak into the user's home directory. HF_TOKEN is forwarded by variable name,
-# never expanded into the command or written to a recipe/log.
+# The model is mounted read-only at its own absolute path. The Hugging Face and
+# vLLM/XLA caches live in named volumes, so a fresh container neither downloads
+# nor compiles everything again, and root-owned cache files stay out of the
+# user's home. HF_TOKEN is forwarded by name, so its value never appears in the
+# command line or a log.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEFAULT_IMAGE="$(
@@ -101,18 +101,8 @@ elif [[ "${IMAGE}" != "${DEFAULT_IMAGE}" ]]; then
   exit 2
 fi
 
-DOCKER=()
-if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-  DOCKER=(docker)
-elif command -v docker >/dev/null 2>&1 \
-  && command -v sudo >/dev/null 2>&1 \
-  && sudo -n docker info >/dev/null 2>&1; then
-  DOCKER=(sudo -n docker)
-else
-  echo "Docker is unavailable or inaccessible." >&2
-  echo "Install/start Docker, or grant this user Docker access (passwordless sudo is accepted)." >&2
-  exit 1
-fi
+source "${REPO_ROOT}/scripts/lib/docker.sh"
+resolve_docker
 
 if [[ "${ACTION}" == pull ]] && ! is_remote_image "${IMAGE}"; then
   echo "--pull-only is only for a digest-pinned remote image." >&2
@@ -212,9 +202,9 @@ if [[ -n "${HF_TOKEN:-}" ]]; then
   TOKEN_ARGS=(--env HF_TOKEN)
 fi
 
-# libtpu takes its chip selection and flags from TPU_* and LIBTPU_* variables.
-# Forward them by name so a caller can pin the server to one chip of a
-# multi-chip VM (TPU_VISIBLE_CHIPS=0, both bounds 1,1,1) or pass libtpu flags.
+# Forward libtpu's TPU_* and LIBTPU_* variables by name, so a caller can pin
+# the server to one chip of a multi-chip VM (TPU_VISIBLE_CHIPS=0, both bounds
+# 1,1,1) or pass libtpu flags.
 TPU_ENV_ARGS=()
 while IFS= read -r name; do
   TPU_ENV_ARGS+=(--env "${name}")

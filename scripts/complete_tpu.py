@@ -1,36 +1,36 @@
 #!/usr/bin/env python3
-"""Continue raw text with locally staged Qwen weights on the VM's TPUs.
+"""Continue raw text with a locally staged Qwen2 or Qwen3 model on the TPUs.
 
-No system prompt, role markers, chat template, or history is added. For a
-single completion::
+No system prompt, role markers, chat template, or history is added, so this
+shows a base model's native next-token behaviour. For a single completion::
 
-    python scripts/complete_qwen_tpu.py \
+    python scripts/complete_tpu.py \
       --model-path models/Qwen2.5-Math-1.5B \
       "The capital of France is"
 
-Omit the positional prompt to enter multiple independent prompts interactively.
-The Tunix architecture is detected from the directory's ``config.json``.
+Omit the prompt to enter independent prompts interactively. Decoding is
+greedy. The architecture is detected from the directory's ``config.json``.
 """
 
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 from typing import Any
 
-from chat_qwen_tpu import (
-    DEFAULT_MODEL_PATH,
-    load_runtime,
+from open_r1_tpu.model.checkpoint import (
+    load_sampler,
     pad_input_strings_for_fsdp,
+    resolve_model_dir,
     tunix_mesh_context,
 )
 
+DEFAULT_MODEL_PATH = "models/Qwen2.5-Math-1.5B"
 DEFAULT_MAX_NEW_TOKENS = 100
 DEFAULT_MAX_PROMPT_LENGTH = 2048
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse CLI options without importing the TPU runtime."""
+    """Parse command-line options without importing the TPU runtime."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "prompt",
@@ -41,9 +41,8 @@ def parse_args() -> argparse.Namespace:
         "--model-path",
         default=DEFAULT_MODEL_PATH,
         help=(
-            "Local supported Qwen directory containing model.safetensors and "
-            "config.json "
-            f"(default: {DEFAULT_MODEL_PATH})"
+            "Local Qwen2 or Qwen3 directory containing model.safetensors and "
+            f"config.json (default: {DEFAULT_MODEL_PATH})"
         ),
     )
     parser.add_argument(
@@ -67,7 +66,7 @@ def parse_args() -> argparse.Namespace:
         "--max-prompt-length",
         type=int,
         default=DEFAULT_MAX_PROMPT_LENGTH,
-        help=(f"Fixed raw-prompt token budget (default: {DEFAULT_MAX_PROMPT_LENGTH})."),
+        help=f"Fixed raw-prompt token budget (default: {DEFAULT_MAX_PROMPT_LENGTH}).",
     )
     parser.add_argument(
         "--seed",
@@ -84,24 +83,7 @@ def validate_options(args: argparse.Namespace) -> None:
         raise ValueError("--max-new-tokens must be positive")
     if args.max_prompt_length <= 0:
         raise ValueError("--max-prompt-length must be positive")
-    model_path = Path(args.model_path).expanduser().resolve()
-    if not model_path.is_dir():
-        raise FileNotFoundError(f"Model directory does not exist: {model_path}")
-    if not (model_path / "model.safetensors").is_file():
-        raise FileNotFoundError(
-            f"No model.safetensors found in local model directory: {model_path}"
-        )
-    args.model_path = str(model_path)
-
-
-def load_completion_runtime(args: argparse.Namespace) -> tuple[Any, Any, Any, Any]:
-    """Load Qwen with the padding-aware, non-splash attention path.
-
-    The pinned Tunix sampler left-pads fixed-length prompts but does not pass
-    segment IDs into Qwen splash attention, so splash would expose real prompt
-    tokens to pad/EOS embeddings. Ordinary attention consumes the padding mask.
-    """
-    return load_runtime(args, use_flash_attention=False)
+    args.model_path = resolve_model_dir(args.model_path)
 
 
 def generate_completion(sampler: Any, prompt: str, args: argparse.Namespace) -> str:
@@ -120,8 +102,8 @@ def generate_completion(sampler: Any, prompt: str, args: argparse.Namespace) -> 
             [prompt], getattr(args, "sampler_fsdp_size", 1)
         ),
         max_generation_steps=args.max_new_tokens,
-        # With no top_p or beam_size, Tunix performs deterministic greedy
-        # next-token selection; temperature is unused in that mode.
+        # With no top_p or beam_size, Tunix decodes greedily and ignores
+        # temperature.
         temperature=1.0,
         seed=args.seed,
         max_prompt_length=args.max_prompt_length,
@@ -160,13 +142,19 @@ def main() -> None:
     try:
         validate_options(args)
         print(f"Loading local model from {args.model_path} ...")
-        mesh, _tokenizer, sampler, _model = load_completion_runtime(args)
+        runtime = load_sampler(
+            args.model_path,
+            seed=args.seed,
+            cache_size=args.max_prompt_length + args.max_new_tokens,
+            model_name=args.model_name,
+        )
+        args.sampler_fsdp_size = runtime.fsdp_size
         print("Model loaded. The first completion will compile the TPU decode path.")
-        with tunix_mesh_context(mesh):
+        with tunix_mesh_context(runtime.mesh):
             if args.prompt is None:
-                interactive_loop(sampler, args)
+                interactive_loop(runtime.sampler, args)
             else:
-                print_completion(sampler, args.prompt, args)
+                print_completion(runtime.sampler, args.prompt, args)
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         raise SystemExit(f"error: {exc}") from exc
 

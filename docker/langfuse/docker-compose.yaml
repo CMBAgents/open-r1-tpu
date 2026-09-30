@@ -1,37 +1,18 @@
-# Self-hosted Langfuse, for local trace viewing during evaluation.
+# Self-hosted Langfuse for tracing evaluations: upstream's self-host compose
+# (https://github.com/langfuse/langfuse/blob/main/docker-compose.yaml), with the
+# same six services, headless-init variables and healthchecks, and two changes:
 #
-# Adapted from the upstream Langfuse self-host compose
-# (https://github.com/langfuse/langfuse/blob/main/docker-compose.yaml): the
-# same six services (web, worker, Postgres, ClickHouse, Redis, MinIO), the
-# same headless-init environment variables, the same healthchecks. Two
-# deliberate departures from upstream:
+#   - Every port binds to 127.0.0.1. Only langfuse-web's address is
+#     configurable (LANGFUSE_WEB_BIND), for an evaluation running on another
+#     host; see README.md.
+#   - Upstream's optional feature flags (AI connectors, Bedrock, Azure/OCI blob
+#     storage, SMTP, S3 batch export), all disabled there by default, are
+#     omitted.
 #
-#   - Every port is bound to 127.0.0.1 by default, where upstream exposes them
-#     on all interfaces. The datastores (Postgres, ClickHouse, Redis, MinIO)
-#     and the worker are loopback-only unconditionally -- nothing outside this
-#     compose network has any business reaching them. Only langfuse-web's
-#     published interface is configurable, via LANGFUSE_WEB_BIND, because the
-#     evaluation may run on a different host from this stack (see README.md's
-#     "Running the stack on its own host"). It still defaults to 127.0.0.1, so
-#     a single-host deployment is unchanged.
-#   - The large block of optional feature-flag variables upstream ships
-#     (AI-agent connectors, AWS Bedrock, Azure/OCI blob, SMTP, S3 batch
-#     export) is omitted. Every one of them is empty/disabled by default
-#     upstream too, and none of them matter for a local ingestion sink; add
-#     them back from the upstream file if a future need arises.
-#
-# Every value that differs between deployments -- ports, passwords, keys --
-# is an `${VAR:-default}` reference. The defaults match upstream's own
-# placeholder values and are not meant to be used as-is: real values come
-# from an uncommitted `.env` in this directory (see .env.example). This file
-# itself carries no deployment-specific value.
-#
-# Nothing here backs up Postgres/ClickHouse/Redis/MinIO, and since the trace
-# proxy and its GCS ingester were removed there is no durable record outside
-# these volumes: whatever host holds them holds the only copy. How much that
-# matters is a deployment choice -- on a flex-start TPU VM the data dies with
-# the VM, on a long-lived host it persists -- so see README.md before treating
-# either as given.
+# Deployment values come from .env in this directory (gitignored; written by
+# scripts/gen_langfuse_env.sh from .env.example). The `${VAR:-default}`
+# fallbacks are upstream's placeholders, not values to run with. Nothing backs
+# up the volumes, so they hold the only copy of every trace.
 
 services:
   langfuse-worker:
@@ -100,9 +81,8 @@ services:
     environment:
       <<: *langfuse-env
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-mysecret}
-      # Headless init: a fresh Postgres yields a ready org/project/user/API-key
-      # pair with no click-through setup, which is what makes a rebuild on a
-      # freshly provisioned VM (see README.md) a one-command operation.
+      # Headless init: a fresh Postgres gets a ready org, project, user and API
+      # key pair with no click-through setup.
       LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID:-}
       LANGFUSE_INIT_ORG_NAME: ${LANGFUSE_INIT_ORG_NAME:-}
       LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_INIT_PROJECT_ID:-}
@@ -170,13 +150,9 @@ services:
       start_period: 1s
 
   minio:
-    # Same Chainguard image upstream Langfuse's compose uses, pinned to the
-    # digest its free-tier `latest` tag resolved to on 2026-08-27 (fetched
-    # anonymously from cgr.dev's registry API: token endpoint, then a HEAD on
-    # /v2/chainguard/minio/manifests/latest reading Docker-Content-Digest).
-    # Chainguard rebuilds `latest` continuously, so if this digest ever ages
-    # out of the registry the pull fails loudly -- re-resolve the same way,
-    # or with `docker pull` + `docker inspect --format
+    # The Chainguard image upstream uses, pinned by digest. Chainguard rebuilds
+    # `latest` continuously, so if this digest ages out of the registry the
+    # pull fails: re-resolve it with `docker pull` and `docker inspect --format
     # '{{index .RepoDigests 0}}'`, and paste the new digest here.
     image: cgr.dev/chainguard/minio:latest@sha256:6bf8b5199cd0333152558a9596b653a67142636203cf4393f0a8b41e2797d73e
     restart: always

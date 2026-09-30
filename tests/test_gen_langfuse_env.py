@@ -1,9 +1,10 @@
-"""`scripts/gen_langfuse_env.sh` writes docker/langfuse/.env and
-configs/tracing.yaml with every cross-referenced value already consistent.
+"""`scripts/gen_langfuse_env.sh` writes docker/langfuse/.env (from
+.env.example) and configs/tracing.yaml with every cross-referenced value
+already consistent.
 
 The script needs neither Docker nor a TPU -- it shells out to `openssl` and
 writes two text files under a REPO_ROOT it derives from its own path -- so
-these run from a laptop against a copied `scripts/` directory in a tmp tree.
+these run against a copy of the script and the template in a tmp tree.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "gen_langfuse_env.sh"
 COMPOSE_PATH = REPO_ROOT / "docker" / "langfuse" / "docker-compose.yaml"
+TEMPLATE_PATH = REPO_ROOT / "docker" / "langfuse" / ".env.example"
 
 
 # Every ${VAR} / ${VAR:-default} the compose file interpolates, from its
@@ -47,13 +49,20 @@ def _run(args, cwd):
 
 
 def _tree(tmp_path):
-    """A tmp REPO_ROOT holding just a copy of the script."""
+    """A tmp REPO_ROOT holding copies of the script and the .env template."""
     scripts_dir = tmp_path / "scripts"
     scripts_dir.mkdir()
     copy = scripts_dir / SCRIPT_PATH.name
     shutil.copy(SCRIPT_PATH, copy)
     copy.chmod(0o755)
+    template_dir = tmp_path / "docker" / "langfuse"
+    template_dir.mkdir(parents=True)
+    shutil.copy(TEMPLATE_PATH, template_dir / TEMPLATE_PATH.name)
     return copy
+
+
+def _env_file(root: Path) -> Path:
+    return root / "docker" / "langfuse" / ".env"
 
 
 def _parse_env(path: Path) -> dict[str, str]:
@@ -79,7 +88,7 @@ def test_generates_both_files_mode_600(tmp_path):
     completed = _run([str(script)], cwd=tmp_path)
     assert completed.returncode == 0, completed.stderr
 
-    env_file = tmp_path / "docker" / "langfuse" / ".env"
+    env_file = _env_file(tmp_path)
     tracing_file = tmp_path / "configs" / "tracing.yaml"
     assert env_file.is_file()
     assert tracing_file.is_file()
@@ -90,15 +99,32 @@ def test_generates_both_files_mode_600(tmp_path):
 def test_env_defines_every_variable_the_compose_file_reads(tmp_path):
     script = _tree(tmp_path)
     assert _run([str(script)], cwd=tmp_path).returncode == 0
-    env = _parse_env(tmp_path / "docker" / "langfuse" / ".env")
+    env = _parse_env(_env_file(tmp_path))
     missing = COMPOSE_VARS - env.keys()
     assert not missing, f"generated .env is missing compose vars: {sorted(missing)}"
+
+
+def test_env_keeps_every_template_key_in_order(tmp_path):
+    script = _tree(tmp_path)
+    assert _run([str(script)], cwd=tmp_path).returncode == 0
+    assert list(_parse_env(_env_file(tmp_path))) == list(_parse_env(TEMPLATE_PATH))
+
+
+def test_a_template_placeholder_the_script_does_not_fill_fails(tmp_path):
+    script = _tree(tmp_path)
+    template = tmp_path / "docker" / "langfuse" / ".env.example"
+    template.write_text(template.read_text() + "NEW_SECRET=changeme\n")
+
+    completed = _run([str(script)], cwd=tmp_path)
+    assert completed.returncode == 1
+    assert "NEW_SECRET" in completed.stderr
+    assert not _env_file(tmp_path).exists()
 
 
 def test_cross_referenced_values_are_consistent(tmp_path):
     script = _tree(tmp_path)
     assert _run([str(script)], cwd=tmp_path).returncode == 0
-    env = _parse_env(tmp_path / "docker" / "langfuse" / ".env")
+    env = _parse_env(_env_file(tmp_path))
 
     # DATABASE_URL embeds POSTGRES_PASSWORD verbatim (no .env interpolation).
     assert env["DATABASE_URL"] == (
@@ -125,20 +151,20 @@ def test_cross_referenced_values_are_consistent(tmp_path):
 def test_secrets_are_freshly_generated_not_placeholders(tmp_path):
     script = _tree(tmp_path)
     assert _run([str(script)], cwd=tmp_path).returncode == 0
-    env = _parse_env(tmp_path / "docker" / "langfuse" / ".env")
+    env = _parse_env(_env_file(tmp_path))
 
     assert re.fullmatch(r"[0-9a-f]{48}", env["POSTGRES_PASSWORD"])
     assert re.fullmatch(r"[0-9a-f]{64}", env["SALT"])
     assert re.fullmatch(r"[0-9a-f]{64}", env["ENCRYPTION_KEY"])
     assert re.fullmatch(r"pk-lf-[0-9a-f-]{36}", env["LANGFUSE_INIT_PROJECT_PUBLIC_KEY"])
     assert re.fullmatch(r"sk-lf-[0-9a-f-]{36}", env["LANGFUSE_INIT_PROJECT_SECRET_KEY"])
-    assert "changeme" not in Path(tmp_path / "docker" / "langfuse" / ".env").read_text()
+    assert "changeme" not in _env_file(tmp_path).read_text()
 
 
 def test_refuses_to_overwrite_without_force(tmp_path):
     script = _tree(tmp_path)
     assert _run([str(script)], cwd=tmp_path).returncode == 0
-    env_file = tmp_path / "docker" / "langfuse" / ".env"
+    env_file = _env_file(tmp_path)
     first = env_file.read_text()
 
     again = _run([str(script)], cwd=tmp_path)
@@ -155,14 +181,14 @@ def test_no_tracing_config_flag_writes_only_the_env(tmp_path):
     script = _tree(tmp_path)
     completed = _run([str(script), "--no-tracing-config"], cwd=tmp_path)
     assert completed.returncode == 0, completed.stderr
-    assert (tmp_path / "docker" / "langfuse" / ".env").is_file()
+    assert (_env_file(tmp_path)).is_file()
     assert not (tmp_path / "configs" / "tracing.yaml").exists()
 
 
 def test_print_keys_emits_export_lines_matching_the_env(tmp_path):
     script = _tree(tmp_path)
     assert _run([str(script)], cwd=tmp_path).returncode == 0
-    env = _parse_env(tmp_path / "docker" / "langfuse" / ".env")
+    env = _parse_env(_env_file(tmp_path))
 
     completed = _run([str(script), "--print-keys"], cwd=tmp_path)
     assert completed.returncode == 0, completed.stderr
@@ -198,7 +224,7 @@ def test_web_bind_sets_the_published_interface(tmp_path):
     script = _tree(tmp_path)
     completed = _run([str(script), "--web-bind", REMOTE], cwd=tmp_path)
     assert completed.returncode == 0, completed.stderr
-    env = _parse_env(tmp_path / "docker" / "langfuse" / ".env")
+    env = _parse_env(_env_file(tmp_path))
     assert env["LANGFUSE_WEB_BIND"] == REMOTE
 
 
@@ -208,7 +234,7 @@ def test_nextauth_url_stays_localhost_when_web_bind_does_not(tmp_path):
     # bind address would break sign-in for the supported way of viewing it.
     script = _tree(tmp_path)
     assert _run([str(script), "--web-bind", REMOTE], cwd=tmp_path).returncode == 0
-    env = _parse_env(tmp_path / "docker" / "langfuse" / ".env")
+    env = _parse_env(_env_file(tmp_path))
     assert env["NEXTAUTH_URL"] == f"http://localhost:{env['LANGFUSE_WEB_PORT']}"
 
 
@@ -240,7 +266,7 @@ def test_langfuse_host_sets_the_address_the_client_dials(tmp_path):
 def test_langfuse_port_moves_both_halves_together(tmp_path):
     script = _tree(tmp_path)
     assert _run([str(script), "--langfuse-port", "3100"], cwd=tmp_path).returncode == 0
-    env = _parse_env(tmp_path / "docker" / "langfuse" / ".env")
+    env = _parse_env(_env_file(tmp_path))
     tracing = (tmp_path / "configs" / "tracing.yaml").read_text()
     assert env["LANGFUSE_WEB_PORT"] == "3100"
     assert env["NEXTAUTH_URL"].endswith(":3100")
@@ -255,7 +281,7 @@ def test_tracing_only_writes_the_client_half_and_no_secrets(tmp_path):
         [str(script), "--tracing-only", "--langfuse-host", REMOTE], cwd=tmp_path
     )
     assert completed.returncode == 0, completed.stderr
-    assert not (tmp_path / "docker").exists()
+    assert not _env_file(tmp_path).exists()
     tracing = tmp_path / "configs" / "tracing.yaml"
     assert f"host: {REMOTE}" in tracing.read_text()
     assert stat.S_IMODE(tracing.stat().st_mode) == 0o600
@@ -306,7 +332,7 @@ def test_an_address_flag_rejects_a_url(tmp_path):
         completed = _run([str(script), flag, f"http://{REMOTE}:3000"], cwd=tmp_path)
         assert completed.returncode == 2, flag
         assert "bare host" in completed.stderr
-        assert not (tmp_path / "docker").exists()
+        assert not _env_file(tmp_path).exists()
 
 
 def test_an_address_flag_rejects_a_host_port_pair(tmp_path):
@@ -350,9 +376,9 @@ def test_the_two_host_split_agrees_on_one_endpoint(tmp_path):
         == 0
     )
 
-    env = _parse_env(server / "docker" / "langfuse" / ".env")
+    env = _parse_env(_env_file(server))
     tracing = (client / "configs" / "tracing.yaml").read_text()
     assert f"host: {env['LANGFUSE_WEB_BIND']}" in tracing
     assert f"port: {env['LANGFUSE_WEB_PORT']}" in tracing
     assert not (server / "configs").exists()
-    assert not (client / "docker").exists()
+    assert not _env_file(client).exists()

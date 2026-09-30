@@ -1,13 +1,29 @@
-# Local vLLM TPU image
+# vLLM TPU image
 
-This directory defines the vLLM TPU service image used by evaluations. It is
-built on the TPU VM that will run it; it is not pushed to a registry.
+This directory defines the vLLM TPU service image that evaluations serve
+models with. It is built on the TPU VM that runs it and is not pushed to a
+registry.
 
-The image identity is the tag derived from the SHA-256 of `Dockerfile`,
-`vllm-tpu.lock`, and every patch in `patches/`.
-`scripts/run_vllm_tpu_container.sh --print-image` prints that tag. An image ID
-is deliberately not used as an identity because it differs between builds on
-different machines.
+The image is identified by a tag derived from the SHA-256 of `Dockerfile`,
+`vllm-tpu.lock` and every patch in `patches/`;
+`scripts/run_vllm_tpu_container.sh --print-image` prints it. An image ID would
+not do, since it differs between builds on different machines.
+
+## Build and inspect
+
+From the repository root on the TPU VM:
+
+```bash
+scripts/run_vllm_tpu_container.sh --build
+scripts/run_vllm_tpu_container.sh --check
+scripts/run_vllm_tpu_container.sh --provenance
+```
+
+`--build` uses the digest-pinned `python:3.12-slim-bookworm` base declared in
+the Dockerfile. The build and `--provenance` both verify that the installed
+service reports `vllm-tpu 0.27.0` and `tpu-inference 0.27.0`, and the build
+applies and checks the patches below. None of these uses the TPU. To free disk
+space, remove superseded images with `docker image rm`.
 
 ## Patches
 
@@ -19,15 +35,15 @@ the build instead of silently shipping unpatched. The Dockerfile runs every
 
 - `lazy_text_config_fallback.py` — `tpu_inference` reads shape parameters as
   `getattr(cfg, "hidden_size", cfg.text_config.hidden_size)`. Python evaluates
-  the default eagerly, so `.text_config` — an attribute only multimodal Hugging
-  Face configs have — is always dereferenced, and a flat config such as
+  the default eagerly, so `.text_config`, which only multimodal Hugging Face
+  configs have, is always dereferenced, and a flat config such as
   `Qwen2Config` kills the engine core during startup with `AttributeError:
   'Qwen2Config' object has no attribute 'text_config'`. The patch rewrites the
   idiom to `cfg.get_text_config().hidden_size`, which returns the nested text
   config when there is one and the config itself otherwise.
 
-Patch contents feed the image tag, so editing one changes the tag and the
-wrapper refuses the image built before the change until it is rebuilt.
+Patches feed the image tag, so editing one changes the tag, and the wrapper
+refuses the image built before the change until it is rebuilt.
 
 ## Regenerate the lock
 
@@ -46,28 +62,6 @@ sudo docker run --rm \
 
 The result must contain 241 distributions, including `vllm-tpu==0.27.0`,
 `tpu-inference==0.27.0`, `libtpu==0.0.44`, `jax==0.11.0`, `jaxlib==0.11.0`,
-`flax==0.12.8`, `torch==2.10.0`, `transformers==5.14.1`, and
-`numpy==2.3.5`. Review the complete diff before accepting an intentional lock
-change: `vllm-tpu` itself hard-pins `tpu-inference`, so the two service versions
-cannot drift independently.
-
-## Build and inspect
-
-Run these commands from the repository root on the TPU VM:
-
-```bash
-scripts/run_vllm_tpu_container.sh --build
-scripts/run_vllm_tpu_container.sh --check
-scripts/run_vllm_tpu_container.sh --provenance
-```
-
-`--build` uses the digest-pinned `python:3.12-slim-bookworm` base declared in
-the Dockerfile. The build's version assertion and `--provenance` both verify
-that the installed service reports `vllm-tpu 0.27.0` and
-`tpu-inference 0.27.0`; the build also applies and self-checks the patches
-above. None of these operations reserves the TPU.
-
-If the VM runs out of disk space, retain the old upstream service image until
-the replacement has passed its determinism validation, then remove the obsolete
-image with an explicit Docker command. Do not build during a training or
-evaluation run: Docker does not need the TPU, but the validation server does.
+`flax==0.12.8`, `torch==2.10.0`, `transformers==5.14.1` and `numpy==2.3.5`.
+Review the complete diff before accepting a lock change. `vllm-tpu` hard-pins
+`tpu-inference`, so the two service versions cannot drift apart.

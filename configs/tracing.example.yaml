@@ -1,16 +1,12 @@
-# Example tracing configuration -- copy to configs/tracing.yaml (gitignored)
-# and replace the placeholder host/port with real values. Nothing here is a
-# real deployment identifier. Only needed to trace evaluations in Langfuse
-# (TRACE_CONFIG); scripts/gen_langfuse_env.sh writes the real file.
+# Example tracing config, needed only to trace evaluations in Langfuse
+# (TRACE_CONFIG). scripts/gen_langfuse_env.sh writes the real, gitignored
+# configs/tracing.yaml; to write it by hand, copy this file.
 #
-# Loaded and validated by `open_r1_tpu.evaluation.traced`; see its module
-# docstring for the schema. `docker/langfuse/README.md` explains how
-# `langfuse.host`/`langfuse.port` here must agree with docker/langfuse/.env's
-# LANGFUSE_WEB_PORT.
-#
-# Secrets are not config: LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY are read
-# from the environment (see `evaluation.traced`),
-# never written into this file.
+# host and port are where the evaluation reaches langfuse-web: the stack host's
+# LANGFUSE_WEB_BIND and LANGFUSE_WEB_PORT (docker/langfuse/README.md). The
+# schema is validated by `open_r1_tpu.evaluation.traced`. The API keys are read
+# from LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY in the environment, never from
+# this file.
 
 langfuse:
   host: 127.0.0.1

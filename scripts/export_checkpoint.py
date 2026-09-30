@@ -1,35 +1,42 @@
 #!/usr/bin/env python3
-"""Export a merged HF-format model from a saved mid-training SFT checkpoint.
+"""Export merged Hugging Face weights from a saved SFT checkpoint.
 
-`run.py` only exports the final in-memory model state at the end of a run.
-This restores an arbitrary saved step from the recipe's own checkpoint
-directory (the same restore Tunix's `CheckpointManager` performs, as used
-interactively in `chat_qwen_tpu.py`) and runs it through the same
-`export_model` used at the end of every training run, so beginning/middle
-checkpoints can be evaluated the same way as the final export.
+Training exports only its final state. This restores any saved step of a run
+on top of the recipe's base model and writes it through the same
+``export_model``, so intermediate checkpoints can be evaluated like the final
+export. A full fine-tune's checkpoint replaces every parameter; a LoRA recipe's
+(one that sets ``model.lora_config``) restores the adapters, which the export
+merges into the base weights. The adapters' geometry comes from the recipe, so
+pass the recipe the run was trained with.
 
-Usage (from the repo root, with the pinned environment active):
-    python3 scripts/export_checkpoint.py \
+Run from the repository root on the TPU VM, with the project environment
+active::
+
+    python scripts/export_checkpoint.py \
         --recipe recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml \
         --step 200 \
         --output artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/checkpoint-200/merged
+
+The model is loaded on the recipe's ``model.mesh``. An existing ``--output``
+directory is replaced.
 """
 
 from __future__ import annotations
 
 import argparse
-import sys
-from pathlib import Path
 from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT / "src") not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT / "src"))
+from open_r1_tpu.core.config import load_config
+from open_r1_tpu.model.checkpoint import restore_checkpoint
+from open_r1_tpu.model.export import export_model
+from open_r1_tpu.model.loading import create_model
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--recipe", required=True, help="the arm's SFT recipe")
+    parser.add_argument(
+        "--recipe", required=True, help="SFT recipe the run was trained with"
+    )
     parser.add_argument(
         "--step", type=int, required=True, help="checkpoint step to restore"
     )
@@ -42,46 +49,31 @@ def parse_args() -> argparse.Namespace:
             "training.checkpoint_dir."
         ),
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def restore_checkpoint(model: Any, checkpoint_dir: str, step: int) -> int:
-    """Restore full-model parameters at `step`, returning the step restored.
-
-    Mirrors `chat_qwen_tpu.restore_checkpoint`: these recipes train no LoRA
-    adapter, so the checkpoint always holds every parameter.
-    """
-    from tunix.sft import checkpoint_manager as checkpoint_manager_lib
-
-    from open_r1_tpu.model.loading import absolute_checkpoint_dir
-
-    root = absolute_checkpoint_dir(checkpoint_dir)
-    manager = checkpoint_manager_lib.CheckpointManager(root_directory=root)
-    if manager.latest_step() is None:
-        raise FileNotFoundError(f"No checkpoint has been written under {root}")
-    restored_step, _metadata = manager.maybe_restore(
-        model, optimizer=None, step=step, restore_only_lora_params=False
-    )
-    manager.close()
-    return int(restored_step)
+def read_recipe(
+    args: argparse.Namespace,
+) -> tuple[dict[str, Any], dict[str, Any] | None, str]:
+    """Return the recipe with export enabled into ``--output``, its LoRA
+    geometry (None for a full fine-tune), and the checkpoint root."""
+    config = load_config(args.recipe)
+    config["export"] = {
+        **config.get("export", {}),
+        "output_dir": args.output,
+        "overwrite": True,
+        "enabled": True,
+    }
+    checkpoint_dir = args.checkpoint_dir or config["training"]["checkpoint_dir"]
+    return config, config["model"].get("lora_config"), checkpoint_dir
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    config, lora_config, checkpoint_dir = read_recipe(args)
 
     from tunix.cli.utils import model as model_utils
     from tunix.utils import mesh as mesh_utils
-
-    from open_r1_tpu.core.config import load_config
-    from open_r1_tpu.model.export import export_model
-    from open_r1_tpu.model.loading import create_model
-
-    config = load_config(args.recipe)
-    if config["model"].get("lora_config"):
-        raise SystemExit(
-            "export_checkpoint.py only supports full fine-tunes; "
-            f"{args.recipe} sets model.lora_config."
-        )
 
     mesh_config = config["model"]["mesh"]
     mesh = mesh_utils.create_mesh(
@@ -90,25 +82,21 @@ def main() -> None:
     print(f"Loading base model from {config['model']['model_path']} ...", flush=True)
     model, local_model_path = create_model(config, mesh)
 
-    checkpoint_dir = args.checkpoint_dir or config["training"]["checkpoint_dir"]
     print(f"Restoring step {args.step} from {checkpoint_dir} ...", flush=True)
-    restored = restore_checkpoint(model, checkpoint_dir, args.step)
-    print(f"Restored full model parameters from step {restored}.", flush=True)
+    restored = restore_checkpoint(
+        model, checkpoint_dir, args.step, lora_only=bool(lora_config)
+    )
+    what = "LoRA adapters" if lora_config else "full model parameters"
+    print(f"Restored {what} from step {restored}.", flush=True)
 
-    tokenizer_config = dict(config["tokenizer"])
-    tokenizer_config["tokenizer_path"] = local_model_path
-    tokenizer_config["chat_template"] = None
-    tokenizer = model_utils.create_tokenizer(tokenizer_config, local_model_path)
-
-    export_config = dict(config)
-    export_config["export"] = {
-        **config.get("export", {}),
-        "output_dir": args.output,
-        "overwrite": True,
-        "enabled": True,
+    tokenizer_config = {
+        **config["tokenizer"],
+        "tokenizer_path": local_model_path,
+        "chat_template": None,
     }
+    tokenizer = model_utils.create_tokenizer(tokenizer_config, local_model_path)
     export_model(
-        config=export_config,
+        config=config,
         model=model,
         tokenizer=tokenizer,
         local_model_path=local_model_path,

@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
-# Provision the open-r1-tpu Python environment on a TPU VM.
-#
-# Installs uv, the pinned CPython build from .python-version, a project
-# virtualenv, and the project itself (which pulls in Tunix and jax[tpu]). With
-# --with-eval it also installs the locked LightEval stack and builds the local
-# vLLM TPU service image.
-# Safe to re-run: existing components are reused unless --recreate is passed.
+# Provision the open-r1-tpu Python environment on a TPU VM: uv, the CPython
+# in .python-version, and .venv with the locked project (Tunix and jax[tpu]
+# included). --with-eval adds the evaluation extra and builds the vLLM TPU
+# service image. Safe to re-run: existing components are reused unless
+# --recreate is passed.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -41,8 +39,7 @@ done
 log() { printf '\n==> %s\n' "$*"; }
 
 # --- System prerequisites -----------------------------------------------
-# curl fetches the uv installer; git is required to build the pinned Tunix
-# dependency from its GitHub revision.
+# curl fetches the uv installer; git fetches the pinned Tunix revision.
 missing_pkgs=()
 command -v curl >/dev/null 2>&1 || missing_pkgs+=(curl)
 command -v git >/dev/null 2>&1 || missing_pkgs+=(git)
@@ -92,9 +89,8 @@ else
 fi
 
 # --- Project dependencies ------------------------------------------------
-# jax[tpu] and libtpu arrive transitively through the pinned google-tunix
-# revision in pyproject.toml; no CUDA or PyTorch wheels are installed on the
-# host. --frozen makes the checked-in uv.lock authoritative.
+# jax[tpu] and libtpu come in through the pinned google-tunix. --frozen
+# installs exactly what uv.lock records.
 SYNC_ARGS=(--frozen --extra test)
 if [[ ${WITH_EVAL} -eq 1 ]]; then
   SYNC_ARGS+=(--extra eval)
@@ -110,9 +106,9 @@ if [[ ${WITH_EVAL} -eq 1 ]]; then
 fi
 
 # --- Run-time environment file -------------------------------------------
-# Kept outside the repository so entity/project names and tokens never land in
-# git. W&B reads WANDB_ENTITY directly; the project name has to be passed to
-# the launcher as an override because the training runner sets it explicitly.
+# Kept outside the repository so bucket, W&B names and tokens never land in
+# git. W&B reads WANDB_ENTITY itself; the project name is passed to training as
+# an override (see the next steps below).
 if [[ -f "${ENV_FILE}" ]]; then
   log "Leaving existing ${ENV_FILE} untouched"
 else

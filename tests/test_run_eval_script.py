@@ -1,9 +1,9 @@
 """`scripts/run_eval_tpu.sh` has no default recipe: an expensive run must name
 its tier on purpose. `RECIPE` validation runs before anything Docker- or
-TPU-related, so it is safe to exercise from a laptop with no server up. The
-happy-path tests stub `python3` in a copied `scripts/` directory, so they too
-need neither Docker nor a live server: with SKIP_SERVER=1 the real script
-never reaches anything that does.
+TPU-related, so it is safe to exercise with no server up. The happy-path tests
+stub `python3` in a copied `scripts/` directory, so they too need neither
+Docker nor a live server: with SKIP_SERVER=1 the real script never reaches
+anything that does.
 """
 
 import shutil
@@ -11,6 +11,7 @@ import subprocess
 from pathlib import Path
 
 SCRIPT_PATH = Path(__file__).parents[1] / "scripts" / "run_eval_tpu.sh"
+SERVER_HELPER_PATH = SCRIPT_PATH.parent / "lib" / "vllm_server.sh"
 
 
 def test_the_script_is_syntactically_valid():
@@ -47,15 +48,16 @@ def test_an_empty_recipe_is_treated_as_missing():
 
 
 def _stubbed_scripts_dir(tmp_path, capture_file):
-    """A copy of scripts/run_eval_tpu.sh alongside a stand-in `python3`, so
-    the real script runs unmodified but never needs Docker, a real recipe,
-    or a live server.
+    """A copy of scripts/run_eval_tpu.sh and the helper it sources alongside a
+    stand-in `python3`, so the real script runs unmodified but never needs
+    Docker, a real recipe, or a live server.
     """
     scripts_dir = tmp_path / "scripts"
-    scripts_dir.mkdir()
+    (scripts_dir / "lib").mkdir(parents=True)
     copy = scripts_dir / "run_eval_tpu.sh"
     shutil.copy(SCRIPT_PATH, copy)
     copy.chmod(0o755)
+    shutil.copy(SERVER_HELPER_PATH, scripts_dir / "lib" / SERVER_HELPER_PATH.name)
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()

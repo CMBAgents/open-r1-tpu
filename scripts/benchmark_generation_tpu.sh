@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Measure the same merged model through the current vLLM service and Tunix's
-# direct sampler. The two backends run sequentially because only one process can
-# hold the TPU. Startup and one compilation/warm-up batch per shape are recorded
-# separately from steady-state throughput.
+# Measure the same merged model through the vLLM service and Tunix's direct
+# sampler, one after the other since only one process can hold the TPU.
+# Startup and one warm-up batch per shape are recorded apart from steady-state
+# throughput.
 #
-# Defaults exercise a serial shape (1) and a throughput shape (8), using 16
-# distinct prompts and two measured repetitions, on the export the eval recipe
-# names (server.model_path):
+# Defaults time batch sizes 1 and 8 over 16 distinct prompts, twice, on the
+# export the eval recipe names (server.model_path):
 #
 #   ./scripts/benchmark_generation_tpu.sh
 #
-# Point at another export or vLLM installation through ordinary recipe
-# overrides/environment values, for example:
+# Point at another export or vLLM installation with environment values and
+# eval-recipe overrides, for example:
 #
 #   MODEL_PATH=models/Qwen2.5-Math-1.5B \
 #     ./scripts/benchmark_generation_tpu.sh \
@@ -60,51 +59,24 @@ if [[ ! -d "$MODEL_PATH" ]]; then
 fi
 OUTPUT_DIR="${OUTPUT_DIR:-$(dirname "$MODEL_PATH")/generation-speed}"
 SERVER_LOG="${SERVER_LOG:-${OUTPUT_DIR}/vllm-serve.log}"
+SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
 
-SERVER_PID=""
-
-stop_server() {
-  if [[ -n "$SERVER_PID" ]] && kill -0 -- "-$SERVER_PID" 2>/dev/null; then
-    echo "Stopping vLLM server (process group $SERVER_PID)" >&2
-    kill -TERM -- "-$SERVER_PID" 2>/dev/null || true
-    for _ in $(seq 1 30); do
-      kill -0 -- "-$SERVER_PID" 2>/dev/null || break
-      sleep 1
-    done
-    kill -KILL -- "-$SERVER_PID" 2>/dev/null || true
-    wait "$SERVER_PID" 2>/dev/null || true
-  fi
-  SERVER_PID=""
-}
-
-trap stop_server EXIT INT TERM
+source "$SCRIPT_DIR/lib/vllm_server.sh"
+trap stop_vllm_server EXIT INT TERM
 mkdir -p "$OUTPUT_DIR"
 
 SERVER_CMD="$(python3 -m open_r1_tpu.evaluation.server \
   --config "$EVAL_RECIPE" \
   "${OVERRIDES[@]}")"
-echo "Starting: $SERVER_CMD" >&2
-echo "Server log: $SERVER_LOG" >&2
 SECONDS=0
-# vLLM starts a separate EngineCore process. Give the service its own process
-# group so cleanup releases the TPU rather than stopping only the CLI parent.
-setsid bash -c "exec $SERVER_CMD" >"$SERVER_LOG" 2>&1 &
-SERVER_PID=$!
-
-sleep 5
-if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-  echo "vLLM server exited during startup; last 40 log lines:" >&2
-  tail -n 40 "$SERVER_LOG" >&2
-  exit 1
-fi
-
+start_vllm_server "$SERVER_CMD" "$SERVER_LOG"
 python3 -c \
   "import sys; from open_r1_tpu.evaluation.server import wait_for_server; wait_for_server(sys.argv[1])" \
   "$BASE_URL"
 VLLM_STARTUP_SECONDS="$SECONDS"
 
 # shellcheck disable=SC2086 # BATCH_SIZES is intentionally a whitespace list.
-python3 "$(dirname "$0")/benchmark_generation.py" run \
+python3 "$SCRIPT_DIR/benchmark_generation.py" run \
   --backend vllm \
   --eval-config "$EVAL_RECIPE" \
   --model-path "$MODEL_PATH" \
@@ -117,10 +89,10 @@ python3 "$(dirname "$0")/benchmark_generation.py" run \
   --startup-seconds "$VLLM_STARTUP_SECONDS" \
   "${OVERRIDES[@]}"
 
-stop_server
+stop_vllm_server
 
 # shellcheck disable=SC2086 # BATCH_SIZES is intentionally a whitespace list.
-python3 "$(dirname "$0")/benchmark_generation.py" run \
+python3 "$SCRIPT_DIR/benchmark_generation.py" run \
   --backend tunix \
   --eval-config "$EVAL_RECIPE" \
   --sft-config "$SFT_RECIPE" \
@@ -133,7 +105,7 @@ python3 "$(dirname "$0")/benchmark_generation.py" run \
   --max-prompt-length "$MAX_PROMPT_LENGTH" \
   "${OVERRIDES[@]}"
 
-python3 "$(dirname "$0")/benchmark_generation.py" compare \
+python3 "$SCRIPT_DIR/benchmark_generation.py" compare \
   --vllm "$OUTPUT_DIR/vllm.json" \
   --tunix "$OUTPUT_DIR/tunix.json" \
   --output-json "$OUTPUT_DIR/comparison.json" \
