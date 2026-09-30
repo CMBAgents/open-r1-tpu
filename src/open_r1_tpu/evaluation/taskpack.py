@@ -1,60 +1,32 @@
 """Freeze LightEval's own task definitions into a committed, diffable spec.
 
-The comparability spine for generation (`evaluation.generate`)
-and scorer bridge (`evaluation.scoring`): everything that decides *what the
-model is asked* and *how the answer is judged* is read once out of LightEval's
-own `LightevalTaskConfig` -- the prompt function, the dataset coordinates, the
-generation defaults, and the metric objects -- and never re-specified by hand.
-`derive_taskpack` performs that read; `configs/taskpack.yaml` is its committed
-output; `verify_task_specs` re-derives and diffs against that file at
+What the model is asked and how its answer is judged -- the prompt function,
+dataset coordinates, generation defaults and metrics -- is read from
+LightEval's `LightevalTaskConfig`, never re-specified by hand.
+`derive_taskpack` performs that read and `configs/taskpack.yaml` is its
+committed output; `verify_task_specs` re-derives and diffs against it at
 preflight, so a LightEval upgrade that moves a prompt or a metric fails loudly
-there rather than silently moving a headline number.
+instead of silently moving a headline number. The file is for review and drift
+detection only: callers get live objects from `resolve_task_configs`.
 
-What this module does **not** do: reimplement prompt rendering or scoring. The
-prompt function and metric objects a task pack entry names are *references* --
-`derive_task_spec` records enough to describe them for review and drift
-detection, but `resolve_task_configs` is what callers actually use to get live
-objects, by asking the installed LightEval's own registry the same question
-again. The committed file is documentation and a tripwire, not a serialization
-format for Python callables.
+Two things are not strictly diffed:
 
-Two things are deliberately excluded from the strict diff `verify_task_specs`
-enforces:
+- The rendered `example` (one real row's prompt, for review) is best-effort.
+  Some datasets are gated on the Hub (gpqa), so a fetch failure records
+  `{"unavailable": <reason>}` and an `example` mismatch is only a warning.
+- `generation_size` and `stop_sequence` are recorded but never used: the
+  recipe's `sampling.max_new_tokens` always wins, and no stop sequences are
+  sent (a stop string cannot end a turn; see `evaluation.preflight`).
 
-- The rendered `example` block (one real dataset row's prompt, for human
-  review) is best-effort. Some datasets this project evaluates against are
-  gated on the Hub (`gpqa`), so deriving or verifying a task pack must still
-  succeed for every other task when running unauthenticated or offline.  A
-  fetch failure records `{"unavailable": <reason>}` instead of raising, and a
-  mismatch here is a warning, never an error.
-- Generation size and stop sequence are recorded for visibility but are never
-  authoritative: the recipe's `sampling.max_new_tokens` always wins over a
-  task's upstream `generation_size` (see `math_500`'s note below), and this
-  project sends no stop sequences at all (`evaluation.server.vllm_serve_command`'s
-  docstring explains why a stop *string* can never match the real EOS token).
+Known divergences from upstream:
 
-Known upstream/recipe divergences, recorded rather than papered over:
-
-- `math_500` carries `generation_size: 32768` upstream; every recipe using it
-  sets a smaller `sampling.max_new_tokens` (the deliberate token budget for
-  this project's TPU). The recipe wins.
-- `math_500`'s metric is `pass@k:k=1&n=1` (`Metrics.pass_at_k_math` with
-  `sample_params={"k": 1, "n": 1}`), not a plain extractive match -- do not
-  substitute one for the other when reading or extending this pack.
-- `olympiad_bench` is not in `KNOWN_TASKS`. Its `specific` struct is empty for
-  every row, which broke LightEval's own Parquet detail write on this stack,
-  and it is not part of the Open-R1 headline set.
-- `lcb:codegeneration` is LightEval's `v4_v5` subset of
-  `lighteval/code_generation_lite` -- the 2024-08 to 2025-01 problem window,
-  which is the window DeepSeek's published LiveCodeBench number names. The
-  bare name is the subset, not a default that could drift: upstream names the
-  task `"lcb:codegeneration"` when its subset is `v4_v5` and
-  `f"lcb:codegeneration_{subset}"` otherwise, so a rename upstream shows up
-  here as a strict-field diff. Its `specific`
-  struct carries every public and private test case for the problem, which is
-  orders of magnitude larger than any other task's -- see
-  `evaluation.traced`, which stores `specific` in each Langfuse dataset
-  item's metadata.
+- `math_500` declares `generation_size: 32768`; recipes set a smaller
+  `sampling.max_new_tokens`, and the recipe wins. Its metric is
+  `pass@k:k=1&n=1`, not a plain extractive match.
+- `lcb:codegeneration` is LightEval's `v4_v5` subset (problems from 2024-08 to
+  2025-01, the window of DeepSeek's published LiveCodeBench number). Upstream
+  names every other subset `lcb:codegeneration_{subset}`, so the bare name
+  cannot quietly move to another window without a strict diff.
 
 Run from the repository root::
 
@@ -70,24 +42,19 @@ import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from hashlib import sha256
-from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from open_r1_tpu.core.logging import LOG_LEVELS, configure_logging
+from open_r1_tpu.evaluation.stack import installed_version
 
 LOGGER = logging.getLogger(__name__)
 
-# The complete task set this project evaluates against, gathered from every
-# recipe's `eval.tasks` (see `git grep '^\s*- "' recipes/*/eval/*.yaml`).
-# `--derive` with no `--tasks` freezes exactly this list, and
-# `evaluation.preflight` verifies a recipe's own subset of it -- so a task
-# used by a recipe but missing here is caught at derive time, not at
-# preflight, by `derive_taskpack`'s own completeness check against a recipe
-# (there is none built in; adding a task to a recipe means adding it here
-# too, and CI has nothing to catch a forgotten one yet).
+# Every task the committed recipes evaluate; `--derive` with no `--tasks`
+# freezes exactly these. A task added to a recipe must be added here too, or
+# preflight fails on a task the pack does not cover.
 KNOWN_TASKS: tuple[str, ...] = (
     "gsm8k|0",
     "math_500|0",
@@ -119,9 +86,8 @@ _STRICT_FIELDS = (
 
 
 def _bare_name(task: str) -> str:
-    """`"gpqa:diamond|0"` -> `"gpqa:diamond"`; the registry's `task_to_configs`
-    key, which keeps a suite-style `subset` colon but drops the trailing
-    `|num_fewshots`.
+    """`"gpqa:diamond|0"` -> `"gpqa:diamond"`, the registry's
+    `task_to_configs` key.
     """
     name, _, _ = task.partition("|")
     if not name:
@@ -131,10 +97,8 @@ def _bare_name(task: str) -> str:
 
 @dataclass(frozen=True)
 class MetricSpec:
-    """A LightEval `Metric`, described well enough to review and detect drift
-    -- never enough to reconstruct. Scoring always calls the live object
-    `resolve_task_configs` returns, imported fresh from the installed
-    `lighteval`; see the module docstring.
+    """A LightEval `Metric`, described for review and drift detection, not
+    for reconstruction.
     """
 
     metric_name: Any  # str, or list[str] for a SampleLevelMetricGrouping
@@ -147,9 +111,7 @@ class MetricSpec:
 
 @dataclass(frozen=True)
 class TaskSpec:
-    """One task's frozen definition. See the module docstring for what is and
-    is not authoritative here.
-    """
+    """One task's frozen definition."""
 
     name: str
     hf_repo: str
@@ -169,11 +131,9 @@ class TaskSpec:
 
 
 def resolve_task_configs(tasks: Sequence[str]) -> dict[str, Any]:
-    """Resolve every task string to its live `LightevalTaskConfig`, in one
-    `Registry` construction. Raises naming the task on anything that does not
-    resolve to exactly one config -- LightEval's own `task_to_configs` is a
-    `defaultdict`, which would otherwise let a typo through as a silently
-    empty list rather than a `KeyError`.
+    """Resolve every task string to its live `LightevalTaskConfig`. Raises
+    naming a task that does not resolve to exactly one config (the registry's
+    `defaultdict` would let a typo through as an empty list).
     """
     from lighteval.tasks.registry import Registry
 
@@ -228,9 +188,8 @@ def _example_specific(specific: Any) -> Any:
 
 
 def _render_example(config: Any) -> dict[str, Any]:
-    """Render one real dataset row's prompt, for human review and drift
-    detection. Best-effort: see the module docstring for why a fetch failure
-    here must not fail the whole derive.
+    """One real dataset row's prompt, for review. Best-effort: a fetch
+    failure is recorded, not raised.
     """
     split = (config.evaluation_splits or config.hf_avail_splits or (None,))[0]
     if split is None:
@@ -279,19 +238,9 @@ def derive_task_spec(task: str, config: Any) -> TaskSpec:
     )
 
 
-def _spec_to_dict(spec: TaskSpec) -> dict[str, Any]:
-    return asdict(spec)
-
-
-# The fingerprint's own strict subset of _STRICT_FIELDS: dataset coordinates,
-# revision, the prompt-function reference, and the metric specs -- exactly
-# "what is asked and how it is judged" (`dataset_fingerprint`'s docstring).
-# `generation_size`/`stop_sequence` are deliberately excluded, matching the
-# module docstring's own note that a recipe's sampling settings always win
-# over them; `hf_avail_splits`/`evaluation_splits`/fewshot fields/`version`
-# are excluded too, since none of this project's tasks vary them and the four
-# kept fields are already enough to catch a LightEval upgrade that moves a
-# prompt, a dataset revision, or a metric.
+# What a document asks and how its answer is judged. The recipe overrides
+# generation size and stop sequence, and no task varies its splits, few-shot
+# settings or version, so those stay out of the fingerprint.
 _FINGERPRINT_FIELDS = (
     "hf_repo",
     "hf_subset",
@@ -302,30 +251,20 @@ _FINGERPRINT_FIELDS = (
 
 
 def dataset_fingerprint(spec: TaskSpec) -> str:
-    """First 8 hex characters of a sha256 over `spec`'s `_FINGERPRINT_FIELDS`
-    -- the fields that decide what a document asks and how its answer is
-    judged. Any change to one of these should compare as a different Langfuse
-    dataset (`dataset_name`); a change to something this project's scoring
-    never uses (`generation_size`, `stop_sequence`, the best-effort `example`
-    block) must not, or a recipe pointed at an unrelated tweak would silently
-    start a brand-new dataset instead of comparing against its history.
-
-    Reuses `TaskSpec` rather than re-reading `LightevalTaskConfig` fields by
-    hand, per the module docstring: this is one more reader of the same
-    frozen spec, not a second derivation.
+    """First 8 hex characters of a sha256 over `spec`'s `_FINGERPRINT_FIELDS`.
+    A change to one of them starts a new Langfuse dataset; a change to
+    anything else keeps comparing against the old one.
     """
-    as_dict = _spec_to_dict(spec)
+    as_dict = asdict(spec)
     payload = {field_name: as_dict[field_name] for field_name in _FINGERPRINT_FIELDS}
     canonical = json.dumps(payload, sort_keys=True, default=str)
     return sha256(canonical.encode("utf-8")).hexdigest()[:8]
 
 
 def dataset_name(task: str, spec: TaskSpec, max_samples: int | None = None) -> str:
-    """`{task}@{fingerprint}`, plus `[:N]` when the recipe caps the task at
-    `N` documents -- the Langfuse dataset name `evaluation.traced`
-    upserts into and `evaluation.run` reads back from. A capped and an
-    uncapped run never share a dataset, since `run_experiment` scores every
-    item a dataset holds. See `dataset_fingerprint`.
+    """The Langfuse dataset name: `{task}@{fingerprint}`, plus `[:N]` when the
+    recipe caps the task at `N` documents, since `run_experiment` scores
+    every item a dataset holds.
     """
     name = f"{task}@{dataset_fingerprint(spec)}"
     return f"{name}[:{max_samples}]" if max_samples else name
@@ -335,19 +274,12 @@ def derive_taskpack(tasks: Sequence[str] = KNOWN_TASKS) -> dict[str, Any]:
     """Derive the complete task pack from the installed LightEval."""
     resolved = resolve_task_configs(tasks)
     return {
-        "lighteval_version": _lighteval_version(),
+        "lighteval_version": installed_version("lighteval"),
         "tasks": {
-            task: _spec_to_dict(derive_task_spec(task, config))
+            task: asdict(derive_task_spec(task, config))
             for task, config in resolved.items()
         },
     }
-
-
-def _lighteval_version() -> str:
-    try:
-        return importlib_metadata.version("lighteval")
-    except importlib_metadata.PackageNotFoundError:
-        return "unknown"
 
 
 def write_taskpack(path: str | Path, pack: Mapping[str, Any]) -> None:
@@ -384,11 +316,9 @@ def verify_task_specs(
     pack_path: str | Path, tasks: Sequence[str]
 ) -> tuple[list[str], list[str]]:
     """Re-derive `tasks` from the installed LightEval and diff each against
-    the committed pack at `pack_path`. Returns `(errors, warnings)`: a
-    structural mismatch (dataset coordinates, generation parameters, the
-    prompt function reference, the metric references) is an error naming the
-    exact key that moved; an `example` mismatch, or one side being unable to
-    render its example at all, is a warning only -- see the module docstring.
+    the pack at `pack_path`. Returns `(errors, warnings)`: a strict field that
+    moved is an error naming the key; an `example` that moved, or rendered on
+    only one side, is a warning.
     """
     try:
         committed = load_taskpack(pack_path)
@@ -418,7 +348,7 @@ def verify_task_specs(
         return ([*errors, f"could not re-derive task specs: {error}"], warnings)
 
     for task in tasks:
-        derived = _spec_to_dict(derive_task_spec(task, resolved[task]))
+        derived = asdict(derive_task_spec(task, resolved[task]))
         committed_spec = committed_tasks[task]
         if not isinstance(committed_spec, Mapping):
             errors.append(f"tasks.{task} in {pack_path} is not a mapping")
@@ -440,10 +370,11 @@ def verify_task_specs(
             )
 
     committed_version = committed.get("lighteval_version")
-    if committed_version != _lighteval_version():
+    installed = installed_version("lighteval")
+    if committed_version != installed:
         warnings.append(
             f"lighteval_version moved: committed={committed_version!r} "
-            f"installed={_lighteval_version()!r} (dependency pin should catch "
+            f"installed={installed!r} (dependency pin should catch "
             "this too; see evaluation.stack)"
         )
     return (errors, warnings)

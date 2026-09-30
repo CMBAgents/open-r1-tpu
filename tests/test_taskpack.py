@@ -1,11 +1,8 @@
 """Tests for `open_r1_tpu.evaluation.taskpack`.
 
-Most of this module's real work -- reading `LightevalTaskConfig` off the
-installed LightEval's own registry -- needs `lighteval` installed, so those
-tests are `@pytest.mark.integration` per the project convention (deselected
-by default; run with `pytest -m integration` once the `eval` extra is
-installed). The pure helpers (`_bare_name`, the diff
-logic) are tested unconditionally.
+The pure helpers run everywhere. Tests that read the installed LightEval's
+registry skip without the eval extra, and the one that renders real examples
+from the Hub is marked `network`.
 """
 
 from __future__ import annotations
@@ -162,11 +159,24 @@ def test_verify_reports_tasks_the_pack_does_not_cover(tmp_path):
     assert any("math_500|0" in e for e in errors)
 
 
-# --- integration: needs the real LightEval registry -------------------------
+# --- with the installed LightEval registry ----------------------------------
 
 
-@pytest.mark.integration
-def test_derive_and_verify_round_trip(tmp_path):
+@pytest.fixture
+def lighteval_registry():
+    pytest.importorskip("lighteval")
+
+
+@pytest.fixture
+def unfetched_examples(monkeypatch, lighteval_registry):
+    """Derive without downloading anything: every example is unavailable."""
+    monkeypatch.setattr(
+        taskpack, "_render_example", lambda config: {"unavailable": "not fetched"}
+    )
+
+
+@pytest.mark.network
+def test_derive_and_verify_round_trip(tmp_path, lighteval_registry):
     pack = taskpack.derive_taskpack(["gsm8k|0", "math_500|0"])
     assert set(pack["tasks"]) == {"gsm8k|0", "math_500|0"}
 
@@ -183,13 +193,11 @@ def test_derive_and_verify_round_trip(tmp_path):
     taskpack.write_taskpack(pack_path, pack)
     errors, warnings = taskpack.verify_task_specs(pack_path, ["gsm8k|0", "math_500|0"])
     assert errors == []
-    # No warnings expected here: neither dataset is gated, so both examples
-    # should render on both sides.
+    # Neither dataset is gated, so both examples render on both sides.
     assert warnings == []
 
 
-@pytest.mark.integration
-def test_verify_names_the_exact_key_that_moved(tmp_path):
+def test_verify_names_the_exact_key_that_moved(tmp_path, unfetched_examples):
     pack = taskpack.derive_taskpack(["math_500|0"])
     pack["tasks"]["math_500|0"]["generation_size"] = 1
     pack_path = tmp_path / "taskpack.yaml"
@@ -202,14 +210,12 @@ def test_verify_names_the_exact_key_that_moved(tmp_path):
     assert "derived=32768" in errors[0]
 
 
-@pytest.mark.integration
-def test_resolve_task_configs_raises_naming_the_bad_task():
+def test_resolve_task_configs_raises_naming_the_bad_task(lighteval_registry):
     with pytest.raises(ValueError, match="not-a-real-task"):
         taskpack.resolve_task_configs(["not-a-real-task|0"])
 
 
-@pytest.mark.integration
-def test_ifeval_metric_grouping_is_recorded_as_a_list():
+def test_ifeval_metric_grouping_is_recorded_as_a_list(unfetched_examples):
     pack = taskpack.derive_taskpack(["ifeval|0"])
     metric_names = pack["tasks"]["ifeval|0"]["metrics"][0]["metric_name"]
     assert set(metric_names) == {
@@ -220,15 +226,19 @@ def test_ifeval_metric_grouping_is_recorded_as_a_list():
     }
 
 
-@pytest.mark.integration
-def test_gated_dataset_degrades_example_to_a_warning_not_a_failure(tmp_path):
+def test_an_unreachable_dataset_degrades_the_example_rather_than_failing(
+    tmp_path, monkeypatch, lighteval_registry
+):
+    def gated(*args, **kwargs):
+        raise PermissionError("gpqa is gated on the Hub")
+
+    monkeypatch.setattr("datasets.load_dataset", gated)
     pack = taskpack.derive_taskpack(["gpqa:diamond|0"])
-    assert "unavailable" in pack["tasks"]["gpqa:diamond|0"]["example"]
+    assert "gated" in pack["tasks"]["gpqa:diamond|0"]["example"]["unavailable"]
 
     pack_path = tmp_path / "taskpack.yaml"
     taskpack.write_taskpack(pack_path, pack)
     errors, warnings = taskpack.verify_task_specs(pack_path, ["gpqa:diamond|0"])
-    # Both sides are equally unable to reach the gated dataset -- that is not
-    # a mismatch, so no warning either.
+    # Neither side could render the example, which is not a mismatch.
     assert errors == []
     assert warnings == []

@@ -1,26 +1,24 @@
 """The optional Langfuse path: trace every document of an evaluation.
 
-With a tracing config, `evaluation.run` hands each run here. The recipe's
-tasks are first synced into Langfuse datasets (`sync_recipe`): one dataset per
-task, named `{task}@{fingerprint}` (plus `[:N]` when `eval.max_samples` caps
-it, see `taskpack.dataset_name`), one item per document with a deterministic
-id, so a re-sync upserts rather than duplicates. Then `dataset.run_experiment()`
-drives generation and scoring per `(task, seed)`, with this project's task
-function (`generate.make_task`) and a LightEval evaluator
-(`lighteval_evaluator`), so each seed is its own run in Langfuse's comparison
-view. The JSONL is written from the returned `ExperimentResult`, never read
-back from Langfuse, so the summary does not depend on Langfuse staying up.
+With `--tracing-config`, `evaluation.run` hands the run to `run_langfuse`. It
+first syncs the recipe's tasks into Langfuse datasets: one per task, named
+`{task}@{fingerprint}` (plus `[:N]` under `eval.max_samples`; see
+`taskpack.dataset_name`), with one item per document under a deterministic id
+so a re-sync upserts. `dataset.run_experiment()` then generates and scores each
+(task, seed) with `generate.make_task` and `lighteval_evaluator`, so each seed
+is its own run in Langfuse's comparison view. It is called from synchronous
+code, so the evaluators score on the main thread. The JSONL is written from the
+returned `ExperimentResult`, never read back from Langfuse.
 
 A document's `query` and `specific` are captured once, at sync, and scoring
-rebuilds its `Doc` from them (`scoring.doc_from_item`) rather than calling the
-prompt function again: `gpqa`'s shuffles its answer choices on every call.
+rebuilds its `Doc` from them (`scoring.doc_from_item`), because gpqa's prompt
+function shuffles its choices on every call. `run_experiment()` silently drops
+a document whose task function raised; `write_experiment_jsonl` records each
+one as `status: "dropped"` so document counts still add up.
 
-`run_experiment()` drops a document whose task function raised, with no error
-message; `write_experiment_jsonl` records each one as `status: "dropped"` so
-document counts still add up.
-
-The host and port come from a tracing config (`configs/tracing.example.yaml`);
-the keys come from `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY`, never a file.
+The tracing config (`configs/tracing.example.yaml`) has one section,
+`langfuse`, with `host` and `port`. The keys come from `LANGFUSE_PUBLIC_KEY`
+and `LANGFUSE_SECRET_KEY` in the environment, never a file.
 """
 
 from __future__ import annotations
@@ -36,7 +34,7 @@ from typing import Any
 
 from open_r1_tpu.core.config import load_config
 from open_r1_tpu.evaluation import scoring
-from open_r1_tpu.evaluation.config import _reject_unknown_keys
+from open_r1_tpu.evaluation.config import reject_unknown_keys
 from open_r1_tpu.evaluation.generate import iter_documents, make_task, render_messages
 from open_r1_tpu.evaluation.summary import jsonl_path, ok_record, write_jsonl
 from open_r1_tpu.evaluation.taskpack import (
@@ -50,9 +48,7 @@ from open_r1_tpu.evaluation.taskpack import (
 LOGGER = logging.getLogger(__name__)
 
 
-# The complete key set each section accepts. A key outside this set is either
-# a typo or a stale setting from a schema that moved on, exactly as
-# `evaluation.run._reject_unknown_keys` treats an eval recipe.
+# The keys each section accepts; anything else is an error, as in a recipe.
 LANGFUSE_KEYS = {"host", "port"}
 
 SECTIONS = {"langfuse": LANGFUSE_KEYS}
@@ -79,7 +75,7 @@ def validate_tracing_config(config: dict[str, Any]) -> None:
     for section, allowed in SECTIONS.items():
         if not isinstance(config.get(section), dict):
             raise ValueError(f"Missing configuration section: {section}")
-        _reject_unknown_keys(section, config[section], allowed)
+        reject_unknown_keys(section, config[section], allowed)
 
     langfuse = config["langfuse"]
     _require_nonempty_str("langfuse.host", langfuse.get("host"))
@@ -94,10 +90,7 @@ def load_tracing_config(
 
 
 def build_langfuse_client(tracing_config: Mapping[str, Any]) -> Any:
-    """A `Langfuse` client from this project's own tracing config -- the
-    `langfuse` section. Shared by `evaluation.dataset_sync` and
-    `evaluation.experiment`.
-    """
+    """A `Langfuse` client for the tracing config's `langfuse` section."""
     from langfuse import Langfuse
 
     langfuse_section = tracing_config["langfuse"]
@@ -109,11 +102,9 @@ LANGFUSE_FLUSH_TIMEOUT_SECS = 10.0
 
 
 class LangfuseGuard:
-    """Every Langfuse call funnelled through here, so a dead Langfuse costs a
-    missing trace, score, or dataset item, never a generation. The first
-    failure in a run logs a full warning; every subsequent one is counted
-    silently, and the total is logged once at the end -- a dead Langfuse must
-    not spam the log once per document across a 1,819-document tier.
+    """Funnels the sync's Langfuse calls so a failure costs a missing dataset
+    or item, not the rest of the sync. The first failure logs a warning; later
+    ones are only counted in `failures`, which `sync_datasets` checks.
     """
 
     def __init__(self, client: Any):
@@ -122,10 +113,8 @@ class LangfuseGuard:
         self._warned = False
 
     def flush(self) -> None:
-        # The SDK's own flush() has no timeout, and a hung export must not
-        # hang the run -- so it is bounded from outside, in a worker thread
-        # (safe here: unlike evaluation.scoring.compute_scores, nothing
-        # Langfuse does depends on running on the main thread).
+        # The SDK's flush() has no timeout, so it is bounded from a worker
+        # thread (nothing Langfuse does needs the main thread).
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 executor.submit(self.client.flush).result(
@@ -135,78 +124,48 @@ class LangfuseGuard:
             self.failures += 1
             LOGGER.warning("Langfuse flush failed or timed out", exc_info=True)
 
-    def create_dataset(self, **kwargs: Any) -> Any | None:
-        """Ensure one Langfuse dataset exists before any
-        `create_dataset_item` call reaches it -- `create_dataset_item` 404s
-        against a dataset that was never created, which is exactly what
-        happened the first time `evaluation.dataset_sync` ran against a live
-        Langfuse without this call. `POST /api/public/v2/datasets`'s
-        generated client (checked against the installed `langfuse==4.14.5`)
-        has no documented conflict response for an existing name -- every
-        status this endpoint's spec models falls through to a 200, so a
-        repeat call is expected to return the existing dataset rather than
-        error. If that ever turns out wrong in practice, it would show up
-        here as `failures` climbing on every routine re-sync, not as a
-        silent 404 per item -- a far cheaper failure mode to notice.
-        Returns the `Dataset`, or `None` if Langfuse failed.
-        """
+    def _call(self, method: str, instead: str, **kwargs: Any) -> Any | None:
         try:
-            return self.client.create_dataset(**kwargs)
+            return getattr(self.client, method)(**kwargs)
         except Exception:
             self.failures += 1
             if not self._warned:
                 LOGGER.warning(
-                    "Langfuse call failed; continuing without ensuring "
-                    "further datasets exist (further failures are counted, "
-                    "not logged)",
+                    "Langfuse call failed; continuing without %s (further "
+                    "failures are counted, not logged)",
+                    instead,
                     exc_info=True,
                 )
                 self._warned = True
             return None
+
+    def create_dataset(self, **kwargs: Any) -> Any | None:
+        """Create a dataset before its items, which 404 against one that was
+        never created. A repeat call is expected to return the existing
+        dataset. None if Langfuse failed.
+        """
+        return self._call("create_dataset", "ensuring further datasets exist", **kwargs)
 
     def create_dataset_item(self, **kwargs: Any) -> Any | None:
-        """Every `evaluation.dataset_sync` upsert funnelled through here: a
-        dead Langfuse must cost a missing dataset item, never stop the sync
-        -- and the run it gates -- from starting. Returns the created
-        `DatasetItem`, or `None` if Langfuse failed.
-        """
-        try:
-            return self.client.create_dataset_item(**kwargs)
-        except Exception:
-            self.failures += 1
-            if not self._warned:
-                LOGGER.warning(
-                    "Langfuse call failed; continuing without syncing "
-                    "further dataset items (further failures are counted, "
-                    "not logged)",
-                    exc_info=True,
-                )
-                self._warned = True
-            return None
+        """Upsert one dataset item. None if Langfuse failed."""
+        return self._call(
+            "create_dataset_item", "syncing further dataset items", **kwargs
+        )
 
 
-# Namespace for deterministic dataset item ids: the same (dataset, doc_id)
-# always yields the same id, so create_dataset_item upserts rather than
-# accumulating.
+# The same (dataset, doc_id) always yields the same item id, so a re-sync
+# upserts rather than duplicating.
 _ITEM_ID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "open-r1-tpu-dataset-item")
 
 
 def item_id(dataset: str, doc_id: str) -> str:
-    """Deterministic id for one dataset's one document. Stable across
-    re-runs of `sync_task` against the same dataset name and document id,
-    which is what makes a re-sync an upsert rather than a duplicate.
-    """
+    """Deterministic id for one document of one dataset."""
     return str(uuid.uuid5(_ITEM_ID_NAMESPACE, f"{dataset}:{doc_id}"))
 
 
 def ensure_dataset(guard: LangfuseGuard, name: str) -> bool:
-    """Ensure Langfuse dataset `name` exists before any `create_dataset_item`
-    call reaches it. Returns `True` once the dataset is known to exist
-    (created now, or already there from an earlier sync); `False` if
-    Langfuse could not be reached -- `LangfuseGuard.create_dataset` has
-    already logged/counted that failure, and the caller must skip syncing
-    this task's items rather than attempt them against a dataset that
-    almost certainly does not exist.
+    """Whether dataset `name` exists now. False means Langfuse failed (the
+    guard has counted it) and the task's items should be skipped.
     """
     return guard.create_dataset(name=name) is not None
 
@@ -220,15 +179,10 @@ def sync_task(
     system_prompt: str | None,
     max_samples: int | None,
 ) -> int:
-    """Upsert every document of one task's evaluation split as a Langfuse
-    dataset item under dataset `name`.
-
-    `name` is computed by the caller (`taskpack.dataset_name`, from a real
-    `LightevalTaskConfig`'s derived `TaskSpec`) rather than here, so this
-    function's own tests can stub `config` down to just what `build_doc`/
-    `iter_documents` need, without deriving a task spec (which would need a
-    real dataset load for its best-effort `example` field). Returns the item
-    count.
+    """Upsert every document of one task's evaluation split into dataset
+    `name` and return the document count. The caller names the dataset
+    (`taskpack.dataset_name`), so `config` needs only what `iter_documents`
+    and the prompt function read.
     """
     documents = iter_documents(config, max_samples=max_samples)
     for doc_id, row in documents:
@@ -288,56 +242,34 @@ def sync_recipe(
 
 
 def lighteval_evaluator(task_name: str) -> Callable[..., list[Any]]:
-    """Factory for the per-document evaluator `dataset.run_experiment()`
-    calls: `evaluator(*, input, output, expected_output, metadata, **kwargs)
-    -> list[Evaluation]`.
+    """The per-document evaluator `dataset.run_experiment()` calls for one
+    task, closed over the task's live LightEval metrics.
 
-    Closed over `task_name`'s live metric objects, resolved fresh through
-    `evaluation.taskpack.resolve_task_configs` on every call -- never
-    deserialized from the committed task pack; see that module's docstring
-    for why. Calls `build_model_response`, `compute_scores`, `run_level_fields`,
-    `coerce_fields`, in that order.
-
-    `output` is the dict `evaluation.task_fn.make_task`'s task function
-    returns (`{"text", "finish_reason", "completion_tokens", ...}`), not a
-    bare completion string -- `"text"` is what gets scored, and
-    `"finish_reason"`/`"completion_tokens"` feed `run_level_fields` exactly as
-    the generation outcome did before. `evaluation.experiment` reads the same
-    `output` dict again, independently, to persist its JSONL record, so
-    nothing downstream ever has to read a fact back out of Langfuse.
-
-    Always returns a list, so a `SampleLevelMetricGrouping` (e.g. `ifeval`'s
-    four accuracies) produces several named scores rather than being
-    flattened into one -- `coerce_fields` already drops the list-valued
-    metrics (`inst_level_*_acc`) that have no single-document scalar meaning;
-    see `coerce_score`. A `ScoringResult` with `failed_metrics` adds one more:
-    `Evaluation(name="scoring_failed", value=1.0, metadata={"failed_metrics":
-    ..., "errors": ...})` -- visible in Langfuse rather than only in a log
-    line, and readable back locally (its `metadata`) by `evaluation.experiment`
-    without another Langfuse round trip.
+    `output` is the task function's dict (`generate.make_task`): its `text` is
+    scored, and its `finish_reason` and `completion_tokens` become run-level
+    scores (`scoring.run_level_fields`). Returns one `Evaluation` per score
+    name, so a metric grouping such as ifeval's posts several, plus a
+    `scoring_failed` evaluation carrying the failed metrics and their errors
+    when any metric raised.
     """
     from langfuse import Evaluation
-
-    from open_r1_tpu.evaluation.taskpack import resolve_task_configs
 
     metrics = list(resolve_task_configs([task_name])[task_name].metrics)
 
     def evaluator(
         *, output: Any, expected_output: Any, metadata: Mapping[str, Any], **kwargs: Any
     ) -> list[Any]:
-        text = output["text"] if isinstance(output, Mapping) else output
         doc = scoring.doc_from_item(expected_output, metadata, task_name)
-        model_response = scoring.build_model_response(text)
+        model_response = scoring.build_model_response(output["text"])
         result = scoring.compute_scores(doc, model_response, metrics)
 
         fields = dict(result.scores)
-        if isinstance(output, Mapping):
-            fields.update(
-                scoring.run_level_fields(
-                    completion_tokens=output.get("completion_tokens"),
-                    finish_reason=str(output.get("finish_reason", "")),
-                )
+        fields.update(
+            scoring.run_level_fields(
+                completion_tokens=output.get("completion_tokens"),
+                finish_reason=str(output.get("finish_reason", "")),
             )
+        )
 
         evaluations = [
             Evaluation(name=name, value=value, data_type=data_type)
@@ -360,20 +292,14 @@ def lighteval_evaluator(task_name: str) -> Callable[..., list[Any]]:
     return evaluator
 
 
-# Evaluations `lighteval_evaluator` posts that are not a LightEval metric
-# name -- run-level facts and the failure marker -- excluded from a JSONL
-# record's `scores` dict, keeping `result.scores` (LightEval's own metric
-# names) separate from `evaluation.scoring.run_level_fields`.
+# Evaluations that are not LightEval metrics, kept out of a record's `scores`.
 _RUN_LEVEL_EVALUATION_NAMES = frozenset(
     {"completion_tokens", "truncated", "scoring_failed"}
 )
 
 
 def _git_commit() -> str | None:
-    """Best-effort provenance: `None` outside a git checkout or without
-    `git` on `PATH`, never a hard failure -- this is metadata, not a
-    correctness input.
-    """
+    """The checkout's commit, or None outside a git checkout: provenance only."""
     try:
         completed = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -391,7 +317,6 @@ def _record_from_item_result(
     item_result: Any, *, task: str, seed: int
 ) -> dict[str, Any]:
     """One JSONL record built from an `ExperimentItemResult`."""
-    output = item_result.output if isinstance(item_result.output, Mapping) else {}
     evaluations_by_name = {
         evaluation.name: evaluation for evaluation in item_result.evaluations
     }
@@ -415,7 +340,7 @@ def _record_from_item_result(
         seed=seed,
         gold=item.expected_output,
         query=item.metadata.get("query"),
-        output=output,
+        output=item_result.output,
         scores=scores,
         failed_metrics=failed_metrics,
         scoring_errors=scoring_errors,
@@ -424,9 +349,7 @@ def _record_from_item_result(
 
 
 def _dropped_record(item: Any, *, task: str, seed: int) -> dict[str, Any]:
-    """A document `run_experiment` returned no result for at all -- see the
-    module docstring's note on why no error message survives to here.
-    """
+    """A document `run_experiment` returned no result for."""
     return {
         "status": "dropped",
         "doc_id": item.metadata["doc_id"],
@@ -442,9 +365,8 @@ def _dropped_record(item: Any, *, task: str, seed: int) -> dict[str, Any]:
 def write_experiment_jsonl(
     result: Any, dataset: Any, *, task: str, seed: int, output_path: Path
 ) -> None:
-    """Persist one `(seed, task)`'s `ExperimentResult` as the JSONL
-    `evaluation.reduce.reduce_seed` reads -- one line per dataset item,
-    whether `run_experiment` returned a result for it or dropped it.
+    """Write one (task, seed)'s `ExperimentResult` as JSONL: one record per
+    dataset item, whether `run_experiment` returned a result for it or not.
     """
     seen_ids = {item_result.item.id for item_result in result.item_results}
     records = [
@@ -470,7 +392,7 @@ def run_experiment_for_task_seed(
     output_dir: Path,
     run_metadata: Mapping[str, Any],
 ) -> Any:
-    """Run and persist one `(task, seed)`'s experiment against the synced
+    """Run and persist one (task, seed)'s experiment against the synced
     Langfuse dataset `dataset_name`.
     """
     dataset = langfuse_client.get_dataset(dataset_name)
@@ -501,9 +423,9 @@ def run_experiment_for_task_seed(
 def sync_datasets(langfuse_client: Any, settings: Mapping[str, Any]) -> dict[str, str]:
     """Sync the recipe's tasks into Langfuse and return `{task: dataset}`.
 
-    Idempotent, so it runs before every traced evaluation rather than as a
-    separate step. Stops on any Langfuse failure: an experiment against an
-    incomplete dataset would score fewer documents than the recipe asks for.
+    Idempotent, so it runs before every traced evaluation. Stops on any
+    Langfuse failure: an experiment against an incomplete dataset would score
+    fewer documents than the recipe asks for.
     """
     guard = LangfuseGuard(langfuse_client)
     synced = sync_recipe(guard, settings)
@@ -525,6 +447,7 @@ def run_langfuse(
     output_dir: Path,
     recipe_path: str | None,
 ) -> None:
+    """Sync the recipe's datasets, then run every (seed, task) experiment."""
     datasets = sync_datasets(langfuse_client, settings)
     run_metadata = {
         "recipe_path": recipe_path,

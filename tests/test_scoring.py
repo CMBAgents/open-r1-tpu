@@ -1,11 +1,8 @@
 """Tests for `open_r1_tpu.evaluation.scoring`.
 
-`compute_scores`, `coerce_score`, and `coerce_fields` are pure dispatch logic
-tested against small fake metric objects, with no LightEval installation
-needed. Everything that touches a real LightEval `Doc`/`ModelResponse`/metric
--- `build_doc`, `build_model_response`, and the reasoning-tag strip
-regression guard -- is `@pytest.mark.integration` (deselected by default; run
-with `pytest -m integration` once the `eval` extra is installed).
+The dispatch and coercion logic runs against fake metrics. Tests that touch a
+real LightEval `Doc`, `ModelResponse` or metric skip without the eval extra;
+those that also download a dataset row are marked `network`.
 """
 
 from __future__ import annotations
@@ -106,7 +103,7 @@ def test_build_doc_rejects_an_empty_query_or_choices():
         scoring.build_doc(bad_prompt_function, {"a": 1}, "some_task")
 
 
-# --- type coercion (Task 3d's table) -----------------------------------------
+# --- type coercion -----------------------------------------------------------
 
 
 def test_type_coercion_table():
@@ -148,56 +145,23 @@ def test_run_level_fields():
     }
 
 
-# --- integration: needs the real LightEval Doc/ModelResponse/metrics -------
+# --- with LightEval ----------------------------------------------------------
 
 
-@pytest.mark.integration
-def test_build_doc_uses_the_task_pack_prompt_function():
-    resolved = taskpack.resolve_task_configs(["math_500|0"])
-    config = resolved["math_500|0"]
-    from datasets import load_dataset
-
-    row = load_dataset(
-        config.hf_repo, config.hf_subset, split=f"{config.evaluation_splits[0]}[:1]"
-    )[0]
-
-    doc = scoring.build_doc(config.prompt_function, row, "math_500")
-    assert doc.query
-    assert doc.choices
-    assert doc.gold_index == 0
-
-
-@pytest.mark.integration
-def test_build_doc_carries_specific_through_when_the_task_defines_it():
-    resolved = taskpack.resolve_task_configs(["ifeval|0"])
-    config = resolved["ifeval|0"]
-    from datasets import load_dataset
-
-    row = load_dataset(
-        config.hf_repo, config.hf_subset, split=f"{config.evaluation_splits[0]}[:1]"
-    )[0]
-
-    doc = scoring.build_doc(config.prompt_function, row, "ifeval")
-    assert doc.specific is not None
-    assert "instructions_id_list" in doc.specific
-
-
-@pytest.mark.integration
 def test_build_model_response_strips_reasoning_tags_but_keeps_the_raw_text():
+    pytest.importorskip("lighteval")
     raw = "<think>scratch work</think>\nfinal answer"
     response = scoring.build_model_response(raw)
     assert response.text == [raw]
     assert response.text_post_processed == ["\nfinal answer"]
 
 
-@pytest.mark.integration
 def test_reasoning_tag_strip_prevents_an_abandoned_boxed_answer_from_winning():
-    """The regression guard for the subtlest failure mode in the whole
-    Langfuse-native eval plan: an abandoned candidate answer inside
-    `<think>...</think>` must not be extractable once the tags are stripped,
-    even though it is extractable -- and wins, because `\\boxed{}` has
-    extraction priority over a plain "ANSWER:" marker -- when it is not.
+    """An answer boxed and then abandoned inside `<think>` must not be scored.
+    Unstripped, it wins, because `\\boxed{}` takes extraction priority over a
+    plain "ANSWER:" marker.
     """
+    pytest.importorskip("lighteval")
     from lighteval.tasks.requests import Doc
 
     resolved = taskpack.resolve_task_configs(["gsm8k|0"])
@@ -224,21 +188,58 @@ def test_reasoning_tag_strip_prevents_an_abandoned_boxed_answer_from_winning():
     assert stripped_result.scores != unstripped_result.scores
 
 
-# --- integration: doc_from_item / lighteval_evaluator (Langfuse adapter) ---
+def test_doc_from_item_rejects_metadata_missing_query():
+    pytest.importorskip("lighteval")
+    with pytest.raises(ValueError, match="query"):
+        scoring.doc_from_item("gold", {"specific": None}, "gsm8k")
+
+
+def test_doc_from_item_coerces_non_string_expected_output_to_str():
+    """Langfuse returns a numeric-looking gold ("204") as a number, while one
+    that is not round-trip safe ("025") stays a string; LightEval's metrics
+    call `.strip()` on the gold, so a number would crash every metric.
+    """
+    pytest.importorskip("lighteval")
+    metadata = {"task": "aime24|0", "doc_id": "0", "specific": None, "query": "q"}
+    assert scoring.doc_from_item(204, metadata, "aime24").get_golds() == ["204"]
+    assert scoring.doc_from_item(204.0, metadata, "aime24").get_golds() == ["204.0"]
+    assert scoring.doc_from_item("025", metadata, "aime24").get_golds() == ["025"]
+
+
+# --- with LightEval and a dataset row from the Hub ---------------------------
 
 
 def _row_and_config(task: str):
-    resolved = taskpack.resolve_task_configs([task])
-    config = resolved[task]
+    pytest.importorskip("lighteval")
     from datasets import load_dataset
 
+    config = taskpack.resolve_task_configs([task])[task]
     row = load_dataset(
         config.hf_repo, config.hf_subset, split=f"{config.evaluation_splits[0]}[:1]"
     )[0]
     return config, row
 
 
-@pytest.mark.integration
+@pytest.mark.network
+def test_build_doc_uses_the_task_pack_prompt_function():
+    config, row = _row_and_config("math_500|0")
+
+    doc = scoring.build_doc(config.prompt_function, row, "math_500")
+    assert doc.query
+    assert doc.choices
+    assert doc.gold_index == 0
+
+
+@pytest.mark.network
+def test_build_doc_carries_specific_through_when_the_task_defines_it():
+    config, row = _row_and_config("ifeval|0")
+
+    doc = scoring.build_doc(config.prompt_function, row, "ifeval")
+    assert doc.specific is not None
+    assert "instructions_id_list" in doc.specific
+
+
+@pytest.mark.network
 def test_doc_from_item_agrees_with_build_doc_on_golds():
     config, row = _row_and_config("math_500|0")
     doc = scoring.build_doc(config.prompt_function, row, "math_500")
@@ -261,7 +262,7 @@ def test_doc_from_item_agrees_with_build_doc_on_golds():
     )
 
 
-@pytest.mark.integration
+@pytest.mark.network
 def test_doc_from_item_carries_specific_through_for_ifeval():
     config, row = _row_and_config("ifeval|0")
     doc = scoring.build_doc(config.prompt_function, row, "ifeval")
@@ -274,161 +275,3 @@ def test_doc_from_item_carries_specific_through_for_ifeval():
     rebuilt = scoring.doc_from_item(doc.get_golds()[0], metadata, "ifeval")
     assert rebuilt.specific == doc.specific
     assert "instructions_id_list" in rebuilt.specific
-
-
-@pytest.mark.integration
-def test_doc_from_item_rejects_metadata_missing_query():
-    with pytest.raises(ValueError, match="query"):
-        scoring.doc_from_item("gold", {"specific": None}, "gsm8k")
-
-
-@pytest.mark.integration
-def test_doc_from_item_coerces_non_string_expected_output_to_str():
-    """Regression guard for the AIME24 card run (2026-09-15): Langfuse's
-    `expected_output` field is `Any`, and round-tripping a gold string through
-    it silently turns a round-trip-safe numeric string into a JSON number
-    (`"204"` comes back as `204`) while a non-round-trip-safe one (`"025"`)
-    survives as a string. LightEval's metrics `.strip()` the gold
-    unconditionally, so an un-coerced `int`/`float` gold crashes every metric
-    for that document.
-    """
-    metadata = {"task": "aime24|0", "doc_id": "0", "specific": None, "query": "q"}
-    assert scoring.doc_from_item(204, metadata, "aime24").get_golds() == ["204"]
-    assert scoring.doc_from_item(204.0, metadata, "aime24").get_golds() == ["204.0"]
-    assert scoring.doc_from_item("025", metadata, "aime24").get_golds() == ["025"]
-
-
-@pytest.mark.integration
-def test_lighteval_evaluator_scores_a_correct_and_an_incorrect_completion():
-    from open_r1_tpu.evaluation import traced
-
-    config, row = _row_and_config("gsm8k|0")
-    doc = scoring.build_doc(config.prompt_function, row, "gsm8k")
-    gold = doc.get_golds()[0]
-    metadata = {
-        "task": "gsm8k|0",
-        "doc_id": "0",
-        "specific": doc.specific,
-        "query": doc.query,
-    }
-
-    evaluator = traced.lighteval_evaluator("gsm8k|0")
-
-    correct = evaluator(
-        input=doc.query,
-        output={"text": gold, "finish_reason": "stop", "completion_tokens": 3},
-        expected_output=gold,
-        metadata=metadata,
-    )
-    by_name = {e.name: e for e in correct}
-    assert by_name["extractive_match"].value == 1.0
-    assert by_name["extractive_match"].data_type == "NUMERIC"
-    assert by_name["completion_tokens"].value == 3.0
-    assert by_name["truncated"].value == 0.0
-
-    wrong = evaluator(
-        input=doc.query,
-        output={
-            "text": " not the answer at all",
-            "finish_reason": "length",
-            "completion_tokens": 5,
-        },
-        expected_output=gold,
-        metadata=metadata,
-    )
-    wrong_by_name = {e.name: e for e in wrong}
-    assert wrong_by_name["extractive_match"].value == 0.0
-    assert wrong_by_name["truncated"].value == 1.0
-
-
-@pytest.mark.integration
-def test_lighteval_evaluator_accepts_a_bare_string_output():
-    from open_r1_tpu.evaluation import traced
-
-    # The task function always returns a dict (see evaluation.generate), but
-    # the evaluator's own Mapping check should not crash on a plain string.
-    config, row = _row_and_config("gsm8k|0")
-    doc = scoring.build_doc(config.prompt_function, row, "gsm8k")
-    gold = doc.get_golds()[0]
-    metadata = {
-        "task": "gsm8k|0",
-        "doc_id": "0",
-        "specific": doc.specific,
-        "query": doc.query,
-    }
-
-    evaluator = traced.lighteval_evaluator("gsm8k|0")
-    evaluations = evaluator(
-        input=doc.query, output=gold, expected_output=gold, metadata=metadata
-    )
-    by_name = {e.name: e for e in evaluations}
-    assert by_name["extractive_match"].value == 1.0
-    # No run-level fields when output carries no usage/finish_reason.
-    assert "completion_tokens" not in by_name
-
-
-@pytest.mark.integration
-def test_lighteval_evaluator_returns_several_named_scores_for_a_grouping_metric():
-    from open_r1_tpu.evaluation import traced
-
-    config, row = _row_and_config("ifeval|0")
-    doc = scoring.build_doc(config.prompt_function, row, "ifeval")
-    metadata = {
-        "task": "ifeval|0",
-        "doc_id": "0",
-        "specific": doc.specific,
-        "query": doc.query,
-    }
-
-    evaluator = traced.lighteval_evaluator("ifeval|0")
-    evaluations = evaluator(
-        input=doc.query,
-        output={
-            "text": "an arbitrary completion",
-            "finish_reason": "stop",
-            "completion_tokens": 4,
-        },
-        expected_output=doc.get_golds()[0],
-        metadata=metadata,
-    )
-    names = {e.name for e in evaluations}
-    assert {"prompt_level_strict_acc", "prompt_level_loose_acc"} <= names
-
-
-@pytest.mark.integration
-def test_lighteval_evaluator_marks_a_metric_failure(monkeypatch):
-    from open_r1_tpu.evaluation import taskpack as taskpack_module
-    from open_r1_tpu.evaluation import traced
-
-    class _RaisingMetric:
-        metric_name = "boom"
-        batched_compute = False
-
-        def compute_sample(self, **kwargs):
-            raise RuntimeError("kaboom")
-
-    class _FakeConfig:
-        def __init__(self):
-            self.metrics = [_RaisingMetric()]
-
-    monkeypatch.setattr(
-        taskpack_module, "resolve_task_configs", lambda tasks: {tasks[0]: _FakeConfig()}
-    )
-
-    evaluator = traced.lighteval_evaluator("gsm8k|0")
-    metadata = {
-        "task": "gsm8k|0",
-        "doc_id": "0",
-        "specific": None,
-        "query": "Question: x\nAnswer:",
-    }
-    evaluations = evaluator(
-        input=metadata["query"],
-        output={"text": "18", "finish_reason": "stop", "completion_tokens": 2},
-        expected_output=" 18",
-        metadata=metadata,
-    )
-    by_name = {e.name: e for e in evaluations}
-    assert by_name["scoring_failed"].value == 1.0
-    assert by_name["scoring_failed"].metadata["failed_metrics"] == ["boom"]
-    assert "kaboom" in by_name["scoring_failed"].metadata["errors"]["boom"]

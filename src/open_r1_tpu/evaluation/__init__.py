@@ -1,1 +1,1 @@
-"""LightEval orchestration and inference benchmarking."""
+"""Evaluate a served model on LightEval tasks: generate, score and summarise."""

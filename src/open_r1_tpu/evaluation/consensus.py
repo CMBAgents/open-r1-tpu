@@ -1,45 +1,22 @@
-"""cons@n: the one number that cannot be read off a per-seed mean.
+"""cons@n: a majority vote over each document's replicates.
 
-Every other metric in this pipeline is per-document and per-replicate, so
-`evaluation.summary` can score each replicate on its own and average. A
-consensus number is not: it needs all `n` replicates of a *single* document
-together, because the vote is between them. This module performs that join,
-over the same JSONL records `evaluation.summary` reads, and returns one value
-per task for `evaluation.summary.build_summary`.
+Every other metric is scored per replicate and averaged; a consensus needs all
+n replicates of one document at once. This module joins them from the JSONL
+records and returns one value per task for `summary.build_summary`.
 
-The vote is over **extracted answers, not raw completions**. LightEval's own
-`MajAtN` votes on preprocessed prediction strings, which for a long-CoT model
-means voting on thousands of tokens of distinct reasoning: no two samples are
-ever equal, every group has size one, and the "majority" is whichever sample
-happened to come first. That is pass@1 wearing a different name. Extracting
-first -- `lighteval.metrics.normalizations.math_normalizer`, the same
-last-`\\boxed{}` extractor LightEval uses -- is what makes the vote a vote.
+The vote is over extracted answers, not raw completions: two long reasoning
+traces are never identical, so a vote over text would make every group size
+one and the "majority" whichever sample came first. Answers are extracted
+with LightEval's `math_normalizer` (the last `\\boxed{}`). LightEval's own
+`MajAtN` is not used because it applies that extractor to the gold as well,
+and an AIME gold has no `\\boxed{}`, so every answer would be compared with an
+empty string.
 
-`MajAtN` is therefore not called directly for a second reason as well: it
-applies its `preprocess` to the gold as well as to the predictions, and an
-AIME gold is a bare integer with no `\\boxed{}` around it, which
-`math_normalizer` maps to the empty string. Passing the extractor through
-`MajAtN` would compare every consensus answer against an empty gold and score
-the benchmark at zero.
-
-What this module does implement is the vote itself -- a `Counter` -- and
-nothing else. Extraction is LightEval's `math_normalizer`; the judgement of
-whether the winning answer is right is the task's own metric, run through
-`evaluation.scoring.compute_scores` on the winning completion exactly as if
-that completion were the only one; the reduction across documents is that
-metric's own `corpus_level_fn`. A document judged here gets the same verdict
-the CLI would have given the same text.
-
-**Ties break towards the answer that appeared first**, in replicate order.
-Any rule is arbitrary at a genuine tie; this one is at least deterministic
-across re-reductions of the same records, which "whichever `Counter` returns"
-is not guaranteed to be.
-
-**A sample with no extractable answer does not vote.** It is neither evidence
-for a wrong answer nor for a right one; counting empty extractions as a
-candidate would let a model that mostly fails to answer win its own vote with
-silence. A document where *no* replicate extracted an answer has no consensus
-at all and is scored 0 for the tier, with a warning naming it.
+The winning answer is judged by the task's own metric (`scoring.compute_scores`)
+and the documents are reduced by that metric's `corpus_level_fn`. A tie goes to
+the answer that appeared first in seed order, so re-reducing the same records
+gives the same number. A replicate with no extractable answer does not vote; a
+document where none has one scores 0 and is counted separately.
 """
 
 from __future__ import annotations
@@ -47,26 +24,22 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 from open_r1_tpu.evaluation import scoring
-from open_r1_tpu.evaluation.config import task_slug
 
 LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class ConsensusResult:
-    """One task's consensus number, in the shape
-    `evaluation.summary.build_summary` files under `summary["consensus"]`.
+    """One task's cons@n, as filed under `summary["consensus"]`.
 
-    `documents_without_consensus` is reported rather than folded silently
-    into `value`: a zero earned because no replicate produced an extractable
-    answer is a generation failure, and a zero earned because the majority
-    agreed on a wrong answer is a reasoning failure. They read identically in
-    the headline number and differently here.
+    `documents_without_consensus` separates a zero earned because no
+    replicate produced an answer (a generation failure) from one earned by a
+    wrong majority.
     """
 
     name: str
@@ -78,15 +51,9 @@ class ConsensusResult:
 
 
 def extract_answer(completion: str) -> str:
-    """The answer one completion votes for: LightEval's own last-`\\boxed{}`
-    extractor, applied to the completion with its reasoning block stripped.
-
-    The strip matters. A DeepSeek distill boxes candidate answers inside
-    `<think>...</think>` while working, so extracting from the raw text would
-    sometimes vote for an answer the model went on to reject -- and would do
-    it precisely on the documents where the model reconsidered, which are the
-    ones a consensus vote exists to get right. `build_model_response` applies
-    the same strip the metrics themselves score behind.
+    """The answer one completion votes for, extracted after the reasoning
+    block is stripped (as for the metrics), so a candidate boxed and then
+    rejected inside `<think>` does not vote.
     """
     from lighteval.metrics.normalizations import math_normalizer
 
@@ -95,37 +62,29 @@ def extract_answer(completion: str) -> str:
 
 
 def majority_answer(answers: Sequence[str]) -> str | None:
-    """The most-voted non-empty answer, ties broken towards the earliest.
-
-    `None` when nothing was extractable from any replicate -- see the module
-    docstring on why that is reported rather than scored as a wrong answer.
+    """The most-voted non-empty answer, ties broken towards the earliest;
+    None when no replicate produced one.
     """
     votes = [answer for answer in answers if answer]
     if not votes:
         return None
     counts = Counter(votes)
     best = max(counts.values())
-    for answer in votes:  # first occurrence wins a tie
-        if counts[answer] == best:
-            return answer
-    raise AssertionError("unreachable: a counted answer must be in the votes")
+    return next(answer for answer in votes if counts[answer] == best)
 
 
 def _records_by_document(
     output_dir: Path, task: str, seeds: Sequence[int]
 ) -> dict[str, list[dict[str, Any]]]:
-    """Every replicate of every document, keyed by `doc_id`, in seed order.
-
-    Only `status: ok` records are collected: a dropped or failed generation
-    has no answer to contribute, and `evaluation.summary` already counts it
-    against the tier's own document totals.
+    """Every `ok` replicate of every document, keyed by `doc_id`, in seed
+    order; a failed or dropped generation has no answer to contribute.
     """
-    from open_r1_tpu.evaluation.summary import read_jsonl
+    # Imported here: `summary` imports this module.
+    from open_r1_tpu.evaluation.summary import jsonl_path, read_jsonl
 
     by_document: dict[str, list[dict[str, Any]]] = {}
     for seed in seeds:
-        path = output_dir / f"seed-{seed}" / f"{task_slug(task)}.jsonl"
-        for record in read_jsonl(path):
+        for record in read_jsonl(jsonl_path(output_dir, seed, task)):
             if record.get("status") != "ok":
                 continue
             by_document.setdefault(str(record["doc_id"]), []).append(record)
@@ -135,15 +94,10 @@ def _records_by_document(
 def _score_consensus_document(
     records: Sequence[Mapping[str, Any]], *, task: str, metric_name: str, metrics: Any
 ) -> float | None:
-    """One document's consensus score, or `None` if no replicate answered.
+    """One document's consensus score, or None if no replicate answered.
 
-    The winning *completion* is re-scored rather than its already-computed
-    per-replicate score being reused. The vote groups by
-    `math_normalizer`'s string output, which is a coarser equivalence than
-    the metric's own symbolic one -- two completions can share a normalised
-    answer and still be judged differently from their full text -- so reusing
-    a sibling's score would occasionally report a verdict the metric never
-    reached for the text being reported.
+    The first completion to vote for the winning answer is judged afresh by
+    the task's metric.
     """
     answers = [extract_answer(str(record["completion"])) for record in records]
     winner = majority_answer(answers)
@@ -151,19 +105,8 @@ def _score_consensus_document(
         return None
 
     record = records[answers.index(winner)]
-    if "gold" not in record or "query" not in record:
-        raise ValueError(
-            f"{task} document {record['doc_id']}: this JSONL record carries no "
-            "'gold'/'query', so the consensus answer cannot be judged. Records "
-            "written before eval.consensus existed lack them; re-run the tier, "
-            "or reduce it without eval.consensus."
-        )
-    # No `specific`: it is the one Doc field this record deliberately does not
-    # carry, because `lcb:codegeneration`'s holds every test case for the
-    # problem and would dwarf the completions in every JSONL line. A task
-    # whose metric reads `doc.specific` therefore cannot be a consensus
-    # target -- its metric raises, `compute_scores` records the failure, and
-    # the missing metric name below turns that into an error naming the task.
+    # Records carry no `specific` (see `summary.ok_record`), so a task whose
+    # metric reads it fails here with the missing-metric error below.
     doc = scoring.doc_from_item(record["gold"], {"query": record["query"]}, task)
     response = scoring.build_model_response(str(record["completion"]))
     result = scoring.compute_scores(doc, response, metrics)
@@ -183,10 +126,8 @@ def consensus_for_task(
     seeds: Sequence[int],
     output_dir: Path,
 ) -> ConsensusResult:
-    """One task's cons@n over the first `request["n"]` replicates.
-
-    The first `n`, not a sample of them: `eval.seeds` is an ordered list and
-    reducing the same records twice must give the same number.
+    """One task's cons@n over the first `request["n"]` seeds, so reducing the
+    same records twice gives the same number.
     """
     n = int(request["n"])
     metric_name = str(request["metric"])
@@ -196,9 +137,7 @@ def consensus_for_task(
         )
     voting_seeds = list(seeds)[:n]
 
-    # The corpus reduction is the metric's own, looked up by name rather than
-    # assumed to be a mean -- the same rule `evaluation.summary` follows, and
-    # for the same reason.
+    # The metric's own corpus reduction, never an assumed mean.
     metrics = list(config.metrics)
     declared: dict[str, Any] = {}
     for metric in metrics:
@@ -260,11 +199,8 @@ def consensus_metrics(
     resolved_configs: Mapping[str, Any],
     output_dir: str | Path,
 ) -> dict[str, dict[str, Any]]:
-    """Every consensus number `settings["consensus"]` asks for, keyed by task.
-
-    Empty when the recipe asks for none, which is every tier but AIME's --
-    `build_summary` files the empty mapping rather than omitting the key, so
-    a summary always states whether a consensus was requested.
+    """Every cons@n `settings["consensus"]` asks for, keyed by task; empty
+    when it asks for none.
     """
     requests: Mapping[str, Mapping[str, Any]] = settings.get("consensus") or {}
     if not requests:
@@ -294,12 +230,5 @@ def consensus_metrics(
                 else ""
             ),
         )
-        results[task] = {
-            "name": result.name,
-            "value": result.value,
-            "n": result.n,
-            "metric": result.metric,
-            "documents": result.documents,
-            "documents_without_consensus": result.documents_without_consensus,
-        }
+        results[task] = asdict(result)
     return results

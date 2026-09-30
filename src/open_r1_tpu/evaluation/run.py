@@ -1,45 +1,18 @@
-"""Evaluate a served model on a recipe's tasks: generate, score, write JSONL.
+"""Evaluate a served model on a recipe's tasks and write the summary.
 
-Every `(task, seed)` produces one file, `output_dir/seed-{seed}/{task}.jsonl`,
-with one record per document in the shape `evaluation.summary` turns into the
-summary. Two paths write it:
+Each (task, seed) writes `output_dir/seed-{seed}/{task}.jsonl`, one record per
+document, and the summary is reduced from those files (`evaluation.summary`).
+By default documents are generated concurrently against the server and scored
+locally; with `--tracing-config` the run goes through Langfuse instead
+(`evaluation.traced`). Both paths share prompt rendering, the request policy
+and the metrics, so their numbers agree.
 
-- **Local (the default).** Documents are generated concurrently over the
-  `openai` SDK (`server.max_concurrency` in flight), then scored with the
-  task's own LightEval metrics. Nothing else needs to be running.
-- **Langfuse (`--tracing-config`).** The recipe's tasks are synced into
-  Langfuse datasets (`evaluation.traced`), then
-  `dataset.run_experiment()` drives generation and scoring per
-  `(task, seed)`, so every document is traced and each seed is its own run in
-  Langfuse's comparison view. The JSONL is written from the returned
-  `ExperimentResult`, never read back from Langfuse, so the summary does not
-  depend on Langfuse staying up.
-
-Both paths use the same prompt rendering (`runner.render_messages`), request
-and retry policy (`task_fn.make_task`), and metrics
-(`scoring.compute_scores`), so a local number and a traced number agree.
-
-**Scoring runs on the main thread.** A LightEval maths metric guards its
-symbolic check with a `signal.alarm` timeout, which can only be armed there.
-The local path therefore generates a `(task, seed)` inside `asyncio.run()`
-and scores afterwards; the Langfuse path calls `run_experiment()` from plain
-synchronous code, which then runs its evaluators on the calling thread.
-
-**No connection outlives its event loop.** Each `(task, seed)` runs on a
-fresh loop from `asyncio.run()`, so the shared `openai.AsyncOpenAI` asks for
-every connection to be closed after its response (`Connection: close`): a
-pooled keep-alive socket belongs to the loop that opened it, and reusing one
-on the next seed's loop fails that seed's requests.
-
-**`server.fail_fast_after` is a fail-fast, not a cancellation.** Neither path
-can cancel requests already in flight. `task_fn`'s circuit breaker makes every
-later document fail before sending a request once the server refuses one or
-`fail_fast_after` in a row fail.
-
-**`run_experiment()` drops a document whose task function raised**, with no
-error message. `write_experiment_jsonl` writes a `status: "dropped"` record
-for each one so document counts still add up; the local path records the
-error itself under `status: "failed"`.
+Scoring runs on the main thread, where LightEval's `signal.alarm` timeouts
+work, so the local path generates a (task, seed) inside `asyncio.run()` and
+scores afterwards. As in `run_experiment()`, each (task, seed) thus gets a
+fresh event loop, so the shared HTTP client sends `Connection: close`: a
+pooled connection belongs to the loop that opened it, and reusing one on the
+next loop fails its requests.
 """
 
 from __future__ import annotations
@@ -74,6 +47,8 @@ LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class Document:
+    """One rendered document, reused for every seed."""
+
     doc_id: str
     doc: Any  # LightEval's Doc
     gold: str
@@ -83,10 +58,9 @@ class Document:
 def task_documents(
     task: str, config: Any, settings: Mapping[str, Any]
 ) -> list[Document]:
-    """One task's documents, rendered once and reused for every seed -- as the
-    Langfuse path reuses one synced dataset. That matters for `gpqa`, whose
-    prompt function shuffles the answer choices per call. A document with
-    more than one gold fails here, before anything is generated.
+    """One task's documents, rendered once for every seed because gpqa's
+    prompt function shuffles its choices on each call. A multi-gold document
+    raises here, before anything is generated.
     """
     documents = []
     for doc_id, row in iter_documents(config, max_samples=settings["max_samples"]):
@@ -136,8 +110,8 @@ async def _generate(
 def _score_output(
     doc: Any, output: Mapping[str, Any], metrics: Sequence[Any]
 ) -> tuple[dict[str, Any], scoring.ScoringResult]:
-    """`scoring.compute_scores` on one completion, with scores coerced exactly
-    as the Langfuse path posts them, so both paths write the same values.
+    """Score one completion, with values coerced as the Langfuse path posts
+    them so both paths write the same scores.
     """
     result = scoring.compute_scores(
         doc, scoring.build_model_response(output["text"]), metrics
@@ -158,9 +132,9 @@ def run_local_task_seed(
     client: Any,
     output_dir: Path,
 ) -> Path:
-    """Generate and score one `(task, seed)` without Langfuse, writing its
-    JSONL. Generation runs on its own event loop; scoring then runs here, on
-    the main thread (see the module docstring).
+    """Generate and score one (task, seed) without Langfuse and write its
+    JSONL. Generation runs on its own event loop, then scoring on the main
+    thread. A document whose generation raised is written as `failed`.
     """
     label = f"seed {seed} {task}"
     outputs = asyncio.run(
@@ -228,10 +202,9 @@ def _run_local(
 
 
 def _close_client(client: Any) -> None:
-    """Release the shared `openai.AsyncOpenAI` once every `(task, seed)` has
-    finished, on a loop of its own. Never fatal: every record is already
-    written, and a teardown error must not replace the one `run()` is already
-    propagating.
+    """Close the shared client on a loop of its own. A failure only warns:
+    every record is already written, and it must not replace an error `run()`
+    is already raising.
     """
     try:
         asyncio.run(client.close())
@@ -249,19 +222,15 @@ def run(
     langfuse_client: Any = None,
     recipe_path: str | None = None,
 ) -> Path:
-    """Run every `(task, seed)` in `settings`, writing
-    `output_dir/seed-{seed}/{task_slug}.jsonl`. Pass a `langfuse_client` to
-    trace the run in Langfuse; without one it runs locally.
+    """Run every (task, seed) in `settings` and return the output directory.
+    Pass a `langfuse_client` to trace the run in Langfuse.
     """
     output_dir = Path(settings["output_dir"]).expanduser()
     client = openai.AsyncOpenAI(
         api_key="local",
         base_url=settings["base_url"],
-        max_retries=0,  # evaluation.generate.generate_one owns retries
-        # One connection per request, never a pooled one -- see the module
-        # docstring. The cost is a loopback handshake per document, which is
-        # nothing beside a multi-second generation.
-        default_headers={"Connection": "close"},
+        max_retries=0,  # generate.generate_one owns retries
+        default_headers={"Connection": "close"},  # see the module docstring
     )
     try:
         if langfuse_client is None:

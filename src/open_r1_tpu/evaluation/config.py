@@ -22,18 +22,15 @@ DEFAULT_HOST = "127.0.0.1"
 
 DEFAULT_PORT = 8000
 
-# vLLM is an external service, not a dependency: nothing here imports it, and
-# it cannot share this environment anyway because its Python/JAX/PyTorch stack
-# differs from the host's. The default wrapper runs the locally built TPU image
-# and owns model/cache mounts plus container cleanup. Set server.image to null
-# when overriding this with an external non-container command.
-DEFAULT_SERVE_COMMAND = ("scripts/run_vllm_tpu_container.sh",)
+# vLLM runs as an external service with its own Python and JAX stack and is
+# never imported here. The default wrapper runs the locally built TPU image;
+# set server.image to null when replacing it with a non-container command.
+CONTAINER_WRAPPER = "run_vllm_tpu_container.sh"
+DEFAULT_SERVE_COMMAND = (f"scripts/{CONTAINER_WRAPPER}",)
 
 
-# The complete key set each section accepts. A key outside this set is either
-# a typo or a stale setting from a schema that moved on, and both deserve an
-# error rather than being silently ignored -- including a typo'd dotted
-# override, since `load_config` applies overrides before validation runs.
+# The complete key set each section accepts; anything else is a typo or a
+# stale setting, and an error.
 EVAL_KEYS = {
     "tier",
     "tasks",
@@ -57,11 +54,7 @@ SERVER_KEYS = {
     "extra_args",
     "startup_timeout_secs",
     "base_url",
-    # Required by `evaluation.experiment`'s generation loop. No default for
-    # either: a concurrency width and an error budget are deliberate
-    # per-deployment choices (a wider width saturates a bigger server; a
-    # laxer budget is wrong for a flaky one), not values worth guessing on a
-    # recipe's behalf.
+    # Required, with no default: both depend on the deployment.
     "max_concurrency",
     "fail_fast_after",
 }
@@ -91,7 +84,7 @@ WANDB_KEYS = {
 }
 
 
-def _reject_unknown_keys(
+def reject_unknown_keys(
     prefix: str, section: Mapping[str, Any], allowed: set[str]
 ) -> None:
     """Reject a key outside a section's schema, suggesting the nearest match."""
@@ -102,16 +95,19 @@ def _reject_unknown_keys(
             raise ValueError(f"Unknown key {prefix}.{key}{hint}")
 
 
+def uses_container_wrapper(serve_command: Sequence[Any]) -> bool:
+    """Whether `serve_command` runs the supported vLLM container wrapper."""
+    return bool(serve_command) and str(serve_command[0]).endswith(CONTAINER_WRAPPER)
+
+
 def _validate_consensus(
     consensus: Any, tasks: Sequence[str], seeds: Sequence[int]
 ) -> None:
-    """Check `eval.consensus`, the per-task consensus (cons@n) request.
+    """Check `eval.consensus`, the per-task cons@n request.
 
-    Explicit per task rather than inferred, and explicit about which metric
-    judges the consensus answer, because both choices change a headline
-    number: a task declares several metrics (`aime24` declares `pass@k:k=1`
-    and `avg@n:n=1`), and picking one of them by position would make the
-    reported `cons@n` depend on LightEval's declaration order.
+    The judging metric must be named: a task declares several (aime24 declares
+    `pass@k:k=1` and `avg@n:n=1`), and picking one by position would make the
+    number depend on LightEval's declaration order.
     """
     if consensus is None:
         return
@@ -130,7 +126,7 @@ def _validate_consensus(
                 f"eval.consensus[{task!r}] must be a mapping with keys "
                 f"{sorted(CONSENSUS_KEYS)}"
             )
-        _reject_unknown_keys(f"eval.consensus.{task}", request, CONSENSUS_KEYS)
+        reject_unknown_keys(f"eval.consensus.{task}", request, CONSENSUS_KEYS)
         for key in CONSENSUS_KEYS:
             if key not in request:
                 raise ValueError(f"eval.consensus[{task!r}].{key} is required")
@@ -141,9 +137,7 @@ def _validate_consensus(
                 "-- a majority vote over one sample is that sample"
             )
         if n > len(seeds):
-            # The replicates are the samples voted over, so asking for more
-            # than the tier generates cannot be satisfied. Caught here rather
-            # than after the generations have been paid for.
+            # The replicates are the samples voted over.
             raise ValueError(
                 f"eval.consensus[{task!r}].n is {n} but eval.seeds has only "
                 f"{len(seeds)} replicate(s) to vote over"
@@ -162,10 +156,10 @@ def validate_eval_config(config: dict[str, Any]) -> None:
         if not isinstance(config.get(section), dict):
             raise ValueError(f"Missing configuration section: {section}")
 
-    _reject_unknown_keys("eval", config["eval"], EVAL_KEYS)
-    _reject_unknown_keys("server", config["server"], SERVER_KEYS)
-    _reject_unknown_keys("sampling", config["sampling"], SAMPLING_KEYS)
-    _reject_unknown_keys("reporting", config["reporting"], REPORTING_KEYS)
+    reject_unknown_keys("eval", config["eval"], EVAL_KEYS)
+    reject_unknown_keys("server", config["server"], SERVER_KEYS)
+    reject_unknown_keys("sampling", config["sampling"], SAMPLING_KEYS)
+    reject_unknown_keys("reporting", config["reporting"], REPORTING_KEYS)
 
     tasks = config["eval"].get("tasks")
     if (
@@ -254,9 +248,7 @@ def validate_eval_config(config: dict[str, Any]) -> None:
     for key in ("temperature", "top_p", "max_new_tokens"):
         if key not in sampling:
             raise ValueError(f"sampling.{key} is required")
-    # `.get()` cannot tell "absent" from "explicitly null", and tier 3 relies
-    # on an explicit null to mean "no system prompt" -- so presence is checked
-    # with `in` rather than a default.
+    # Presence, not truthiness: an explicit null means no system prompt.
     if "system_prompt_file" not in sampling:
         raise ValueError(
             "sampling.system_prompt_file is required (use null for no system prompt)"
@@ -284,9 +276,7 @@ def validate_eval_config(config: dict[str, Any]) -> None:
         if not isinstance(max_model_len, int) or max_model_len <= 0:
             raise ValueError("server.max_model_len must be a positive integer or null")
         if max_model_len <= max_new_tokens:
-            # The server budgets prompt plus completion against one window, so
-            # a cap at or below the completion budget leaves no room for the
-            # problem and truncates every trace.
+            # The window holds prompt plus completion.
             raise ValueError(
                 f"server.max_model_len ({max_model_len}) must exceed "
                 f"sampling.max_new_tokens ({max_new_tokens}) to leave room for "
@@ -297,10 +287,8 @@ def validate_eval_config(config: dict[str, Any]) -> None:
     for key in ("reasoning_start", "reasoning_end", "answer_marker"):
         if key not in reporting:
             raise ValueError(f"reporting.{key} is required")
-    # Null means the serving chat template opens the reasoning block inside
-    # the prompt itself -- DeepSeek's distills append `<think>` to the
-    # generation prompt -- so a completion can only ever carry the closing
-    # tag and closure is judged on that alone.
+    # Null means the chat template opens the reasoning block in the prompt (as
+    # DeepSeek's distills do), so completions carry only the closing tag.
     reasoning_start = reporting["reasoning_start"]
     if reasoning_start is not None and (
         not isinstance(reasoning_start, str) or not reasoning_start
@@ -313,14 +301,13 @@ def validate_eval_config(config: dict[str, Any]) -> None:
     wandb = reporting.get("wandb", {})
     if not isinstance(wandb, dict):
         raise ValueError("reporting.wandb must be a configuration mapping")
-    _reject_unknown_keys("reporting.wandb", wandb, WANDB_KEYS)
+    reject_unknown_keys("reporting.wandb", wandb, WANDB_KEYS)
     enabled = wandb.get("enabled", False)
     if not isinstance(enabled, bool):
         raise ValueError("reporting.wandb.enabled must be a boolean")
     if enabled:
-        # `log_summary_to_wandb` no longer falls back for either key: a run
-        # logged to the wrong project or the wrong mode is a mistake worth
-        # catching at load time, not a reasonable default to guess.
+        # Required rather than defaulted: the wrong project or mode is a
+        # mistake worth catching at load time.
         for key in ("project_name", "mode"):
             if key not in wandb:
                 raise ValueError(
@@ -340,7 +327,7 @@ def load_eval_config(
 
 
 def resolve_settings(config: dict[str, Any]) -> dict[str, Any]:
-    """Normalize an evaluation recipe and apply defaults."""
+    """Normalise an evaluation recipe into flat settings, applying defaults."""
     evaluation = config["eval"]
     server = config["server"]
     sampling = config["sampling"]
@@ -349,22 +336,17 @@ def resolve_settings(config: dict[str, Any]) -> dict[str, Any]:
     host = str(server.get("host", DEFAULT_HOST))
     port = int(server.get("port", DEFAULT_PORT))
     model_path = str(server["model_path"])
-    # vLLM reports the model under this name and the harness must request the
-    # same one, so it is derived once here rather than being set twice in the
-    # recipe.
+    # The name vLLM serves the model under, and so the name requests use.
     served_model_name = str(server.get("served_model_name") or Path(model_path).name)
     output_dir = str(reporting.get("output_dir") or Path(model_path).parent / "eval")
     serve_command = server.get("serve_command")
-    # The supported wrapper selects the local build spec whether it is implicit
-    # or written explicitly in a recipe. Any other command remains the external
-    # Python 3.12 escape hatch unless it explicitly supplies an image.
-    uses_supported_wrapper = serve_command is None or (
-        isinstance(serve_command, list)
-        and bool(serve_command)
-        and str(serve_command[0]).endswith("run_vllm_tpu_container.sh")
-    )
+    # The container wrapper defaults to the locally built image; any other
+    # command runs without one unless the recipe names it.
     server_image = server.get(
-        "image", vllm_tpu_image_tag() if uses_supported_wrapper else None
+        "image",
+        vllm_tpu_image_tag()
+        if serve_command is None or uses_container_wrapper(serve_command)
+        else None,
     )
 
     return {
@@ -372,8 +354,7 @@ def resolve_settings(config: dict[str, Any]) -> dict[str, Any]:
         "tasks": [str(task) for task in evaluation["tasks"]],
         "seeds": [int(seed) for seed in evaluation["seeds"]],
         "max_samples": evaluation.get("max_samples"),
-        # `{task: {"n": int, "metric": str}}`; empty when the recipe asks for
-        # no consensus number. See `evaluation.consensus`.
+        # `{task: {"n": int, "metric": str}}`, empty when none is asked for.
         "consensus": {
             str(task): {"n": int(request["n"]), "metric": str(request["metric"])}
             for task, request in (evaluation.get("consensus") or {}).items()
@@ -394,9 +375,6 @@ def resolve_settings(config: dict[str, Any]) -> dict[str, Any]:
         "temperature": float(sampling["temperature"]),
         "top_p": float(sampling["top_p"]),
         "max_new_tokens": int(sampling["max_new_tokens"]),
-        # The recipe's own system prompt, read from the file the recipe names.
-        # Chatting the model off-distribution changes its behaviour, so
-        # evaluation renders the prompt training used.
         "system_prompt": (
             read_prompt_file(sampling["system_prompt_file"])
             if sampling["system_prompt_file"] is not None

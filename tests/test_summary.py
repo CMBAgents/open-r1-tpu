@@ -1,6 +1,5 @@
-"""Tests for `open_r1_tpu.evaluation.summary` -- fixture JSONL in, the same
-summary shape `evaluation.summary.build_summary` has always produced out. No
-LightEval needed: `FakeMetric` stands in for a real `Metric`, exposing only
+"""Tests for `open_r1_tpu.evaluation.summary`: fixture JSONL in, the summary
+out. `FakeMetric` stands in for a LightEval metric, exposing only
 `get_corpus_aggregations()`.
 """
 
@@ -8,11 +7,11 @@ from __future__ import annotations
 
 import json
 import statistics
-from pathlib import Path
 
 import pytest
 
 from open_r1_tpu.evaluation import summary as eval_summary
+from open_r1_tpu.evaluation.stack import VLLM_TPU_BASE_IMAGE, vllm_tpu_image_tag
 
 
 class FakeMetric:
@@ -28,12 +27,27 @@ class FakeConfig:
         self.metrics = list(metrics)
 
 
-def _write_jsonl(path: Path, records: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        for record in records:
-            handle.write(json.dumps(record))
-            handle.write("\n")
+def _settings(tasks=("t",), seeds=(0,), **overrides):
+    settings = {
+        "tasks": list(tasks),
+        "seeds": list(seeds),
+        "reasoning_start": None,
+        "reasoning_end": "</think>",
+        "answer_marker": "ANSWER:",
+        "tier": "tier1-core",
+        "model_path": "models/x",
+        "served_model_name": "x",
+        "max_samples": None,
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "max_new_tokens": 16384,
+        "serve_command": ["scripts/run_vllm_tpu_container.sh"],
+        "server_image": vllm_tpu_image_tag(),
+        "host": "127.0.0.1",
+        "port": 8000,
+    }
+    settings.update(overrides)
+    return settings
 
 
 # --- read_jsonl ---------------------------------------------------------
@@ -103,9 +117,8 @@ def test_reduce_task_metrics_returns_nothing_when_no_document_has_a_value():
 
 def test_truncation_rate_comes_from_finish_reason_not_token_count():
     records = [
-        # Token count alone would call this truncated under the old
-        # heuristic (>= a hypothetical max_new_tokens), but finish_reason
-        # says the model stopped on its own.
+        # A token count near the budget does not mean truncation;
+        # finish_reason says the model stopped on its own.
         {
             "status": "ok",
             "completion": "x",
@@ -167,18 +180,8 @@ def test_completion_stats_reports_null_rates_with_no_completions():
 # --- reduce_seed -----------------------------------------------------------
 
 
-def _settings(tasks, seeds=(0,)):
-    return {
-        "tasks": list(tasks),
-        "seeds": list(seeds),
-        "reasoning_start": None,
-        "reasoning_end": "</think>",
-        "answer_marker": "ANSWER:",
-    }
-
-
 def test_reduce_seed_raises_naming_the_task_with_no_scored_documents(tmp_path):
-    _write_jsonl(
+    eval_summary.write_jsonl(
         tmp_path / "seed-0" / "gsm8k-0.jsonl", [{"status": "generation_failed"}]
     )
     settings = _settings(["gsm8k|0"])
@@ -189,13 +192,12 @@ def test_reduce_seed_raises_naming_the_task_with_no_scored_documents(tmp_path):
 
 
 def test_reduce_seed_allows_two_tasks_to_report_the_same_metric_name(tmp_path):
-    # Unlike the old LightEval-results-key scheme, this is expected: each
-    # task's metrics live under its own key in the returned mapping.
-    _write_jsonl(
+    # Each task's metrics live under its own key.
+    eval_summary.write_jsonl(
         tmp_path / "seed-0" / "task-a-0.jsonl",
         [{"status": "ok", "completion": "x", "scores": {"dup": 1.0}}],
     )
-    _write_jsonl(
+    eval_summary.write_jsonl(
         tmp_path / "seed-0" / "task-b-0.jsonl",
         [{"status": "ok", "completion": "x", "scores": {"dup": 0.0}}],
     )
@@ -211,7 +213,7 @@ def test_reduce_seed_allows_two_tasks_to_report_the_same_metric_name(tmp_path):
 
 
 def test_build_summary_from_records_single_seed_has_null_std(tmp_path):
-    _write_jsonl(
+    eval_summary.write_jsonl(
         tmp_path / "seed-0" / "gsm8k-0.jsonl",
         [
             {
@@ -230,20 +232,7 @@ def test_build_summary_from_records_single_seed_has_null_std(tmp_path):
             },
         ],
     )
-    settings = {
-        **_settings(["gsm8k|0"]),
-        "tier": "tier1-core",
-        "model_path": "models/x",
-        "served_model_name": "x",
-        "max_samples": None,
-        "temperature": 0.6,
-        "top_p": 0.95,
-        "max_new_tokens": 16384,
-        "server_image": None,
-        "serve_command": ["scripts/run_vllm_tpu_container.sh"],
-        "host": "127.0.0.1",
-        "port": 8000,
-    }
+    settings = _settings(["gsm8k|0"], server_image=None)
     configs = {
         "gsm8k|0": FakeConfig([FakeMetric({"extractive_match": statistics.fmean})])
     }
@@ -255,3 +244,85 @@ def test_build_summary_from_records_single_seed_has_null_std(tmp_path):
     assert summary["tasks_metrics"]["gsm8k|0"]["extractive_match"]["n"] == 1
     assert summary["truncation_rate_source"] == "finish_reason"
     assert summary["generation"]["truncation_rate"]["mean"] == 0.0
+
+
+# --- build_summary and its outputs -------------------------------------------
+
+
+def test_aggregate_reports_mean_and_spread_across_seeds():
+    aggregated = eval_summary.aggregate_across_seeds(
+        {
+            0: {"t": {"acc": 0.40}},
+            1: {"t": {"acc": 0.50}},
+            2: {"t": {"acc": 0.60}},
+        }
+    )
+
+    assert aggregated["t"]["acc"]["mean"] == pytest.approx(0.50)
+    assert aggregated["t"]["acc"]["std"] == pytest.approx(0.10)
+    assert aggregated["t"]["acc"]["n"] == 3
+
+
+def test_a_single_seed_reports_no_spread_rather_than_zero_spread():
+    aggregated = eval_summary.aggregate_across_seeds({0: {"t": {"acc": 0.4}}})
+
+    assert aggregated["t"]["acc"]["std"] is None
+    assert aggregated["t"]["acc"]["n"] == 1
+
+
+def test_build_summary_records_the_stack_and_the_sampling_parameters():
+    service_versions = {"vllm-tpu": "0.27.0", "tpu-inference": "0.27.0"}
+
+    summary = eval_summary.build_summary(
+        _settings(),
+        {0: {"t": {"acc": 0.4}}},
+        {0: {"format_rate": 1.0, "truncation_rate": None}},
+        {"image_id": "sha256:local-image", "service_versions": service_versions},
+    )
+
+    assert summary["sampling"]["temperature"] == 0.6
+    # Replicates are unseeded on this backend, so an archived summary listing
+    # `seeds` must not be read as reproducible sample by sample.
+    assert summary["seeded_replicates"] is False
+    assert set(summary["stack"]) >= {
+        "python",
+        "lighteval",
+        "openai",
+        "latex2sympy2-extended",
+    }
+    # vLLM runs outside this environment, so its image and complete command are
+    # recorded rather than a package version.
+    assert summary["serve_command"] == ["scripts/run_vllm_tpu_container.sh"]
+    assert summary["server_image"] == vllm_tpu_image_tag()
+    assert summary["server_command"][:3] == [
+        "scripts/run_vllm_tpu_container.sh",
+        "--image",
+        vllm_tpu_image_tag(),
+    ]
+    assert summary["server_image_provenance"] == {
+        "spec_tag": vllm_tpu_image_tag(),
+        "image_id": "sha256:local-image",
+        "base_image": VLLM_TPU_BASE_IMAGE,
+        "service_versions": service_versions,
+    }
+    assert summary["tasks_metrics"]["t"]["acc"]["mean"] == pytest.approx(0.4)
+    assert summary["generation"]["format_rate"]["mean"] == pytest.approx(1.0)
+    # Absent in every seed, so it stays absent rather than becoming 0.0.
+    assert summary["generation"]["truncation_rate"]["mean"] is None
+
+
+def test_summary_rows_flatten_one_row_per_metric():
+    summary = {
+        "tier": "t1",
+        "tasks_metrics": {"task": {"acc": {"mean": 0.5, "std": 0.1, "n": 3}}},
+    }
+
+    assert eval_summary.summary_rows(summary) == [["t1", "task", "acc", 0.5, 0.1, 3]]
+
+
+def test_write_summary_creates_the_parent_directory(tmp_path):
+    path = tmp_path / "nested" / "summary.json"
+
+    eval_summary.write_summary(str(path), {"tier": "t", "n": 1})
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {"tier": "t", "n": 1}

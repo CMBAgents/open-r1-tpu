@@ -1,13 +1,15 @@
+"""Tests for `open_r1_tpu.evaluation.config`: the committed eval recipes,
+recipe validation, and the resolved settings.
+"""
+
 import json
-import os
 from pathlib import Path
 
 import pytest
 
 from open_r1_tpu.evaluation import config as eval_config
 from open_r1_tpu.evaluation import server as eval_server
-from open_r1_tpu.evaluation import summary as eval_summary
-from open_r1_tpu.evaluation.stack import VLLM_TPU_BASE_IMAGE, vllm_tpu_image_tag
+from open_r1_tpu.evaluation.stack import vllm_tpu_image_tag
 
 RECIPE_DIR = Path(__file__).parents[1] / "recipes/Qwen2.5-Math-1.5B/eval"
 TIER0 = RECIPE_DIR / "tier0_smoke.yaml"
@@ -491,7 +493,15 @@ def test_an_external_server_can_explicitly_disable_the_image():
     eval_config.validate_eval_config(minimal_config(server={"image": None}))
 
 
-# --- resolved settings and command construction ----------------------------
+@pytest.mark.parametrize("serve_command", [[], "vllm serve", [""], [1]], ids=str)
+def test_an_invalid_serve_command_is_rejected(serve_command):
+    with pytest.raises(ValueError, match="serve_command"):
+        eval_config.validate_eval_config(
+            minimal_config(server={"serve_command": serve_command})
+        )
+
+
+# --- resolved settings -------------------------------------------------------
 
 
 def test_served_model_name_defaults_to_the_export_directory():
@@ -501,219 +511,16 @@ def test_served_model_name_defaults_to_the_export_directory():
     assert settings["base_url"] == "http://127.0.0.1:8000/v1"
 
 
-def test_the_server_binary_can_live_outside_this_environment():
-    # tpu-inference does not support this project's Python, so vLLM is reached
-    # wherever it is installed rather than imported from here.
-    settings = eval_config.resolve_settings(
-        minimal_config(server={"serve_command": ["/opt/vllm-venv/bin/vllm", "serve"]})
-    )
-
-    command = eval_server.vllm_serve_command(settings)
-
-    assert command[:2] == ["/opt/vllm-venv/bin/vllm", "serve"]
-    assert command[2] == "artifacts/model"
-
-
-def test_the_default_server_is_the_derived_local_tpu_container():
+def test_the_default_server_is_the_container_wrapper_with_the_derived_image():
     settings = eval_config.resolve_settings(minimal_config())
 
-    command = eval_server.vllm_serve_command(settings)
-
-    assert command[:4] == [
-        "scripts/run_vllm_tpu_container.sh",
-        "--image",
-        vllm_tpu_image_tag(),
-        "--",
-    ]
-    assert command[4] == "artifacts/model"
+    assert settings["serve_command"] == ["scripts/run_vllm_tpu_container.sh"]
+    assert settings["server_image"] == vllm_tpu_image_tag()
 
 
-def test_a_containerised_server_command_is_accepted():
+def test_a_custom_serve_command_has_no_image_unless_the_recipe_names_one():
     settings = eval_config.resolve_settings(
-        minimal_config(
-            server={"serve_command": ["docker", "run", "--rm", "img", "serve"]}
-        )
+        minimal_config(server={"serve_command": ["vllm", "serve"]})
     )
 
-    assert eval_server.vllm_serve_command(settings)[:4] == [
-        "docker",
-        "run",
-        "--rm",
-        "img",
-    ]
-
-
-@pytest.mark.parametrize("serve_command", [[], "vllm serve", [""], [1]], ids=str)
-def test_an_invalid_serve_command_is_rejected(serve_command):
-    with pytest.raises(ValueError, match="serve_command"):
-        eval_config.validate_eval_config(
-            minimal_config(server={"serve_command": serve_command})
-        )
-
-
-def test_the_server_disables_prefix_caching():
-    # A prefix-cache hit changes the prefill's kernel shape and therefore the
-    # bf16 logits, so greedy completions would depend on server cache state.
-    settings = eval_config.resolve_settings(minimal_config())
-
-    assert "--no-enable-prefix-caching" in eval_server.vllm_serve_command(settings)
-
-
-def test_serve_command_carries_the_recipe_port_and_window():
-    settings = eval_config.resolve_settings(
-        minimal_config(server={"port": 9001, "max_model_len": 20480})
-    )
-
-    command = eval_server.vllm_serve_command(settings)
-
-    assert command[command.index("--port") + 1] == "9001"
-    assert command[command.index("--max-model-len") + 1] == "20480"
-    assert command[command.index("--served-model-name") + 1] == "model"
-
-
-# --- reduction -------------------------------------------------------------
-
-
-def test_aggregate_reports_mean_and_spread_across_seeds():
-    aggregated = eval_summary.aggregate_across_seeds(
-        {
-            0: {"t": {"acc": 0.40}},
-            1: {"t": {"acc": 0.50}},
-            2: {"t": {"acc": 0.60}},
-        }
-    )
-
-    assert aggregated["t"]["acc"]["mean"] == pytest.approx(0.50)
-    assert aggregated["t"]["acc"]["std"] == pytest.approx(0.10)
-    assert aggregated["t"]["acc"]["n"] == 3
-
-
-def test_a_single_seed_reports_no_spread_rather_than_zero_spread():
-    # Zero spread from one sample is the exact overclaim this pipeline exists
-    # to prevent.
-    aggregated = eval_summary.aggregate_across_seeds({0: {"t": {"acc": 0.4}}})
-
-    assert aggregated["t"]["acc"]["std"] is None
-    assert aggregated["t"]["acc"]["n"] == 1
-
-
-def test_build_summary_records_the_stack_and_the_sampling_parameters():
-    settings = eval_config.resolve_settings(minimal_config())
-
-    summary = eval_summary.build_summary(
-        settings,
-        {0: {"t": {"acc": 0.4}}},
-        {0: {"format_rate": 1.0, "truncation_rate": None}},
-        {
-            "image_id": "sha256:local-image",
-            "service_versions": {
-                "vllm-tpu": "0.27.0",
-                "tpu-inference": "0.27.0",
-            },
-        },
-    )
-
-    assert summary["sampling"]["temperature"] == 0.6
-    # Replicates are unseeded on this backend, and an archived summary listing
-    # `seeds: [0, 1, 2]` must not be read as reproducible sample-by-sample.
-    assert summary["seeded_replicates"] is False
-    assert set(summary["stack"]) >= {
-        "python",
-        "lighteval",
-        "openai",
-        "latex2sympy2-extended",
-    }
-    # vLLM runs outside this environment, so the derived service-image contract
-    # and complete command are recorded rather than an importable package version.
-    assert summary["serve_command"] == ["scripts/run_vllm_tpu_container.sh"]
-    assert summary["server_image"] == vllm_tpu_image_tag()
-    assert summary["server_command"][:3] == [
-        "scripts/run_vllm_tpu_container.sh",
-        "--image",
-        vllm_tpu_image_tag(),
-    ]
-    assert summary["server_image_provenance"] == {
-        "spec_tag": vllm_tpu_image_tag(),
-        "image_id": "sha256:local-image",
-        "base_image": VLLM_TPU_BASE_IMAGE,
-        "service_versions": {
-            "vllm-tpu": "0.27.0",
-            "tpu-inference": "0.27.0",
-        },
-    }
-    assert summary["tasks_metrics"]["t"]["acc"]["mean"] == pytest.approx(0.4)
-    assert summary["generation"]["format_rate"]["mean"] == pytest.approx(1.0)
-    # Absent in every seed, so it stays absent rather than becoming 0.0.
-    assert summary["generation"]["truncation_rate"]["mean"] is None
-
-
-def test_summary_rows_flatten_one_row_per_metric():
-    summary = {
-        "tier": "t1",
-        "tasks_metrics": {"task": {"acc": {"mean": 0.5, "std": 0.1, "n": 3}}},
-    }
-
-    assert eval_summary.summary_rows(summary) == [["t1", "task", "acc", 0.5, 0.1, 3]]
-
-
-# --- filesystem ------------------------------------------------------------
-
-
-def test_summary_round_trips_through_disk(tmp_path):
-    path = tmp_path / "nested" / "summary.json"
-
-    eval_summary.write_summary(str(path), {"tier": "t", "n": 1})
-
-    assert eval_summary.read_json(path) == {"tier": "t", "n": 1}
-
-
-# --- integration -----------------------------------------------------------
-#
-# These need a vLLM server already serving the recipe's model. Start one with
-# `SKIP_SERVER=0` via scripts/run_eval_tpu.sh, or point OPEN_R1_TPU_EVAL_URL at
-# a server that is already up, then run `pytest -m integration`.
-
-
-@pytest.fixture
-def live_settings(tmp_path):
-    """Settings pointed at a running server, with the work kept tiny."""
-    settings = eval_config.resolve_settings(eval_config.load_eval_config(TIER0))
-    base_url = os.environ.get("OPEN_R1_TPU_EVAL_URL")
-    if base_url:
-        settings["base_url"] = base_url
-    settings["max_samples"] = 1
-    settings["output_dir"] = str(tmp_path)
-    settings["summary_path"] = str(tmp_path / "summary.json")
-    settings["wandb"] = {"enabled": False}
-    return settings
-
-
-@pytest.mark.integration
-def test_the_served_model_answers_before_a_benchmark_is_committed_to_it(
-    live_settings,
-):
-    import urllib.request
-
-    eval_server.wait_for_server(live_settings["base_url"], timeout_secs=120)
-
-    with urllib.request.urlopen(
-        live_settings["base_url"].rstrip("/") + "/models", timeout=30
-    ) as response:
-        served = json.loads(response.read())
-
-    # The name litellm asks for must be the name vLLM answers to, or every
-    # request comes back as model-not-found rather than a completion.
-    assert live_settings["served_model_name"] in {
-        entry["id"] for entry in served["data"]
-    }
-
-
-@pytest.mark.integration
-def test_the_configured_model_export_passes_preflight(live_settings):
-    from open_r1_tpu.evaluation.preflight import check_export_dir
-
-    errors, _ = check_export_dir(
-        live_settings["model_path"], live_settings["turn_end_token"]
-    )
-
-    assert errors == []
+    assert settings["server_image"] is None

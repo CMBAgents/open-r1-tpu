@@ -1,11 +1,11 @@
 """Generation: documents, prompts, and one chat completion per document.
 
-Talks to vLLM directly over the `openai` SDK with this project's own retry
-policy (`generate_one`), renders each document's prompt the way LightEval's
-zero-shot prompt construction does (`render_messages`), and wraps both in the
-task function every evaluation path drives (`make_task`), whose circuit
-breaker stops sending requests once the server refuses one or
-`server.fail_fast_after` in a row fail.
+`generate_one` talks to vLLM directly through the `openai` SDK with this
+project's retry policy, `render_messages` builds each prompt the way
+LightEval's zero-shot prompt construction does, and `make_task` wraps both in
+the task function both evaluation paths drive. Its circuit breaker stops
+sending requests once the server refuses one or `server.fail_fast_after` in a
+row fail; requests already in flight are not cancelled.
 """
 
 from __future__ import annotations
@@ -21,34 +21,25 @@ import openai
 
 LOGGER = logging.getLogger(__name__)
 
-
-# Retry mechanics are not recipe-configurable (unlike `max_concurrency` and
-# `fail_fast_after`, which are deployment/policy choices): these are fixed
-# implementation constants, the same way `evaluation.run.wait_for_server`'s
-# poll interval is.
+# The retry policy is fixed, unlike the recipe's per-deployment
+# `server.max_concurrency` and `server.fail_fast_after`.
 MAX_ATTEMPTS = 5
-
 BACKOFF_BASE_SECS = 1.0
-
 BACKOFF_MAX_SECS = 30.0
-
 REQUEST_TIMEOUT_SECS = 600.0
 
 
 class GenerationRefused(RuntimeError):
-    """The server rejected a request with a 4xx. Fatal and never retried:
-    every other request in the run carries the same sampling parameters, so
-    retrying -- or continuing to the next document -- would only reproduce
-    the failure at the cost of the whole tier's wall clock. This is the
-    3.5-hour retry burn, fixed structurally: see the module docstring.
+    """The server rejected a request with a 4xx. Never retried: every request
+    of a (task, seed) carries the same sampling parameters, so the rest would
+    be refused too.
     """
 
 
 class GenerationFailed(RuntimeError):
-    """A connection error or 5xx survived every retry attempt for one
-    document. Not fatal by itself -- `evaluation.task_fn._CircuitBreaker`
-    decides whether enough of these in a row means the server is actually
-    dead.
+    """A connection error or 5xx outlasted every retry for one document. Not
+    fatal by itself: the circuit breaker decides when enough in a row mean the
+    server is down.
     """
 
 
@@ -71,11 +62,10 @@ async def generate_one(
     top_p: float,
     max_tokens: int,
 ) -> GenerationOutcome:
-    """One chat completion, with this project's own retry policy rather than
-    the `openai` SDK's default (the client is constructed with
-    `max_retries=0` for exactly this reason): retry only a connection error
-    or a 5xx, with bounded exponential backoff; never retry a 4xx, which
-    raises `GenerationRefused` on the first attempt.
+    """One chat completion with this project's retry policy, in place of the
+    SDK's (the client is built with `max_retries=0`): a connection error or
+    5xx is retried with bounded exponential backoff, and a 4xx raises
+    `GenerationRefused` at once.
     """
     last_error: Exception | None = None
     for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -129,13 +119,10 @@ async def generate_one(
 
 
 def render_messages(doc: Any, system_prompt: str | None) -> list[dict[str, str]]:
-    """Build the chat messages array for one document, matching LightEval's
-    own `PromptManager.prepare_prompt_api` for the zero-shot, no-instruction
-    case every task this project evaluates against actually uses: an
-    optional leading system message, then one user turn carrying `doc.query`
-    verbatim. Few-shot examples are not supported -- every task pack entry
-    this project uses resolves to `num_fewshots: 0` -- and this raises rather
-    than silently dropping them if that ever stops being true.
+    """The chat messages for one document, as LightEval's
+    `PromptManager.prepare_prompt_api` builds them for a zero-shot task: an
+    optional system message, then one user turn with the instruction and
+    query. A few-shot document raises rather than losing its examples.
     """
     if doc.fewshot_samples:
         raise NotImplementedError(
@@ -154,8 +141,8 @@ def render_messages(doc: Any, system_prompt: str | None) -> list[dict[str, str]]
 
 def iter_documents(config: Any, *, max_samples: int | None) -> list[tuple[str, Any]]:
     """`(doc_id, row)` pairs for one task's evaluation split, capped at
-    `max_samples`. `doc_id` is the row's index in that split -- stable across
-    runs against the same dataset revision.
+    `max_samples`. `doc_id` is the row's index in the split, stable for a
+    given dataset revision.
     """
     from datasets import load_dataset
 
@@ -171,18 +158,9 @@ def iter_documents(config: Any, *, max_samples: int | None) -> list[tuple[str, A
 
 
 class _CircuitBreaker:
-    """See the module docstring for what this can and cannot do. Scoped to
-    one `make_task` call: `evaluation.experiment` builds a fresh task
-    function (and so a fresh breaker) per `(task, seed)`
-    `dataset.run_experiment()` call -- matching `server.fail_fast_after`'s
-    old per-seed scope at worst, and improving on it (per task *and* seed,
-    rather than shared across a seed's tasks) at best.
-
-    Safe without a lock: every task function this drives is `async def`
-    running under one `run_experiment` call's own `asyncio.gather`, on that
-    call's own event loop and thread, and asyncio is single-threaded and
-    cooperative, so a plain read/increment between `await` points cannot
-    race -- the same reasoning the old `ErrorBudget` relied on.
+    """Fails every later document of one (task, seed) before it sends a
+    request, once the server has refused one or `fail_fast_after` in a row
+    have failed. Needs no lock: its task function runs on one event loop.
     """
 
     def __init__(self, fail_fast_after: int):
@@ -198,10 +176,6 @@ class _CircuitBreaker:
         self._consecutive_failures = 0
 
     def record_refused(self, error: GenerationRefused) -> None:
-        # Sticky: every other request in this (task, seed) carries the same
-        # sampling parameters (see GenerationRefused's own docstring), so a
-        # refusal here means every other request is expected to be refused
-        # too.
         if self._tripped is None:
             self._tripped = error
 
@@ -221,26 +195,15 @@ class _CircuitBreaker:
 
 
 def make_task(settings: Mapping[str, Any], *, client: Any) -> Callable[..., Any]:
-    """Build the `task(*, item, **kwargs)` callable for one `(task, seed)`
-    `dataset.run_experiment()` call.
+    """Build the `task(*, item, **kwargs)` callable for one (task, seed): it
+    generates `item.input` and returns the completion and its usage as a dict.
 
-    `settings` is this recipe's resolved settings
-    (`evaluation.run.resolve_settings`'s output); `client` is a shared
-    `openai.AsyncOpenAI`, built once per CLI invocation by
-    `evaluation.experiment` and passed in here so every `(task, seed)` sends
-    its requests through one client, configured and torn down in one place.
-    Connections themselves are deliberately not reused, there or here: each
-    `(task, seed)` runs on its own event loop, and a pooled connection
-    cannot outlive the loop that opened it -- see `evaluation.experiment`'s
-    module docstring.
+    `settings` is `config.resolve_settings`'s output and `client` the run's
+    shared `openai.AsyncOpenAI`. Each call gets a fresh circuit breaker.
 
-    Deliberately no per-request `seed`: vLLM classifies a request carrying
-    one as `SamplingType.RANDOM_SEED` whenever `temperature > 0`, and the TPU
-    backend refuses that outright (`TpuPlatform.validate_request` raises
-    "JAX does not support per-request seed."), reaching the client as an
-    empty-body HTTP 500. `eval.seeds` therefore indexes independent
-    replicates rather than determining them, and `generate_one` never sends
-    one.
+    No per-request `seed` is sent: vLLM's TPU backend rejects one whenever
+    `temperature > 0` (reaching the client as an empty HTTP 500), so
+    `eval.seeds` indexes independent replicates rather than seeding them.
     """
     breaker = _CircuitBreaker(int(settings["fail_fast_after"]))
     served_model_name = settings["served_model_name"]

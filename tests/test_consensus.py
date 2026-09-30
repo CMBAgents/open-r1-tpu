@@ -1,24 +1,19 @@
 """Tests for `open_r1_tpu.evaluation.consensus`.
 
-The vote, the replicate join, and the corpus reduction are pure logic and are
-tested here against small fakes at the LightEval boundary -- the same shape
-`tests/test_scoring.py` uses for `compute_scores`. The one function that
-genuinely needs a LightEval installation, `extract_answer` (it calls
-`lighteval.metrics.normalizations.math_normalizer`), is
-`@pytest.mark.integration`: deselected by default, run with
-`pytest -m integration` once the `eval` extra is installed.
+The vote, the replicate join and the corpus reduction run against fakes at
+the LightEval boundary; `extract_answer`, which calls LightEval's
+`math_normalizer`, skips without the eval extra.
 """
 
 from __future__ import annotations
 
-import json
 import statistics
 from pathlib import Path
 
 import pytest
 
 from open_r1_tpu.evaluation import consensus
-from open_r1_tpu.evaluation.config import task_slug
+from open_r1_tpu.evaluation.summary import jsonl_path, write_jsonl
 
 
 class FakeMetric:
@@ -44,11 +39,7 @@ class FakeConfig:
 
 
 def write_records(output_dir: Path, task: str, seed: int, records) -> None:
-    path = output_dir / f"seed-{seed}" / f"{task_slug(task)}.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        for record in records:
-            handle.write(json.dumps(record) + "\n")
+    write_jsonl(jsonl_path(output_dir, seed, task), records)
 
 
 def ok_record(doc_id: str, completion: str, **extra):
@@ -152,13 +143,11 @@ def fake_scoring(monkeypatch):
 def test_the_consensus_answer_is_judged_not_the_per_replicate_mean(
     tmp_path, flat_extraction, fake_scoring
 ):
-    # Document 0: "204" wins 3-2 and is right. Document 1: "13" wins 3-2 and
-    # is wrong. cons@5 is therefore 0.5 -- while the per-replicate pass@1
-    # across the same ten generations is 0.5 on document 0 and 0.4 on
-    # document 1, i.e. 0.45. The two numbers are genuinely different
-    # quantities, which is the whole reason this module exists.
+    # Document 0: "204" wins 3 of 5 and is right. Document 1: "13" wins 3 of
+    # 5 and is wrong. cons@5 is therefore 0.5, while pass@1 over the same ten
+    # generations is (3/5 + 1/5) / 2 = 0.4.
     for seed, (first, second) in enumerate(
-        [("204", "13"), ("204", "13"), ("204", "13"), ("7", "204"), ("7", "204")]
+        [("204", "13"), ("204", "13"), ("204", "13"), ("7", "204"), ("13", "7")]
     ):
         write_records(
             tmp_path,
@@ -253,24 +242,6 @@ def test_asking_for_more_replicates_than_ran_is_rejected(tmp_path):
         )
 
 
-def test_records_written_before_gold_was_carried_name_the_fix(
-    tmp_path, flat_extraction, fake_scoring
-):
-    for seed in (0, 1):
-        stale = ok_record("0", "204")
-        del stale["gold"]
-        write_records(tmp_path, "aime24|0", seed, [stale])
-
-    with pytest.raises(ValueError, match="re-run the tier"):
-        consensus.consensus_for_task(
-            task="aime24|0",
-            request={"n": 2, "metric": "pass@k:k=1"},
-            config=FakeConfig(FakeMetric("pass@k:k=1")),
-            seeds=[0, 1],
-            output_dir=tmp_path,
-        )
-
-
 def test_no_consensus_requested_produces_no_consensus_block(tmp_path):
     assert (
         consensus.consensus_metrics({"seeds": [0], "consensus": {}}, {}, tmp_path) == {}
@@ -308,8 +279,8 @@ def test_consensus_metrics_reports_the_summary_shape(
 # --- the LightEval boundary ------------------------------------------------
 
 
-@pytest.mark.integration
 def test_extraction_reads_the_final_answer_not_an_abandoned_one():
+    pytest.importorskip("lighteval")
     # The model boxes 13 while working, rejects it, and answers 204. Voting on
     # the raw text would count this sample for 13 -- and would do it precisely
     # on the documents where the model reconsidered.
@@ -320,6 +291,6 @@ def test_extraction_reads_the_final_answer_not_an_abandoned_one():
     assert consensus.extract_answer(completion) == "204"
 
 
-@pytest.mark.integration
 def test_a_completion_with_no_boxed_answer_extracts_to_nothing():
+    pytest.importorskip("lighteval")
     assert consensus.extract_answer("I could not work this one out.") == ""

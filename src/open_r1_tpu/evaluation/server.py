@@ -16,6 +16,7 @@ import json
 import logging
 import shlex
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
@@ -26,27 +27,20 @@ from open_r1_tpu.evaluation.config import (
     DEFAULT_SERVE_COMMAND,
     load_eval_config,
     resolve_settings,
+    uses_container_wrapper,
 )
 
 LOGGER = logging.getLogger(__name__)
 
 
 def vllm_serve_command(settings: Mapping[str, Any]) -> list[str]:
-    """Build the server invocation for this recipe.
-
-    Emitted from here rather than written into the shell launcher so the recipe
-    stays the single source of truth for the port, the served name, and the
-    context window. The launcher owns the process; this owns its arguments.
-
-    `server.serve_command` supplies everything up to the model path, so the
-    server can live outside this environment -- which it must, since
-    tpu-inference does not support the Python this project runs on.
+    """The server invocation for this recipe. `server.serve_command` supplies
+    everything up to the model path, since the server runs outside this
+    environment (tpu-inference does not support this project's Python).
     """
     command = [*settings.get("serve_command", DEFAULT_SERVE_COMMAND)]
     if settings.get("server_image"):
-        # The supported container wrapper owns all Docker-specific arguments.
-        # `--` leaves every following option to vLLM, while the selected image
-        # remains visible in the durable summary rather than hidden in a script.
+        # The wrapper owns the Docker arguments; `--` passes the rest to vLLM.
         command += ["--image", str(settings["server_image"]), "--"]
     command += [
         str(settings["model_path"]),
@@ -70,21 +64,15 @@ def vllm_serve_command(settings: Mapping[str, Any]) -> list[str]:
 
 
 def container_image_provenance(settings: Mapping[str, Any]) -> dict[str, Any] | None:
-    """Read image ID and service versions through the supported wrapper.
-
-    The wrapper supplies its own Docker/sudo detection, so this works on a
-    freshly provisioned TPU VM where Docker is intentionally not in the login
-    user's group. The command runs Python in the already-built image only; it
-    does not initialize vLLM or reserve the TPU.
+    """The image ID and service versions, read through the container wrapper,
+    or None when the server is not the wrapper's image. Runs Python in the
+    built image only: it neither starts vLLM nor reserves the TPU.
     """
     image = settings.get("server_image")
-    raw_command = settings.get("serve_command", DEFAULT_SERVE_COMMAND)
-    command = [str(part) for part in raw_command]
-    if (
-        image is None
-        or not command
-        or not command[0].endswith("run_vllm_tpu_container.sh")
-    ):
+    command = [
+        str(part) for part in settings.get("serve_command", DEFAULT_SERVE_COMMAND)
+    ]
+    if image is None or not uses_container_wrapper(command):
         return None
 
     completed = subprocess.run(
@@ -112,17 +100,9 @@ def container_image_provenance(settings: Mapping[str, Any]) -> dict[str, Any] | 
 
 
 def wait_for_server(base_url: str, timeout_secs: int = 900) -> None:
-    """Block until the vLLM server answers, or fail with what went wrong.
-
-    The shell launcher starts the server and this confirms it is actually
-    serving before a long evaluation is committed to it. Model load on a TPU
-    includes weight transfer and an XLA compilation, so the default timeout is
-    generous.
+    """Block until the vLLM server answers, or fail with the last error. A TPU
+    model load includes XLA compilation, hence the generous default timeout.
     """
-    # Imported here to keep the module importable where `time` monkeypatching
-    # in tests would otherwise leak across cases.
-    import time
-
     models_url = base_url.rstrip("/") + "/models"
     deadline = time.monotonic() + timeout_secs
     last_error = "no attempt made"

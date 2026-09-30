@@ -90,10 +90,15 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
-# Integration tests need a vLLM server already serving the recipe's model. They
-# are deselected by default and run with `pytest -m integration` once one is up.
-markers = ["integration: needs a live vLLM server"]
-addopts = "-m 'not integration'"
+# Tests that need LightEval skip themselves without the eval extra. Two kinds are
+# deselected by default: `integration` needs a vLLM server already serving the
+# recipe's model, and `network` downloads datasets from the Hugging Face Hub.
+# Select them with `pytest -m integration` or `pytest -m network`.
+markers = [
+  "integration: needs a live vLLM server",
+  "network: needs Hugging Face Hub access",
+]
+addopts = "-m 'not integration and not network'"
 
 [tool.ruff]
 line-length = 88

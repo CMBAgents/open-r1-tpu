@@ -1,35 +1,20 @@
 """Preflight the evaluation stack before committing TPU time to a benchmark.
 
-The training preflight in `open_r1_tpu.sft.preflight` validates the
-Tunix/JAX stack. This
-validates the serving side: the exact LightEval dependency stack, the pinned
-vLLM container image, the exported checkpoint it will be pointed at, and the
-recipe's task names. The TPU itself is deliberately not initialized. vLLM
-holds the chip while it serves, so a preflight that called `jax.devices()`
-would fail precisely when the server was up and working.
+Checks the serving side: the pinned LightEval dependency stack, the vLLM
+container image and its service versions, the exported checkpoint, and the
+recipe's tasks against the frozen task pack (`configs/taskpack.yaml`), so a
+LightEval upgrade that moves a prompt, a generation parameter or a metric
+fails here, before the server spends minutes loading weights. The TPU is not
+touched: vLLM holds it while serving, so initialising JAX here would fail
+exactly when the server is up.
 
-It exists because the failures worth catching here are silent, expensive, or
-both. A merged export missing its tokenizer files or its chat
-template loads far enough to serve requests and then answers off-distribution,
-producing a benchmark number that measures the wrong thing. And Qwen3-Base
-names `<|endoftext|>` as its EOS while the chat template closes turns with
-`<|im_end|>`, so a server left to the tokenizer's own EOS runs past the end of
-every reply and writes the user's next turn as well -- which under a benchmark
-looks like a model that cannot stop reasoning. vLLM does not stop at
-`<|im_end|>` because a stop *string* names it -- vLLM matches stop strings
-against decoded text with special tokens stripped, so one can never fire on the
-real token -- it stops because the export's `generation_config.json` names the
-token's id as an `eos_token_id`. `check_export_dir` therefore verifies that
-setting directly and fails the preflight, rather than warning, when it is
-missing or wrong: every benchmark number from such an export would be invalid. The token
-itself differs per model -- Qwen3 closes turns with `<|im_end|>`, DeepSeek's
-distills with their end-of-sentence token -- so the recipe names it via
-`server.turn_end_token`.
-The recipe's tasks are resolved against the installed LightEval and diffed
-against the frozen task pack (`configs/taskpack.yaml`): a task that no longer
-exists, or a LightEval upgrade that quietly moves a prompt template, a
-generation parameter or a metric's configuration, fails here, naming what
-moved, before the server spends fifteen minutes loading weights.
+An export must end every turn on the recipe's `server.turn_end_token`
+(`<|im_end|>` for Qwen3, the end-of-sentence token for DeepSeek's distills).
+A stop string cannot do this, because vLLM matches stop strings against text
+with special tokens stripped; only the export's `generation_config.json`
+`eos_token_id` can. An export without it runs past the end of every reply and
+invalidates every benchmark number, so `check_export_dir` fails on it, as it
+does on a missing chat template.
 
 Run from the repository root::
 
@@ -42,18 +27,22 @@ from __future__ import annotations
 import json
 import platform
 import subprocess
-from collections.abc import Mapping, Sequence
-from importlib import metadata
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from open_r1_tpu.core.cli import parse_recipe_args, recipe_parser
-from open_r1_tpu.evaluation.config import load_eval_config, resolve_settings
+from open_r1_tpu.evaluation.config import (
+    load_eval_config,
+    resolve_settings,
+    uses_container_wrapper,
+)
 from open_r1_tpu.evaluation.server import container_image_provenance
 from open_r1_tpu.evaluation.stack import (
     EVALUATION_PACKAGE_VERSIONS,
     EVALUATION_PYTHON_VERSION,
     VLLM_TPU_SERVICE_VERSIONS,
+    installed_version,
 )
 from open_r1_tpu.evaluation.taskpack import DEFAULT_TASKPACK_PATH, verify_task_specs
 
@@ -61,13 +50,6 @@ from open_r1_tpu.evaluation.taskpack import DEFAULT_TASKPACK_PATH, verify_task_s
 REQUIRED_FILES = ("config.json", "tokenizer_config.json")
 # Any one of these carries the weights.
 WEIGHT_FILES = ("model.safetensors", "model.safetensors.index.json")
-
-
-def _version(distribution: str) -> str:
-    try:
-        return metadata.version(distribution)
-    except metadata.PackageNotFoundError:
-        return "unknown"
 
 
 def check_dependency_versions(
@@ -79,7 +61,7 @@ def check_dependency_versions(
     actual = (
         dict(installed)
         if installed is not None
-        else {name: _version(name) for name in EVALUATION_PACKAGE_VERSIONS}
+        else {name: installed_version(name) for name in EVALUATION_PACKAGE_VERSIONS}
     )
     actual_python = python_version or platform.python_version()
     errors: list[str] = []
@@ -98,16 +80,12 @@ def check_dependency_versions(
     return errors
 
 
-def check_server_runtime(settings: Mapping[str, object]) -> tuple[list[str], list[str]]:
-    """Verify the supported wrapper, local image, and service versions."""
+def check_server_runtime(settings: Mapping[str, Any]) -> tuple[list[str], list[str]]:
+    """Check the container wrapper's image and its service versions. Returns
+    (errors, warnings); a server that is not the wrapper's image is a warning.
+    """
     image = settings.get("server_image")
-    raw_serve_command = settings.get("serve_command", [])
-    serve_command = (
-        [str(part) for part in raw_serve_command]
-        if isinstance(raw_serve_command, Sequence)
-        and not isinstance(raw_serve_command, str)
-        else []
-    )
+    serve_command = [str(part) for part in settings.get("serve_command", [])]
     if image is None:
         return (
             [],
@@ -116,7 +94,7 @@ def check_server_runtime(settings: Mapping[str, object]) -> tuple[list[str], lis
                 "not reproducibility-checked"
             ],
         )
-    if not serve_command or not serve_command[0].endswith("run_vllm_tpu_container.sh"):
+    if not uses_container_wrapper(serve_command):
         return (
             [],
             [
@@ -158,20 +136,15 @@ def check_server_runtime(settings: Mapping[str, object]) -> tuple[list[str], lis
         for name, expected in VLLM_TPU_SERVICE_VERSIONS.items()
         if versions.get(name) != expected
     ]
-    if errors:
-        return (errors, [])
-    return ([], [])
+    return (errors, [])
 
 
 def _turn_end_token_id(
     tokenizer_config: Mapping[str, Any], directory: Path, turn_end_token: str
 ) -> int | None:
-    """Find the turn-end token's id from the export's tokenizer files.
-
-    Checked in `tokenizer_config.json`'s `added_tokens_decoder` first, which is
-    where a merged Qwen3 export carries it. `tokenizer.json`'s `added_tokens`
-    is the fallback for an export that omits it there. Returns None -- rather
-    than guessing an id -- when neither file names the token.
+    """The turn-end token's id from `tokenizer_config.json`'s
+    `added_tokens_decoder`, else `tokenizer.json`'s `added_tokens`; None when
+    neither names it.
     """
     added_tokens_decoder = tokenizer_config.get("added_tokens_decoder")
     if isinstance(added_tokens_decoder, Mapping):
@@ -197,26 +170,16 @@ def _turn_end_token_id(
     return None
 
 
-def check_export_dir(
-    model_path: str, turn_end_token: str
-) -> tuple[list[str], list[str]]:
-    """Check an exported checkpoint for what vLLM needs to serve it as chat.
-
-    Returns (errors, warnings). A missing chat template is an error rather than
-    a warning: without it the server falls back to raw completion, and every
-    prompt then reaches the model in a format it was never trained on. Turn
-    termination is checked the same way: vLLM never stops on a stop *string*
-    matching the turn-end token -- it matches decoded text with special tokens
-    stripped, so the string can never fire on the real token -- so the setting
-    that actually governs it, the export's `generation_config.json`, is
-    checked directly and any problem with it is an error rather than a
-    warning.
+def check_export_dir(model_path: str, turn_end_token: str) -> list[str]:
+    """Errors in an export that vLLM must serve as a chat model. Without a chat
+    template the server falls back to raw completion, and without the
+    turn-end token in `generation_config.json` it runs past every reply (see
+    the module docstring).
     """
     errors: list[str] = []
-    warnings: list[str] = []
     directory = Path(model_path).expanduser()
     if not directory.is_dir():
-        return ([f"server.model_path is not a directory: {directory}"], warnings)
+        return [f"server.model_path is not a directory: {directory}"]
 
     for name in REQUIRED_FILES:
         if not (directory / name).is_file():
@@ -226,13 +189,13 @@ def check_export_dir(
 
     tokenizer_config_path = directory / "tokenizer_config.json"
     if not tokenizer_config_path.is_file():
-        return (errors, warnings)
+        return errors
 
     try:
         tokenizer_config = json.loads(tokenizer_config_path.read_text("utf-8"))
     except ValueError as error:
         errors.append(f"tokenizer_config.json is not valid JSON: {error}")
-        return (errors, warnings)
+        return errors
 
     has_template = (
         bool(tokenizer_config.get("chat_template"))
@@ -252,7 +215,7 @@ def check_export_dir(
             "added_tokens_decoder and tokenizer.json's added_tokens); cannot "
             "verify the export stops at turn boundaries"
         )
-        return (errors, warnings)
+        return errors
 
     generation_config_path = directory / "generation_config.json"
     if not generation_config_path.is_file():
@@ -261,12 +224,12 @@ def check_export_dir(
             f"tokenizer's own EOS rather than {turn_end_token!r}; every "
             "benchmark number from it would run past the turn boundary"
         )
-        return (errors, warnings)
+        return errors
     try:
         generation_config = json.loads(generation_config_path.read_text("utf-8"))
     except ValueError as error:
         errors.append(f"generation_config.json is not valid JSON: {error}")
-        return (errors, warnings)
+        return errors
 
     eos_token_id = generation_config.get("eos_token_id")
     eos_ids = eos_token_id if isinstance(eos_token_id, list) else [eos_token_id]
@@ -277,7 +240,7 @@ def check_export_dir(
             "will not stop at turn boundaries and every benchmark number from "
             "it would be invalid"
         )
-    return (errors, warnings)
+    return errors
 
 
 def main() -> None:
@@ -288,12 +251,7 @@ def main() -> None:
     warnings: list[str] = []
 
     errors.extend(check_dependency_versions())
-
-    export_errors, export_warnings = check_export_dir(
-        settings["model_path"], settings["turn_end_token"]
-    )
-    errors.extend(export_errors)
-    warnings.extend(export_warnings)
+    errors.extend(check_export_dir(settings["model_path"], settings["turn_end_token"]))
 
     pack_errors, pack_warnings = verify_task_specs(
         DEFAULT_TASKPACK_PATH, settings["tasks"]
@@ -313,7 +271,7 @@ def main() -> None:
 
     print(
         f"Evaluation stack: Python {platform.python_version()}, "
-        f"LightEval {_version('lighteval')}"
+        f"LightEval {installed_version('lighteval')}"
     )
     if settings.get("server_image"):
         print(f"vLLM image: {settings['server_image']}")

@@ -1,17 +1,9 @@
 """No committed tracing file carries a deployment-specific literal.
 
-A non-loopback host belongs exclusively in the gitignored
-`configs/tracing.yaml` and `docker/langfuse/.env` -- never hard-coded into a
-script or a committed config, per open-r1-tpu/AGENTS.md's "Keep committed
-defaults neutral and deployment-independent." `127.0.0.1` is exempt: it is
-the loopback *default* every tracing service falls back to, not a deployment
-identifier, and is expected in every file this test covers.
-
-A two-host deployment does publish langfuse-web on a routable address
-(LANGFUSE_WEB_BIND) and dial it from another machine (langfuse.host), but
-both arrive as arguments to `scripts/gen_langfuse_env.sh` and land only in
-those two gitignored files. That is the rule this test exists to keep: the
-committed tree never learns where anything actually runs.
+A non-loopback host belongs only in the gitignored `configs/tracing.yaml` and
+`docker/langfuse/.env`, which `scripts/gen_langfuse_env.sh` writes from its
+arguments. `127.0.0.1` is exempt: it is the loopback default, not a
+deployment identifier.
 """
 
 from __future__ import annotations
@@ -22,36 +14,27 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).parents[1]
 
-# The two files that wire tracing into an evaluation launch: the Langfuse
-# compose file and the eval launch script. Both are non-Python (YAML/bash),
-# where "no non-loopback URL, only os.environ/ references and 127.0.0.1" is
-# a clean, low-false-positive textual property.
+# The files that wire tracing into an evaluation launch.
 FILES = [
     REPO_ROOT / "docker" / "langfuse" / "docker-compose.yaml",
     REPO_ROOT / "scripts" / "run_eval_tpu.sh",
     REPO_ROOT / "scripts" / "gen_langfuse_env.sh",
 ]
 
-# A URL whose host is neither a loopback address nor an env/format
-# placeholder. Matches http(s):// and the bare host:port Docker uses.
+# An http(s) URL whose host is neither loopback nor a variable placeholder.
 NON_LOOPBACK_URL = re.compile(
     r"(?:https?://)(?!127\.0\.0\.1|localhost|\$|\{)[a-zA-Z0-9.-]+"
 )
 
-# An IPv4 literal that is not loopback. This is the check that matters for
-# gen_langfuse_env.sh, which now takes --web-bind and --langfuse-host: the
-# temptation is to bake this deployment's address in as a default rather than
-# type it each time, and that would put it in the committed tree.
+# An IPv4 literal that is not loopback, such as an address baked into
+# gen_langfuse_env.sh as a default for --web-bind or --langfuse-host.
 NON_LOOPBACK_IPV4 = re.compile(
     r"(?<![\w.])(?!127\.0\.0\.1|0\.0\.0\.0)\d{1,3}(?:\.\d{1,3}){3}(?![\w.])"
 )
 
-# docker-compose.yaml and gen_langfuse_env.sh are legitimately full of
-# `http://<service-name>:<port>` references -- Docker Compose's own internal
-# service DNS (clickhouse, minio, redis, postgres), resolved from the
-# `services:` block, not a deployment value. Only run_eval_tpu.sh, where any
-# non-loopback host really would be a hard-coded deployment value, is checked
-# for one. Every file is checked for an IP literal, which no service name is.
+# docker-compose.yaml and gen_langfuse_env.sh legitimately reference Compose
+# service names (`http://clickhouse:8123`), so only run_eval_tpu.sh is checked
+# for a non-loopback URL. Every file is checked for an IP literal.
 URL_CHECKED_FILES = [REPO_ROOT / "scripts" / "run_eval_tpu.sh"]
 
 
@@ -76,10 +59,8 @@ def test_every_file_covered_exists():
 
 
 def test_the_real_tracing_config_is_not_committed():
-    # configs/tracing.example.yaml is documentation, with a placeholder host
-    # -- never read by a script -- but the real configs/tracing.yaml that
-    # scripts/gen_langfuse_env.sh writes must stay out of git. It may exist
-    # on disk; it must not be tracked or be trackable.
+    # scripts/gen_langfuse_env.sh writes the real file; it may exist on disk
+    # but must be neither tracked nor trackable.
     path = "configs/tracing.yaml"
     tracked = subprocess.run(
         ["git", "ls-files", "--", path],

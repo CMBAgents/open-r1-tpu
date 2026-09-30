@@ -1,47 +1,18 @@
-"""Turn a LightEval metric's verdict into a Langfuse score.
+"""Score one completion with its task's own LightEval metrics.
 
-The scorer bridge: the
-whole job is translating what LightEval's own metric objects return into what
-`Langfuse.create_score` accepts, and it is smaller than it sounds because the
-two shapes nearly match already. LightEval's sample-level metrics return a
-dict of named values (`Metric.compute_sample` wraps a single metric as
-`{metric_name: value}`; a `SampleLevelMetricGrouping` carries several names at
-once -- see `ifeval`'s four accuracies), and a Langfuse score is a
-`(name, value, data_type)` triple. One LightEval metric name becomes one
-Langfuse score name; nothing here invents a naming scheme or flattens a
-grouping into a single number.
-
-This module never reimplements extraction, normalisation, or symbolic
-equivalence. Every scoring call below reaches the installed `lighteval`'s own
-metric objects -- resolved fresh per run through
-`evaluation.taskpack.resolve_task_configs`, never deserialized from the
-committed task pack -- and its own `remove_reasoning_tags`, so a maths answer
-judged wrong here is the same judgement the LightEval CLI would have made on
-the same text.
-
-`lighteval` is a pinned dependency (`evaluation.stack.EVALUATION_PACKAGE_VERSIONS`),
-imported here only for `lighteval.metrics`, `lighteval.models.model_output`,
-and `lighteval.tasks.requests` -- library internals with no stability
-guarantee across releases. If an upgrade breaks an import this module makes,
-the documented fallback is to vendor the affected module under a clearly
-named `_vendor/` directory with the upstream commit recorded, rather than
-reimplementing its behaviour from scratch.
+Extraction, normalisation and equivalence are never reimplemented: every call
+reaches the installed LightEval's metric objects and reasoning-tag strip, so a
+verdict here is the one the LightEval CLI would give the same text.
 """
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-LOGGER = logging.getLogger(__name__)
-
-# LightEval's own default (`PipelineParameters.reasoning_tags`, as a Python
-# literal): a `<think>...</think>` block is dropped before scoring, leaving
-# `text_post_processed` for the metric and the raw text untouched for the
-# trace. See the module docstring: this project must score exactly what the
-# CLI would have scored, so the tag pair is not configurable here.
+# LightEval's own default (`PipelineParameters.reasoning_tags`): the reasoning
+# block is dropped before a metric sees the completion.
 REASONING_TAG_PAIRS: tuple[tuple[str, str], ...] = (("<think>", "</think>"),)
 
 _LANGFUSE_NUMERIC = "NUMERIC"
@@ -49,12 +20,7 @@ _LANGFUSE_CATEGORICAL = "CATEGORICAL"
 
 
 def build_doc(prompt_function: Any, row: Mapping[str, Any], task_name: str) -> Any:
-    """Render one dataset row through the task pack's own prompt function.
-
-    A thin, single choke point on purpose (see the module docstring): if a
-    LightEval upgrade changes what a prompt function needs or returns, this is
-    the one place that breaks, not every call site.
-    """
+    """Render one dataset row through the task's own prompt function."""
     doc = prompt_function(row, task_name)
     if not doc.query or not doc.choices:
         raise ValueError(
@@ -65,9 +31,9 @@ def build_doc(prompt_function: Any, row: Mapping[str, Any], task_name: str) -> A
 
 
 def single_gold(doc: Any, task_name: str, doc_id: str) -> str:
-    """The document's one gold answer. Every JSONL record carries it for
-    `evaluation.consensus`, and `doc_from_item` rebuilds a single-choice
-    `Doc` from it, so a multi-gold document is rejected rather than guessed.
+    """The document's one gold answer. Records carry a single gold and
+    `doc_from_item` rebuilds a single-choice `Doc` from it, so a multi-gold
+    document is rejected rather than guessed.
     """
     golds = doc.get_golds()
     if len(golds) != 1:
@@ -79,14 +45,11 @@ def single_gold(doc: Any, task_name: str, doc_id: str) -> str:
 
 
 def build_model_response(raw_text: str) -> Any:
-    """Construct the `ModelResponse` a LightEval metric expects from one raw
-    completion, with the reasoning-tag strip already applied.
+    """The `ModelResponse` a LightEval metric expects for one completion.
 
-    Both `text` (raw) and `text_post_processed` (stripped) are populated:
-    `text` is what the trace stores as the generation's output, and
-    `text_post_processed` is what a metric actually scores against -- see the
-    module docstring's warning about an abandoned candidate answer surviving
-    inside an unstripped `<think>` block.
+    `text` keeps the raw completion; `text_post_processed`, which is what the
+    metrics score, has the reasoning block stripped, so an answer boxed and
+    then abandoned inside `<think>` cannot be extracted.
     """
     from lighteval.models.model_output import ModelResponse
     from lighteval.utils.utils import remove_reasoning_tags
@@ -97,14 +60,8 @@ def build_model_response(raw_text: str) -> Any:
 
 @dataclass(frozen=True)
 class ScoringResult:
-    """One document's scoring outcome.
-
-    `scores` may hold values LightEval itself computed but that have no
-    single-document Langfuse posting (see `coerce_score`'s handling of a
-    list-valued metric, e.g. `ifeval`'s `inst_level_*_acc`) -- callers that
-    need the true corpus number reduce `scores` across documents themselves
-    using the metric's own `corpus_level_fn` (`evaluation.summary`), never a
-    hand-rolled mean.
+    """One document's raw LightEval scores (list-valued ones included, such as
+    ifeval's `inst_level_*_acc`), and the metrics that raised with their errors.
     """
 
     scores: dict[str, Any] = field(default_factory=dict)
@@ -119,28 +76,13 @@ def _metric_label(metric_name: Any) -> str:
 def compute_scores(
     doc: Any, model_response: Any, metrics: Sequence[Any]
 ) -> ScoringResult:
-    """Score one document against every metric its task declares.
+    """Score one document against every metric its task declares, as
+    `lighteval.metrics.apply_metric` does, except that a metric that raises is
+    recorded as failed rather than stopping the others.
 
-    Mirrors `lighteval.metrics.apply_metric`'s own batched/non-batched
-    dispatch (`Metric.compute_sample`'s two call shapes), but per-metric and
-    fault-tolerant: a metric that raises is counted as failed and does not
-    stop the others, because the run has already paid for the generation -- a
-    scoring failure is a data point, not a crash. A name two metrics both
-    produce is not a silent overwrite: it raises, naming both.
-
-    No timeout is added here on top of a metric's own. Every metric this
-    project's tasks use (`gsm8k`'s and `math_500`'s, both backed by
-    `MultilingualExtractiveMatchMetric`'s sympy-based equivalence check, which
-    is what can hang on adversarial output) already carries its own
-    `timeout_seconds` via a `signal.alarm`-based guard, because these are the
-    live, unmodified objects the installed LightEval constructs -- and
-    `signal.alarm` can only be armed on the main thread of the main
-    interpreter. Wrapping the call in a second, thread-based timeout here
-    would not add protection; it would only break the first one, by moving
-    the call off the thread `signal.alarm` requires. **Callers must invoke
-    `compute_scores` from the main thread** -- never through
-    `asyncio.to_thread`, `run_in_executor`, or a worker pool -- or a metric's
-    own timeout stops working silently.
+    **Call this on the main thread.** LightEval's maths metrics guard their
+    symbolic check with a `signal.alarm` timeout, which silently stops working
+    anywhere else.
     """
     scores: dict[str, Any] = {}
     failed: list[str] = []
@@ -173,25 +115,11 @@ def compute_scores(
 
 
 def coerce_score(value: Any) -> tuple[Any, str] | None:
-    """Map one LightEval metric value to a `(value, langfuse_data_type)` pair
-    `lighteval_evaluator` turns into one `Evaluation` for `run_experiment()`
-    to post.
+    """Map one LightEval value to a `(value, Langfuse data_type)` pair.
 
-    | LightEval value | Langfuse `data_type` | Note |
-    | --- | --- | --- |
-    | `bool` | `NUMERIC` as `0.0`/`1.0` | checked before `int` (`bool` is a subclass) |
-    | `int` / `float` | `NUMERIC` | the common case |
-    | `str` | `CATEGORICAL` | e.g. an extraction-status label |
-    | `None` | *skipped* (returns `None`) | absence is not zero -- never coerce |
-    | `list` / `tuple` of scalars | *skipped* (returns `None`) | see below |
-
-    A list or tuple (e.g. `ifeval`'s `inst_level_*_acc`, one bool per
-    instruction in the document) has no single-document scalar to post: its
-    corpus number needs the metric's own `corpus_level_fn` run over every
-    document, not a per-document post -- see `ScoringResult`.
-
-    Anything else raises: an unrecognised shape is a bridge bug, not a value
-    to silently drop.
+    A `bool` becomes NUMERIC 1.0 or 0.0, an `int` or `float` NUMERIC, a `str`
+    CATEGORICAL. `None` is skipped (absence is not zero), and so is a list or
+    tuple, which has no per-document scalar. Anything else raises.
     """
     if value is None:
         return None
@@ -209,11 +137,8 @@ def coerce_score(value: Any) -> tuple[Any, str] | None:
 def run_level_fields(
     *, completion_tokens: int | None, finish_reason: str
 ) -> dict[str, Any]:
-    """The two run-level signals posted alongside every document's metric
-    scores: `completion_tokens` (from the API response's own `usage`, closing
-    the blind `truncation_rate` an empty token count used to cause) and
-    `truncated` (`1.0` when `finish_reason == "length"`, a fact the server
-    states rather than a token-count inference).
+    """The generation facts scored beside a document's metrics: its completion
+    length and whether the server cut it off (`finish_reason == "length"`).
     """
     return {
         "completion_tokens": completion_tokens,
@@ -222,12 +147,7 @@ def run_level_fields(
 
 
 def coerce_fields(fields: Mapping[str, Any]) -> dict[str, tuple[Any, str]]:
-    """Coerce every field in `fields` and drop the ones `coerce_score` skips.
-
-    The convenience wrapper `lighteval_evaluator` actually calls: run
-    `compute_scores`' result and `run_level_fields`' result through this
-    once, merged, then turn each coerced pair into one `Evaluation`.
-    """
+    """`coerce_score` over a mapping, dropping the values it skips."""
     coerced: dict[str, tuple[Any, str]] = {}
     for name, value in fields.items():
         pair = coerce_score(value)
@@ -236,47 +156,14 @@ def coerce_fields(fields: Mapping[str, Any]) -> dict[str, tuple[Any, str]]:
     return coerced
 
 
-# --- the Langfuse `run_experiment()` adapter --------------------------------
-#
-# `run_experiment()` drives iteration and concurrency, and calls back into
-# this module to score each document through `lighteval_evaluator` below,
-# which calls `build_model_response`/`compute_scores`/`run_level_fields`/
-# `coerce_fields` the same way every other function above already does.
-
-
 def doc_from_item(
     expected_output: Any, metadata: Mapping[str, Any], task_name: str
 ) -> Any:
-    """Rebuild a `Doc` equivalent to the one `evaluation.traced` built,
-    from a Langfuse dataset item -- for scoring only, never by calling the
-    task's prompt function a second time.
-
-    That distinction matters for at least one task: `gpqa`'s prompt function
-    shuffles its four answer choices with `random.randint` on every call, so
-    re-rendering at scoring time would judge a different shuffle than the one
-    actually sent to the model. `evaluation.traced` captures `doc.query`
-    and `doc.specific` once, verbatim, into the item's metadata; this rebuilds
-    from exactly that, for every task, not just the deterministic ones.
-
-    `choices=[expected_output]`/`gold_index=0` is a deliberate single-choice
-    reconstruction. `Doc.get_golds()` only ever reads `choices[gold_index]`,
-    so this reproduces the original gold exactly regardless of how many
-    choices (or in what order) the original prompt function offered --
-    `evaluation.traced`'s own docstring requires exactly one gold per
-    document for the same reason. A test asserts this constructor and
-    `build_doc` agree on `get_golds()` for the same document.
-
-    `expected_output` is coerced to `str` here because Langfuse's own
-    `expected_output` field is typed `Any`, and round-tripping a gold string
-    through it silently turns a round-trip-safe numeric string into a JSON
-    number (`"204"` comes back as `204`) while leaving a non-round-trip-safe
-    one (`"025"`, where `str(int("025")) != "025"`) as a string -- observed on
-    AIME24, whose gold is a bare integer string with no `\\boxed{}` wrapper.
-    LightEval's metrics call `.strip()` on the gold unconditionally, so an
-    `int` gold crashes every metric for that document (`evaluation.consensus`
-    hits the same call through this same function). `evaluation.traced`
-    always writes a `str` (`Doc.get_golds()` on a freshly-built `Doc`), so this
-    only ever fires for what Langfuse handed back, never for what was sent.
+    """Rebuild a scoring `Doc` from a stored gold and the `query` (and
+    `specific`) captured when the document was first rendered, never by calling
+    the prompt function again: gpqa's shuffles its choices on every call. The
+    gold becomes the only choice, and is coerced to `str` because Langfuse
+    returns a numeric-looking gold ("204") as a number.
     """
     from lighteval.tasks.requests import Doc
 

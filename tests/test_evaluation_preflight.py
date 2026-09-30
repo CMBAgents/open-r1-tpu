@@ -1,3 +1,5 @@
+"""Tests for `open_r1_tpu.evaluation.preflight`."""
+
 import json
 import sys
 from pathlib import Path
@@ -5,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from open_r1_tpu.evaluation import preflight as check_eval_env
+from open_r1_tpu.evaluation import preflight
 from open_r1_tpu.evaluation.config import load_eval_config, resolve_settings
 from open_r1_tpu.evaluation.preflight import (
     check_dependency_versions,
@@ -26,7 +28,7 @@ def test_config_is_required(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["preflight"])
 
     with pytest.raises(SystemExit):
-        check_eval_env.main()
+        preflight.main()
 
 
 # Qwen3's own id for <|im_end|>; the value only has to be internally
@@ -202,14 +204,11 @@ def test_container_runtime_check_rejects_wrong_service_versions(tmp_path):
 def test_a_complete_export_passes(tmp_path):
     directory = write_export(tmp_path, tokenizer_config={"chat_template": "{{ x }}"})
 
-    errors, warnings = check_export_dir(str(directory), "<|im_end|>")
-
-    assert errors == []
-    assert warnings == []
+    assert check_export_dir(str(directory), "<|im_end|>") == []
 
 
 def test_a_missing_directory_is_reported_rather_than_crashing(tmp_path):
-    errors, _ = check_export_dir(str(tmp_path / "absent"), "<|im_end|>")
+    errors = check_export_dir(str(tmp_path / "absent"), "<|im_end|>")
 
     assert any("not a directory" in error for error in errors)
 
@@ -219,7 +218,7 @@ def test_missing_weights_are_an_error(tmp_path):
         tmp_path, tokenizer_config={"chat_template": "x"}, weights=""
     )
 
-    errors, _ = check_export_dir(str(directory), "<|im_end|>")
+    errors = check_export_dir(str(directory), "<|im_end|>")
 
     assert any("safetensors" in error for error in errors)
 
@@ -231,7 +230,7 @@ def test_a_sharded_export_is_accepted(tmp_path):
         weights="model.safetensors.index.json",
     )
 
-    errors, _ = check_export_dir(str(directory), "<|im_end|>")
+    errors = check_export_dir(str(directory), "<|im_end|>")
 
     assert errors == []
 
@@ -241,7 +240,7 @@ def test_a_missing_chat_template_is_an_error(tmp_path):
     # reaches the model in a format it was never trained on.
     directory = write_export(tmp_path, tokenizer_config={})
 
-    errors, _ = check_export_dir(str(directory), "<|im_end|>")
+    errors = check_export_dir(str(directory), "<|im_end|>")
 
     assert any("chat template" in error for error in errors)
 
@@ -250,7 +249,7 @@ def test_a_sidecar_template_file_counts_as_a_template(tmp_path):
     directory = write_export(tmp_path, tokenizer_config={})
     (directory / "chat_template.jinja").write_text("{{ x }}")
 
-    errors, _ = check_export_dir(str(directory), "<|im_end|>")
+    errors = check_export_dir(str(directory), "<|im_end|>")
 
     assert errors == []
 
@@ -259,19 +258,16 @@ def test_unparseable_tokenizer_config_is_reported(tmp_path):
     directory = write_export(tmp_path, tokenizer_config={"chat_template": "x"})
     (directory / "tokenizer_config.json").write_text("{not json")
 
-    errors, _ = check_export_dir(str(directory), "<|im_end|>")
+    errors = check_export_dir(str(directory), "<|im_end|>")
 
     assert any("valid JSON" in error for error in errors)
 
 
-# --- turn-end token id / generation_config.json (hard EOS check) -----------
+# --- turn-end token id / generation_config.json ------------------------------
 #
-# vLLM never stops on a stop *string* matching <|im_end|>: it matches decoded
-# text with special tokens stripped, so the string can never fire on the real
-# token. Termination is governed by the export's generation_config.json
-# instead, so that is what is checked, and any problem with it is an error
-# rather than a warning -- every benchmark number from a bad export would be
-# invalid.
+# A stop string cannot end a turn (vLLM matches it against text with special
+# tokens stripped), so the export's generation_config.json must name the
+# turn-end token as an EOS, and anything else is an error.
 
 
 def test_missing_generation_config_is_a_hard_error(tmp_path):
@@ -279,7 +275,7 @@ def test_missing_generation_config_is_a_hard_error(tmp_path):
         tmp_path, tokenizer_config={"chat_template": "x"}, generation_config=None
     )
 
-    errors, _ = check_export_dir(str(directory), "<|im_end|>")
+    errors = check_export_dir(str(directory), "<|im_end|>")
 
     assert any("generation_config.json" in error for error in errors)
 
@@ -293,7 +289,7 @@ def test_eos_token_id_missing_the_turn_end_id_is_a_hard_error(tmp_path):
         generation_config={"eos_token_id": [151643]},
     )
 
-    errors, _ = check_export_dir(str(directory), "<|im_end|>")
+    errors = check_export_dir(str(directory), "<|im_end|>")
 
     assert any("eos_token_id" in error and "<|im_end|>" in error for error in errors)
 
@@ -305,7 +301,7 @@ def test_a_scalar_eos_token_id_is_accepted(tmp_path):
         generation_config={"eos_token_id": TURN_END_TOKEN_ID},
     )
 
-    errors, _ = check_export_dir(str(directory), "<|im_end|>")
+    errors = check_export_dir(str(directory), "<|im_end|>")
 
     assert errors == []
 
@@ -318,7 +314,7 @@ def test_unresolvable_turn_end_token_id_is_a_hard_error(tmp_path):
         tokenizer_config={"chat_template": "x", "added_tokens_decoder": {}},
     )
 
-    errors, _ = check_export_dir(str(directory), "<|im_end|>")
+    errors = check_export_dir(str(directory), "<|im_end|>")
 
     assert any("cannot verify" in error for error in errors)
 
@@ -334,7 +330,7 @@ def test_the_turn_end_token_id_falls_back_to_tokenizer_json(tmp_path):
         )
     )
 
-    errors, _ = check_export_dir(str(directory), "<|im_end|>")
+    errors = check_export_dir(str(directory), "<|im_end|>")
 
     assert errors == []
 
@@ -358,18 +354,19 @@ def test_a_model_with_its_own_turn_end_token_passes(tmp_path):
         )
     )
 
-    errors, _ = check_export_dir(str(directory), "<｜end▁of▁sentence｜>")  # noqa: RUF001
+    errors = check_export_dir(str(directory), "<｜end▁of▁sentence｜>")  # noqa: RUF001
 
     assert errors == []
 
 
-@pytest.mark.integration
 def test_every_recipe_task_resolves_against_the_installed_lighteval():
+    pytest.importorskip("lighteval")
     from open_r1_tpu.evaluation.taskpack import resolve_task_configs
 
     # base.yaml is not a standalone recipe -- it has no eval:/sampling: of its
     # own and is only ever reached through another recipe's `extends`.
-    for recipe in sorted(Path("recipes").glob("*/eval/*.yaml")):
+    recipes = Path(__file__).parents[1] / "recipes"
+    for recipe in sorted(recipes.glob("*/eval/*.yaml")):
         if recipe.name == "base.yaml":
             continue
         settings = resolve_settings(load_eval_config(str(recipe)))
