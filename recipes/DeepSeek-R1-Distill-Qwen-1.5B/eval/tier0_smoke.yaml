@@ -1,35 +1,29 @@
-# Tier 0: the smoke test, on the reference model. Same functional check as
-# recipes/Qwen2.5-Math-1.5B/eval's tier 0 -- a short greedy pass over easy
-# problems -- so the reference and the project's own models are tripwired
-# identically.
-#
-# Greedy decoding is kept for comparability even though DeepSeek warn the
-# distills can fall into repetition without sampling: a repetition loop is
-# exactly what this tier exists to surface, and its number is a tripwire,
-# not a result.
+# Tier 0: the smoke test on the reference model, the same greedy pass over 200
+# GSM8K problems as ../../Qwen2.5-Math-1.5B/eval/tier0_smoke.yaml. Greedy
+# despite DeepSeek's warning that the distills can loop without sampling: a
+# loop is what this tier exists to surface, and its number is a tripwire, not
+# a result.
 extends: base.yaml
 
 eval:
   tier: tier0-smoke
   tasks:
     - "gsm8k|0"
-  # One seed: greedy decoding has no sampling variance to average out.
+  # Greedy decoding has no sampling variance to average out.
   seeds: [0]
   # Enough to expose a systematic format failure, far too few to score.
   max_samples: 200
 
 server:
-  # Prompt plus completion. Must exceed sampling.max_new_tokens with room for
-  # the problem, which the recipe loader enforces.
   max_model_len: 12288
 
 sampling:
   temperature: 0.0
   top_p: 1.0
   max_new_tokens: 8192
-  # DeepSeek's usage guidance for the distills: no system prompt at all. The
-  # chat template already opens the reasoning block, and the published
-  # numbers were measured this way.
+  # No system prompt, per DeepSeek's guidance for the distills: the chat
+  # template already opens the reasoning block, and the card was measured
+  # this way.
   system_prompt_file: null
 
 reporting:

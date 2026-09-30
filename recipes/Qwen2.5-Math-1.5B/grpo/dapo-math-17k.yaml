@@ -1,77 +1,42 @@
-# GRPO on top of run-3 LR-2e-4's terminal SFT checkpoint (6710), on one v6e-1
-# chip. This recipe assumes the merged SFT export and the prompt set are
-# already staged on local disk (the model and dataset sections say where)
-# and that a short smoke run has been measured before max_steps below is
-# trusted; the reasoning behind the exploratory step budget is further down.
+# GRPO on the SFT export (../sft/openr1-math-220k.yaml) with the English
+# DAPO-Math-17k prompts, rewarding format and correctness
+# (src/open_r1_tpu/grpo/rewards.py). Sized for one TPU v6e-1 chip, which holds
+# the LoRA actor, the frozen reference and the rollout engine.
 #
-# WHY GRPO NOW, NOT MORE SFT. Tier 1 MATH-500 diagnosis (2026-09-05):
-# checkpoint 6710 scores 0.833 +/- 0.011, already past the
-# DeepSeek-R1-Distill-Qwen-1.5B control's 0.798 +/- 0.013 on the same
-# protocol, with truncation down to 7.4%. Classifying the remaining
-# truncated completions (2026-09-04) found 83-91% of them are
-# verbatim repetition loops, not genuinely hard problems (that rate is a flat
-# 3.2-4.0%, matching DeepSeek's own 3.8%) -- and 43% of loop-truncated
-# completions already contain the gold answer before the loop starts. GRPO's
-# reward, not more supervised imitation, is the natural lever on that class of
-# failure, though this first recipe scores only format and correctness
-# (src/open_r1_tpu/grpo/rewards.py) -- a repetition-penalty reward is
-# deliberately deferred to keep this a core GRPO implementation first.
+# Not yet run: step time and peak HBM are unmeasured, so run a short smoke
+# (e.g. training.max_steps=3 training.wandb.enabled=false) before trusting
+# max_steps.
 #
-# ACTOR AND REFERENCE ARE THE SAME CHECKPOINT, LOADED TWICE. model_path below
-# is the merged SFT export (not the pre-SFT RoPE-300k base) -- README's
-# "Checkpoints and GRPO handoff" section. grpo/run.py loads it once with
-# model.lora_config applied (the actor, the only thing this trains) and once
-# without (the frozen reference GRPO's KL term constrains against).
-#
-# WHY LORA, NOT A FULL FINE-TUNE, HERE -- UNLIKE THE SFT RECIPE. The SFT
-# recipe's full-fine-tune requirement (tied embeddings, <|im_end|> was never
-# in the base model's learned vocabulary usage) does not apply a second time:
-# the merged export already has <|im_end|> and the reasoning format baked
-# into its own weights, so a LoRA adapter over attention/MLP projections is
-# enough to reshape *policy* (which reasoning paths get reinforced) without
-# retouching the tied embedding/lm_head row. module_path is the pattern
-# ../../Qwen2.5-1.5B/grpo/simplerl-zoo.yaml trains with: export.py's shared
-# Qwen2/Qwen3 key-mapping rules confirm both families expose attention and
-# MLP projections under these same internal names.
-#
-# WHY THE MESH IS [1, 1]. One v6e-1 chip, actor + reference + rollout all
-# colocated on it (role_to_mesh in grpo/run.py maps all three Tunix roles to
-# this one mesh) -- an exploratory scale deliberately far below the SFT
-# recipe's v6e-4, matching the single-chip setup this pipeline's structure
-# was checked against (an adaptation of Tunix's own published
-# examples/grpo_gemma.ipynb -- see grpo/run.py's module docstring
-# for the API details verified directly against this project's pinned Tunix
-# commit rather than assumed from either notebook).
-#
-# FLOAT32 AND PLAIN ATTENTION, as in ../../Qwen2.5-1.5B/grpo/simplerl-zoo.yaml:
-# bfloat16 or splash attention corrupts Qwen2 GRPO rollouts on the pinned
-# Tunix (see that recipe's header).
-#
-# STEP BUDGET IS A STARTING POINT, NOT A MEASURED ONE. Nothing about this
-# recipe's wall-clock or peak HBM has been run on a TPU. A smoke test (a
-# handful of steps, HBM sampler running) is the gate before committing to
-# max_steps below for a real run -- mirroring the SFT recipe's own "measure
-# it in a short run" convention.
+# Run the SFT recipe first; its export is model.model_path. Stage the prompts
+# with ./scripts/copy_gcs_bucket_data.sh --dataset DAPO-Math-17k-Processed (or
+# read the Hub; see dataset.name), then launch:
+#   python -m open_r1_tpu.grpo.run \
+#     --config recipes/Qwen2.5-Math-1.5B/grpo/dapo-math-17k.yaml
 model:
   model_name: qwen2.5-math-1.5b
   model_id: Qwen/Qwen2.5-Math-1.5B
   model_source: local
-  # The merged SFT export, not the pre-SFT base -- see the header.
+  # Loaded twice: with lora_config as the actor, and without as the frozen
+  # reference for the KL term.
   model_path: artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/merged
   model_download_path: /tmp/open-r1-tpu/models/qwen2.5-math-1.5b-grpo
   intermediate_ckpt_dir: /tmp/open-r1-tpu/intermediate_ckpt-grpo
   rng_seed: 42
   model_display: false
+  # Float32 and plain attention: bfloat16 or splash attention corrupts Qwen2
+  # GRPO rollouts on the pinned Tunix (see ../../Qwen2.5-1.5B/grpo/
+  # simplerl-zoo.yaml).
   dtype: float32
   load_dtype: float32
   remat_config: DECODER
   use_flash_attention: false
   flash_attention_block_size: 1024
-  # Must match the SFT recipe's value: the merged export's weights were
-  # trained at this theta, and rope_theta here (unlike the export's own
-  # config.json, which this field does not read from) is what
-  # automodel.create_model_from_safe_tensors actually loads with.
+  # Must match the SFT recipe. The loader reads this field, not the export's
+  # config.json.
   rope_theta: 300000
+  # LoRA suffices here, unlike at SFT: the export already has <|im_end|> and
+  # the reasoning format in its weights, so the adapter only reshapes the
+  # policy.
   lora_config:
     module_path: ".*q_proj|.*k_proj|.*v_proj|.*o_proj|.*gate_proj|.*up_proj|.*down_proj"
     rank: 64
@@ -81,9 +46,8 @@ model:
     axis_names: [fsdp, tp]
 
 tokenizer:
-  # Inert for model_source: local (model.loading.create_model returns the
-  # staged local directory as the tokenizer path, not this field), kept
-  # identical to the SFT recipe's value on principle rather than removed.
+  # Unused with model_source: local, which takes the tokeniser from the staged
+  # directory; kept equal to the SFT recipe's.
   tokenizer_path: Qwen/Qwen2.5-Math-1.5B
   tokenizer_type: huggingface
   add_bos: false
@@ -91,46 +55,30 @@ tokenizer:
   chat_template: null
 
 dataset:
-  # open-r1/DAPO-Math-17k-Processed, `en` config: 14,116 deduplicated
-  # English competition problems (DAPO, arXiv 2503.14476), every gold answer
-  # a bare integer. Chosen over the SFT corpus (OpenR1-Math-220k) for three
-  # reasons. (1) A GRPO prompt set the actor has never been trained on:
-  # checkpoint 6710 spent six epochs imitating that corpus's traces, so its
-  # rollouts on those prompts would collapse toward one memorised answer per
-  # group, and GRPO's advantage is the within-group *variance*. (2) Integer
-  # gold answers, which grpo/rewards.py's deliberately loose normaliser
-  # compares exactly; the SFT corpus's answers are heterogeneous LaTeX.
-  # (3) It is the prompt set Open-R1's own GRPO recipes use, so the choice
-  # needs no corpus argument of its own. `prompt` is the bare problem text
-  # (no instruction wrapper -- the processed set strips DAPO's "Answer:"
-  # boilerplate), so the system prompt below is the only format instruction
-  # the actor sees, exactly as at SFT and eval time.
+  # open-r1/DAPO-Math-17k-Processed, `en` config: 14,116 deduplicated English
+  # competition problems (arXiv 2503.14476) from Open-R1's GRPO recipes, each
+  # with a bare-integer answer that grpo/rewards.py compares exactly. The SFT
+  # model never trained on these prompts, so its rollouts still differ within
+  # a group, which is what GRPO learns from. `prompt` is the bare problem, so
+  # the system prompt is the only format instruction, as at SFT and
+  # evaluation.
   #
-  # Read from Parquet staged on the VM's local disk, not from the Hub:
-  #   ./scripts/copy_gcs_bucket_data.sh --dataset DAPO-Math-17k-Processed
-  # The bucket is deployment-specific and stays in $GCS_BUCKET. To fall back
-  # to the Hub, override dataset.name=open-r1/DAPO-Math-17k-Processed
-  # dataset.config=en dataset.data_files=null.
+  # Read from the staged Parquet; to read the Hub instead, override
+  # dataset.name=open-r1/DAPO-Math-17k-Processed dataset.config=en
+  # dataset.data_files=null.
   name: parquet
   config: null
   train_split: train
-  # Only the `en` config's single shard. The repository's `all` config is
-  # `en` plus 3,282 Chinese-language prompts (`cn`); this actor's system
-  # prompt and SFT corpus are English.
+  # The `en` shard only; `all` adds 3,282 Chinese prompts.
   data_files: data/DAPO-Math-17k-Processed/en/train-*.parquet
   question_column: prompt
   answer_column: solution
-  # Rollouts per step = batch_size * grpo.num_generations = 4 * 4 = 16,
-  # each up to rollout.max_tokens_to_generate tokens. Measure actual
-  # wall-clock in a smoke test before trusting this for a full run.
+  # 4 prompts x grpo.num_generations 4 = 16 rollouts per step.
   batch_size: 4
-  # Filters a row whose rendered prompt (system prompt + problem, no
-  # solution) exceeds rollout.max_prompt_length. Prompts here are short:
-  # median 243 characters, 99th percentile 875, longest 3,190 -- so this
-  # drops at most a handful of rows.
+  # Drops rows whose rendered prompt exceeds this. Problems are short
+  # (longest 3,190 characters), so few if any are dropped.
   max_prompt_length: 512
-  # 14,116 prompts / batch_size 4 = 3,529 steps per epoch, far more than
-  # training.max_steps; the epoch count only needs to keep the iterator
+  # 3,529 steps per epoch, far beyond max_steps; this only keeps the iterator
   # from running dry.
   num_train_epochs: 20
   max_examples: null
@@ -140,12 +88,9 @@ dataset:
   system_prompt_file: recipes/Qwen2.5-Math-1.5B/system_prompt.txt
 
 optimizer:
-  # Two orders of magnitude below the SFT recipe's 2.0e-4: GRPO fine-tunes
-  # policy on top of an already-good SFT checkpoint rather than training from
-  # scratch, and examples/grpo_gemma.ipynb's own comment on max_grad_norm
-  # ("found this important to keep KL divergence in check") is the reason
-  # both the low LR and the tight clip below are kept close to that example
-  # rather than re-derived from this project's SFT arm.
+  # A low learning rate and tight clip, close to Tunix's
+  # examples/grpo_gemma.ipynb, which found the clip important for keeping the
+  # KL divergence in check.
   learning_rate: 3.0e-6
   warmup_ratio: 0.1
   min_lr_ratio: 0.0
@@ -156,8 +101,7 @@ optimizer:
   max_grad_norm: 0.1
 
 training:
-  # Exploratory. See the header: this is a starting point for the smoke
-  # test to confirm wall-clock and HBM against, not a claimed final budget.
+  # A starting point for the smoke run to check, not a measured budget.
   max_steps: 500
   checkpoint_dir: artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/grpo-checkpoints
   checkpointing_options:
@@ -165,8 +109,7 @@ training:
     max_to_keep: 2
     enable_async_checkpointing: false
     timeout_secs: 1200
-  # Inert while dataset.eval_fraction is 0.0 (load_grpo_prompts returns
-  # eval_ds=None, and GRPOLearner.train skips evaluation with none given).
+  # Inert while dataset.eval_fraction is 0.0.
   eval_every_n_steps: 50
   metrics_log_dir: artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/grpo-logs
   project_name: open-r1-tpu
@@ -184,36 +127,29 @@ training:
   offload_to_cpu: false
 
 grpo:
-  # Rollouts per prompt (the "group" in "Group Relative Policy
-  # Optimization"). 4, not examples/grpo_gemma.ipynb's class-VM value of 2:
-  # this project's chip is not resource-shared, and a larger group gives a
-  # less noisy relative-advantage estimate per step.
+  # Rollouts per prompt. A larger group gives a less noisy relative advantage
+  # (grpo_gemma.ipynb uses 2).
   num_generations: 4
   num_iterations: 1
-  # examples/grpo_gemma.ipynb's tuned value ("important to keep a high
-  # enough value for this, otherwise the KL divergence can increase
-  # unchecked"), kept rather than GRPOConfig's own lower default (0.04).
+  # grpo_gemma.ipynb's value, above GRPOConfig's default of 0.04: lower lets
+  # the KL divergence grow unchecked.
   beta: 0.08
   epsilon: 0.2
 
 rollout:
-  # tunix.readthedocs.io/en/latest/rollout.html: kv_cache_size must be at
-  # least max_prompt_length + max_tokens_to_generate; +256 headroom, as in
-  # every published Tunix GRPO example.
+  # kv_cache_size must be at least max_prompt_length + max_tokens_to_generate;
+  # the extra 256 is the headroom Tunix's GRPO examples use.
   max_prompt_length: 512
   max_tokens_to_generate: 4096
   kv_cache_size: 4864
-  # High-ish on purpose -- "important to keep a high-ish temperature for
-  # varied, diverse responses during training"
-  # (examples/grpo_gemma.ipynb) -- rather than this project's eval-time 0.6,
-  # which is chosen to make a benchmark score reproducible, not to explore.
+  # High for varied rollouts, as in grpo_gemma.ipynb; evaluation uses 0.6.
   temperature: 0.9
   top_p: 1.0
   top_k: 50
 
 export:
-  # Off until a smoke run looks right; the Qwen2 merged-LoRA export itself
-  # works (tested with the SimpleRL-Zoo recipe).
+  # Off until a smoke run looks right. The Qwen2 merged-LoRA export works
+  # (tested with ../../Qwen2.5-1.5B/grpo/simplerl-zoo.yaml).
   enabled: false
   overwrite: true
   output_dir: artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/grpo-merged

@@ -1,16 +1,17 @@
-# Tier 1: GSM8K and MATH-500 at SimpleRL-Zoo's generation settings, the two
-# benchmarks with a published before/after row for Qwen2.5-1.5B. Run it on
-# each of the three models base.yaml lists.
+# Tier 1: GSM8K and MATH-500, the benchmarks with a published before/after row
+# for Qwen2.5-1.5B, at SimpleRL-Zoo's generation settings (temperature 1.0,
+# top-p 0.95, 16,000 tokens) over three seeds where they took one sample. Run
+# it once per model base.yaml lists, for example:
+#   RECIPE=recipes/Qwen2.5-1.5B/eval/tier1_core.yaml ./scripts/run_eval_tpu.sh \
+#     server.model_path=models/Qwen-2.5-1.5B-SimpleRL-Zoo-eval \
+#     reporting.output_dir=artifacts/Qwen2.5-1.5B-SimpleRL-Zoo/eval/tier1-published \
+#     reporting.wandb.run_name=qwen2.5-1.5b-simplerl-zoo-published-tier1
+# Their base row was greedy; for the base, add sampling.temperature=0.0
+# sampling.top_p=1.0 eval.seeds=[0]. Measured: the GRPO export GSM8K 68.2
+# (first 200 problems) and MATH-500 54.7; their checkpoint 74.5 and 57.2.
 #
-# Their trained model was scored at temperature 1.0, top-p 0.95 and a
-# 16,000-token budget, one sample per problem. This tier keeps those settings
-# but takes three seeds, since one seed alone moves these benchmarks by
-# several points. Their base row was greedy; to reproduce it, override
-# `sampling.temperature=0.0 sampling.top_p=1.0 eval.seeds=[0]` for the base.
-#
-# Cost: 1,819 problems x 3 seeds. The stop tokens end most answers within a
-# few hundred tokens, so the 16,000-token budget matters only for the rare
-# rollout that never stops; watch generation.truncation_rate in the summary.
+# 1,819 problems x 3 seeds. The stop tokens end most answers within a few
+# hundred tokens; watch generation.truncation_rate for any that never stop.
 extends: base.yaml
 
 eval:
@@ -28,8 +29,7 @@ sampling:
   temperature: 1.0
   top_p: 0.95
   max_new_tokens: 16000
-  # None: the Abel prompt has no system turn, and the chat template would
-  # drop one anyway.
+  # The Abel prompt has no system turn, and the chat template would drop one.
   system_prompt_file: null
 
 reporting:

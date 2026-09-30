@@ -1,26 +1,14 @@
-# Tier 1: MATH-500 under the project's shared comparison protocol.
+# Tier 1: MATH-500 under the project's comparison protocol, not the card's.
+# Task, seeds, sampling and context window match
+# ../../Qwen2.5-Math-1.5B/eval/tier1_core.yaml (tests/test_evaluate.py keeps
+# them matched). Only the prompt differs: this model runs without a system
+# prompt, per DeepSeek's guidance, while the project's exports keep the one
+# they were trained with. Measured: pass@1 0.798 +/- 0.013, 4.5% truncated.
 #
-# Since 2026-09-03 this tier no longer replicates the card's MATH-500 row. It
-# exists so the published distill and this project's own 1.5B export
-# (recipes/Qwen2.5-Math-1.5B/eval) are measured on the same benchmark under
-# the same generation parameters: the same task list, seeds, temperature,
-# top-p, token budget and context window as that recipe's tier 1;
-# tests/test_evaluate.py holds the protocols together. The one deliberate asymmetry is the prompt
-# side: this model runs without a system prompt, per DeepSeek's usage
-# guidance, while the project exports keep the system prompt they were
-# trained with -- each model is asked the way it is meant to be asked, and
-# the shared parameters are the ones that shape generation itself.
-#
-# The published MATH-500 83.9 was measured at a 32768-token budget with four
-# replicates, so THE NUMBER THIS TIER PRODUCES IS NOT THAT ROW. At 16384
-# tokens a trace the model would have finished in 20k scores as wrong;
-# generation.truncation_rate in the summary says how much of that happened.
-# To replicate the card row instead, override:
-#   sampling.max_new_tokens=32768 server.max_model_len=36864
-# (the card protocol also used a fourth replicate).
-#
-# GPQA Diamond, which ran here while this tier replicated the card, moved to
-# tier5_gpqa.yaml with its card protocol intact.
+# The card's 83.9 was measured at a 32768-token budget with four replicates,
+# and at 16384 tokens a trace the model would have finished later scores as
+# wrong. To replicate the card row, override
+#   sampling.max_new_tokens=32768 server.max_model_len=36864 eval.seeds=[0,1,2,3]
 extends: base.yaml
 
 eval:
@@ -34,18 +22,13 @@ server:
   max_model_len: 20480
 
 sampling:
-  # The DeepSeek-recommended settings; the card's own numbers use them and
-  # the comparison recipes' tier 1 files carry the same values.
+  # DeepSeek's recommended settings, which the card uses.
   temperature: 0.6
   top_p: 0.95
-  # The comparison budget, not the card's 32768. Matched to the project
-  # tiers so both models run out of the same window; watch
-  # generation.truncation_rate, which reads on this model exactly as it does
-  # on the project export.
+  # The comparison budget, not the card's 32768; watch
+  # generation.truncation_rate.
   max_new_tokens: 16384
-  # No system prompt, per DeepSeek's usage guidance for the distills. The
-  # chat template already opens the reasoning block, and the published
-  # numbers were measured this way.
+  # No system prompt, per DeepSeek's guidance for the distills.
   system_prompt_file: null
 
 reporting:

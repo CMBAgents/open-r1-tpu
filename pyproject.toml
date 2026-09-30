@@ -5,16 +5,15 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "open-r1-tpu"
 version = "0.1.0"
-description = "TPU-native reasoning distillation recipes built on Tunix"
+description = "Supervised fine-tuning, GRPO and benchmark evaluation of language models on TPUs, built on Tunix"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 license = {text = "Apache-2.0"}
 dependencies = [
   "datasets>=3.0",
   "gcsfs>=2024.6",
-  # Exact-commit pin, deliberately not a PyPI release: the code needs main-only
-  # APIs (e.g. WeightedMetric, absent from v0.1.7), and a hash keeps installs
-  # byte-stable where a branch ref would drift. See "Tunix compatibility" in
+  # Exact commit, not a PyPI release: the code needs APIs only on Tunix main
+  # (e.g. WeightedMetric, absent from v0.1.7). See "Tunix compatibility" in
   # AGENTS.md before moving it.
   "google-tunix @ git+https://github.com/google/tunix.git@984bf89b1117c94406dc43e3dfb8d2a198a6353d",
   "numpy>=1.26",
@@ -22,70 +21,54 @@ dependencies = [
   "wandb>=0.22.3",
 ]
 
+[project.urls]
+Repository = "https://github.com/CMBAgents/open-r1-tpu"
+
 [project.optional-dependencies]
-# Benchmark evaluation: the LightEval harness and what it needs to score this
-# project's tasks. Optional because a training-only install has no use for it.
-#
-# Direct dependencies are exact versions from the first successful v6e run;
-# uv.lock freezes their transitive closure. Keep these declarations synchronized
-# with open_r1_tpu.evaluation.stack -- a unit test enforces the relationship.
+# Benchmark evaluation. Exact versions; uv.lock freezes the rest. Keep these in
+# step with open_r1_tpu.evaluation.stack, which a unit test checks.
 eval = [
-  # Two LightEval extras, both load-bearing:
-  #   extended_tasks - IFEval and friends live under lighteval/tasks/extended.
-  #     The task registry imports that tree whether or not a recipe uses it, so
-  #     without this even listing tasks fails on a missing emoji import.
+  # Both LightEval extras are needed:
+  #   extended_tasks - the task registry imports lighteval/tasks/extended
+  #     (IFEval and others) whether or not a recipe uses it, so without it
+  #     even listing tasks fails.
   #   math - latex2sympy2-extended, for symbolic answer equivalence. Without
-  #     it maths accuracy falls back to string equality, which understates it
-  #     substantially. LightEval used Math-Verify for this until 0.13 and now
-  #     parses LaTeX directly, so nothing here should name Math-Verify.
+  #     it maths accuracy falls back to string equality and reads low.
+  #     LightEval used Math-Verify for this until 0.13 and now parses LaTeX
+  #     directly, so nothing here should name Math-Verify.
   # No litellm extra: open_r1_tpu.evaluation.generate reaches vLLM directly
-  # over the openai SDK, and LightEval itself is used as a library for its
-  # task registry, Doc/ModelResponse types, and metric objects
-  # (open_r1_tpu.evaluation.taskpack/.scoring) -- never for its own runner,
-  # its models, or its litellm client. Every eval blocker recorded in
-  # this project's history (double generation, cache-replayed seeds, a proxy
-  # misroute to api.openai.com, a 3.5 hour retry burn) was litellm's; dropping
-  # it removes the whole layer those came from, not just the litellm package.
+  # over the openai SDK, and LightEval is used only as a library (task
+  # registry, Doc/ModelResponse types, metrics), never for its runner, models
+  # or litellm client.
   #
-  # Floor at 0.13. 0.11 shipped `hf_repo="lighteval/openai/gsm8k"` in its task
-  # table -- a repo id with two slashes, which no Hub lookup can resolve, so
-  # GSM8K could not load at all. 0.13 is also the release whose task registry,
-  # `LightevalTaskConfig`, `Doc`, and metric internals this package is written
-  # against -- see evaluation/taskpack.py and evaluation/scoring.py's module
-  # docstrings for exactly which library internals and their stability caveat.
+  # 0.13 or later: 0.11's GSM8K task names an unresolvable Hub repo, and
+  # evaluation/taskpack.py and evaluation/scoring.py are written against
+  # 0.13's internals (their docstrings list which).
   "lighteval[extended_tasks,math]==0.13.0",
   # Symbolic maths scoring moved here in LightEval 0.13.
   "latex2sympy2-extended==1.0.6",
-  # Dataset/Hub versions affect task revisions, cache behavior, and therefore
-  # which examples are evaluated. They are part of the protocol, not tooling.
+  # Dataset and Hub versions decide task revisions and so which examples are
+  # evaluated: part of the protocol, not tooling.
   "datasets==5.0.1",
   "huggingface-hub==1.28.0",
-  # LightEval imports xxhash without declaring it, so the version is whatever
-  # `datasets` happens to drag in. 4.0.0 (2026-08-12) stopped accepting str,
-  # and LightEval hashes `doc.query` -- a str -- for every sample, so metric
-  # computation dies after generation has already been paid for. Pinned here
-  # because LightEval cannot pin what it does not declare.
+  # LightEval imports xxhash without declaring it. 4.0.0 rejects str, and
+  # LightEval hashes each sample's query string, so scoring fails after
+  # generation has finished.
   "xxhash==3.8.1",
-  # The runner's transport to vLLM: a chat completion request per document,
-  # with this project's own retry policy (open_r1_tpu.evaluation.generate),
-  # never the SDK's default. No litellm anywhere in this path.
+  # Transport to vLLM, with the project's own retry policy
+  # (open_r1_tpu.evaluation.generate).
   "openai==2.54.0",
-  # Traces an evaluation when it is given a tracing config
-  # (open_r1_tpu.evaluation.traced): it syncs the recipe's datasets, then
-  # dataset.run_experiment() drives generation and scoring per task and seed.
-  # A local evaluation never imports it. Exact pin, matching this project's
-  # convention elsewhere.
+  # Imported only when an evaluation is given a tracing config
+  # (open_r1_tpu.evaluation.traced).
   "langfuse==4.14.5",
 ]
-# vLLM is deliberately absent. Nothing here imports it -- the evaluation
-# starts an external inference service and talks to it over HTTP -- so declaring
-# it would buy nothing and cost the install: tpu-inference classifies as Python
-# 3.10-3.12 and this project is on 3.13, which makes the extra unresolvable.
-# The supported service is the pinned container; custom services can be selected
-# with server.serve_command and server.image=null.
+# vLLM is deliberately absent: the evaluation talks to an external inference
+# service over HTTP, and tpu-inference supports only Python 3.10-3.12, which
+# would make this extra unresolvable on 3.13. The supported service is the
+# pinned container; select another with server.serve_command and
+# server.image=null.
 test = ["pytest>=8.0"]
-# Linters, type checker, and the pre-commit hook. Kept free of the TPU stack
-# because none of them need it, not because anything runs off-target.
+# Linters, type checker and pre-commit; none of them need the TPU stack.
 dev = [
   "pre-commit>=4.0",
   "pyright>=1.1.400",

@@ -1,0 +1,26 @@
+# Lint, type-check and unit-test on every push and pull request. Nothing here
+# needs a TPU: JAX falls back to the CPU, and integration tests are deselected.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          # Same uv as scripts/setup_tpu_vm.sh installs on the TPU VM.
+          version: "0.12.5"
+          enable-cache: true
+      # Reads .python-version.
+      - run: uv python install
+      - run: uv sync --frozen --extra test --extra eval --extra dev
+      - run: uv run --no-sync pre-commit run --all-files
+      - run: uv run --no-sync pytest -q

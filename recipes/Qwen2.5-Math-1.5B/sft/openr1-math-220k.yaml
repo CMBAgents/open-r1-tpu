@@ -1,95 +1,25 @@
-# Single-stage reasoning distillation from OpenR1-Math-220k onto TPU v6e-4
-# (4 chips, 32 GiB HBM each). Full-parameter fine-tune of Qwen2.5-Math-1.5B at
-# max_length 26624, which is long enough that the whole corpus is retained: no
-# example is dropped for length and none is truncated.
+# Reasoning distillation: a full-parameter SFT of Qwen2.5-Math-1.5B on the
+# DeepSeek-R1 traces in OpenR1-Math-220k. DeepSeek distilled the same base into
+# DeepSeek-R1-Distill-Qwen-1.5B with a closed corpus; this uses a public one.
+# Tested on a TPU v6e-4 (4 chips): peak HBM 19.69 of 31.25 GiB per chip, about
+# 10.2 s per optimizer step, 6,710 steps in about 19 hours, final train loss
+# 0.30. The export scores MATH-500 0.833 +/- 0.011 on ../eval/tier1_core.yaml,
+# against 0.798 +/- 0.013 for DeepSeek's distill.
 #
-# WHY THIS BASE MODEL. Qwen/Qwen2.5-Math-1.5B is the model DeepSeek SFT'd to
-# produce deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B, the reference this project
-# evaluates against in recipes/DeepSeek-R1-Distill-Qwen-1.5B/eval. Training the
-# same base on a public corpus is the 1.5B analogue of open-r1's own from-base
-# reproduction (OpenR1-Distill-7B = Qwen2.5-Math-7B + Mixture-of-Thoughts),
-# which matched DeepSeek's published 7B numbers. Their run actually starts
-# from open-r1/Qwen2.5-Math-7B-RoPE-300k, a config-only long-context variant
-# of the base; this recipe mirrors that with a theta-300k variant of the
-# 1.5B -- see the ROPE note in the model block. DeepSeek's own 800k-trace
-# dataset is closed, so this substitutes OpenR1-Math-220k for it; the published
-# card numbers (AIME24 28.9, MATH-500 83.9, GPQA 33.8) are the yardstick, not a
-# target this corpus is expected to reach.
-#
-# CORPUS LENGTHS, MEASURED ON THE WHOLE CORPUS. All 93,733 rows of the
-# `default` config, rendered with Qwen2.5-Math-1.5B's own ChatML template and
-# the system prompt below, then tokenised with that tokeniser:
-#
-#   - 179 rows (0.19%) carry no complete <think>...</think> pair and are
-#     dropped by require_reasoning_tags; 93,554 remain
-#   - templated length: min 150, median 4,952, mean 5,996, p90 11,839,
-#     p99 16,834, p99.9 18,858, max 25,733
-#   - 560,956,813 tokens in total
-#
-# These are full-corpus figures, not a sample.
-#
-# WHY 26624. It is 26 * 1024, the smallest multiple of
-# flash_attention_block_size that exceeds the longest example at 25,733 tokens.
-# The splash kernel requires its block size to divide the sequence length, so
-# the window has to be a multiple of 1024; there is no separate requirement
-# that it be a power of two, and 32768 would cost 23% more activation memory
-# for 891 tokens of headroom that nothing in the corpus uses. Every one of the
-# 93,554 tag-carrying examples fits whole; a 4096 window would drop about 60%
-# of the corpus.
-#
-# FULL FINE-TUNE, NOT LoRA. Qwen2.5-Math-1.5B ties its embeddings
-# (tie_word_embeddings: true), so the rows for <|im_end|> live in the one
-# matrix LoRA freezes.
-# Note that <think> and </think> are *not* special tokens in this tokeniser:
-# they tokenise as ['<th','ink','>'] and ['</','think','>']. The model learns
-# them as ordinary token sequences, which is what DeepSeek's traces look like
-# to a Qwen2.5 tokeniser and what evaluation's string-level reasoning_end
-# matches against.
-#
-# WHY THE MESH IS 2x2 AND NOT 4x1. Tunix casts the final logits to float32
-# (qwen2/model.py compute_final_logits), so one 26,624-token window holds
-# 26,624 * 151,936 * 4 = 16.2 GB of logits, and the backward pass needs a
-# gradient buffer of the same shape. Roughly 30 GiB per window, before
-# parameters or activations, which does not fit a 32 GiB chip. Tensor
-# parallelism is the only lever that touches it: emb_vd is P('tp', fsdp), so
-# tp shards the vocabulary axis of the logits. tp=2 halves the figure to about
-# 15 GiB; tp=4 is not available because num_kv_heads is 2 and kv_weight_dnh
-# shards the head axis over tp. At [2, 2] every dimension divides exactly:
-# 12 query heads, 2 KV heads, 1536 embedding, 8960 FFN, 151,936 vocabulary.
-#
-# PEAK HBM WAS 19.69 GiB PER CHIP in every run of this recipe, of the 31.25
-# GiB a chip offers. On smaller chips, the levers in order are: drop
-# max_length to 24576 (loses one example of 93,554), then 16384 (loses 1,450,
-# 1.55%), then 8192 (loses 22,951, 24.5%) -- remat_config is already at its
-# most aggressive.
-#
-# EXPORT. src/open_r1_tpu/model/export.py mapped live parameters back to
-# Hugging Face names for Qwen3 only; a Qwen2 mapping was added for this recipe,
-# covering the two differences (biased q/k/v projections, no q_norm/k_norm) and
-# leaving the lm_head rule unexercised because this model ties its embeddings.
-# The export's key set is checked against the base checkpoint's, so a mapping
-# gap aborts rather than dropping a trained tensor. Preflight now resolves the
-# mapping up front, so an unsupported architecture fails before the run instead
-# of after the last step.
-#
-# STAGING, on the VM. The base is Qwen2.5-Math-1.5B with a config-only edit
-# (rope_theta 300000, max_position_embeddings 32768); see the ROPE note below.
+# Stage on the VM (set_rope.py makes the long-context base; see rope_theta):
 #   hf download open-r1/OpenR1-Math-220k --repo-type dataset \
 #     --include 'data/*' --local-dir data/OpenR1-Math-220k
 #   hf download Qwen/Qwen2.5-Math-1.5B --local-dir models/Qwen2.5-Math-1.5B-RoPE-300k
 #   python scripts/set_rope.py models/Qwen2.5-Math-1.5B-RoPE-300k \
 #     --rope-theta 300000 --max-position-embeddings 32768
+# Launch:
+#   RECIPE=recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml ./scripts/run_sft_tpu.sh
 model:
   model_name: qwen2.5-math-1.5b
   model_id: Qwen/Qwen2.5-Math-1.5B
-  # Local, not huggingface, for two reasons. The local path is the only
-  # model_source that forwards ModelConfig fields, and rope_theta below must
-  # reach the kernel. And the merged export copies every non-safetensors
-  # file from this directory verbatim, so the staged config.json is what
-  # the serving side later reads: stage the config-edited RoPE-300k variant
-  # of Qwen/Qwen2.5-Math-1.5B here (rope_theta 300000,
-  # max_position_embeddings 32768, weights untouched), or the export will
-  # declare theta 10000 while the weights were trained at 300000.
+  # Local, because only the local source forwards ModelConfig fields such as
+  # rope_theta, and because the export copies this directory's config.json:
+  # stage the RoPE-300k variant here or the export will declare theta 10000.
   model_source: local
   model_path: models/Qwen2.5-Math-1.5B-RoPE-300k
   model_download_path: /tmp/open-r1-tpu/models/qwen2.5-math-1.5b
@@ -98,33 +28,25 @@ model:
   model_display: false
   dtype: bfloat16
   load_dtype: bfloat16
-  # Already the most aggressive setting: only the decoder layer inputs survive
-  # the forward pass. Nothing further is available here if step 1 OOMs.
+  # The most aggressive setting already: only decoder layer inputs are kept.
   remat_config: DECODER
   use_flash_attention: true
-  # Must divide max_length. 1024 divides 26624 (26 blocks); change both
-  # together, and keep max_length a multiple of whatever this becomes.
+  # Must divide dataset.max_length; change the two together.
   flash_attention_block_size: 1024
-  # No lora_config: this is a full-parameter fine-tune. See the header.
+  # No lora_config: the embeddings are tied, so the <|im_end|> row sits in the
+  # one matrix LoRA freezes. This is a full fine-tune.
   #
-  # ROPE THETA 300000: THE 4K BASE IS EXTENDED BEFORE TRAINING. The original
-  # Qwen2.5-Math-1.5B declares max_position_embeddings 4096 and rope_theta
-  # 10000, so a 26,624-token window runs 6.5x past the pretraining context.
-  # The first run of this recipe left theta at 10000, leaning on DeepSeek's
-  # config (their distill keeps theta 10000 and declares 131072) -- but
-  # DeepSeek brute-forced the extension with ~800k samples, a budget this
-  # run does not have, and the result was mean completions of ~13.8k tokens
-  # collapsing into repetition loops, the canonical RoPE-extrapolation
-  # failure. Every working from-base comparator extended RoPE before SFT;
-  # open-r1's exp1-exp3 found theta 100k/300k/500k indistinguishable and
-  # kept 300k. The tunix preset for qwen2.5-math-1.5b hardcodes theta 10000
-  # and unknown keys are silently dropped, so this field name must match
-  # ModelConfig exactly. Packing still restarts positions at each example
-  # boundary, so the largest position seen in training is the longest
-  # single example (25,733), not the window.
+  # The stock base declares a 4096-token context at theta 10000, and this
+  # window runs 6.5x past it; left at 10000, the model fell into repetition
+  # loops. open-r1 found theta 100k, 300k and 500k equivalent and kept 300k.
+  # Tunix's preset hardcodes 10000 and drops unknown keys silently, so the
+  # field name must match ModelConfig exactly.
   rope_theta: 300000
   mesh:
-    # [fsdp, tp] over the four v6e chips. See the header for why tp is 2.
+    # Tunix keeps the logits in float32: one 26,624-token window is 16.2 GB of
+    # logits, plus as much again for their gradient, which one chip cannot
+    # hold. tp shards the vocabulary axis and halves that; tp=4 is not
+    # possible because the model has only 2 KV heads.
     shape: [2, 2]
     axis_names: [fsdp, tp]
 
@@ -133,129 +55,93 @@ tokenizer:
   tokenizer_type: huggingface
   add_bos: false
   add_eos: false
-  # Use the tokeniser's own ChatML template. It renders message content
-  # verbatim, so a <think>...</think> trace survives the round trip untouched;
-  # unlike Qwen3's template there is no reasoning slot to route it through.
-  # The template also substitutes its own default system message ("Please
-  # reason step by step, and put your final answer within \boxed{}.") when a
-  # conversation carries none -- the system_prompt_file below always supplies
-  # one, so that default never fires here.
+  # The tokeniser's own ChatML template, which renders content verbatim, so
+  # <think>...</think> traces survive. It inserts a default system message
+  # when a conversation has none; dataset.system_prompt_file always supplies
+  # one.
   chat_template: null
 
 dataset:
-  # 93,733 verified math problems with DeepSeek-R1 traces, Apache 2.0. Columns
-  # include `messages` as a list of {role, content} -- the default schema, so
-  # no dataset.message_schema block is needed. Every row is exactly one user
-  # turn and one assistant turn.
-  #
-  # Read from Parquet already staged on the VM's local disk (see STAGING in
-  # the header), not from the Hub. To read the Hub instead, override
+  # 93,733 verified maths problems with DeepSeek-R1 traces (Apache 2.0), one
+  # user and one assistant turn each, in the default `messages` schema. Read
+  # from the Parquet staged above; to read the Hub instead, override
   # dataset.name=open-r1/OpenR1-Math-220k dataset.config=default
   # dataset.data_files=null.
   name: parquet
   config: null
   train_split: train
-  # Only the ten train shards of the `default` config. The repository also
-  # publishes `extended` and `all` views over the same problems; globbing more
-  # broadly would train on duplicates. data_files carries no split mapping, so
-  # every match lands in the train split.
+  # The `default` config's train shards only: the `extended` and `all` configs
+  # cover the same problems, so a broader glob would train on duplicates.
   data_files: data/OpenR1-Math-220k/data/train-*.parquet
   messages_column: messages
-  # Two windows per microbatch, one per fsdp shard, since data_sharding_axis
-  # splits the batch over fsdp and fsdp is 2. Effective batch comes from
-  # accumulation below, not from here.
+  # One window per fsdp shard; the effective batch comes from accumulation.
   batch_size: 2
+  # 26 x 1024: the smallest multiple of flash_attention_block_size above the
+  # longest templated example (25,733 tokens; median 4,952, p99 16,834), so
+  # nothing is dropped or truncated. If HBM is short, 24576 drops 1 example,
+  # 16384 drops 1,450 (1.55%) and 8192 drops 22,951 (24.5%).
   max_length: 26624
-  # No overlength_policy: nothing is over length. drop, the default, is what
-  # the encoder would apply, and at this window it filters nothing.
+  # Packing gives 21,485 windows per epoch at 98.1% fill; unpacked, the mean
+  # example fills 22.5% of the window. Attention never crosses example
+  # boundaries, and RoPE positions restart at each example.
   packing: true
-  # Without packing the mean example would fill 22.5% of the window and the
-  # rest would be padding. First-fit packing gives 21,485 windows per epoch at
-  # 98.1% fill, 4.35 examples per window. Attention cannot cross example
-  # boundaries: segment_ids gate the splash kernel and RoPE positions restart
-  # per example. Packing also cuts the attention bill, since the kernel skips
-  # the off-diagonal blocks rather than paying for a dense 26,624-token window.
   num_train_epochs: 6
   max_examples: null
-  # Disabled. This run covers five epochs, so held-out loss is a real
-  # overfitting signal rather than a first-pass curiosity; enable this and
-  # eval_max_examples together, and watch peak HBM, since evals on an earlier
-  # 2048-token run took a 25.2 GiB steady state to 31.23 of 31.25 GiB.
+  # Disabled. If enabled, watch peak HBM: evaluation raises it.
   eval_fraction: 0.0
   eval_max_examples: 64
   seed: 42
-  # Every assistant turn is supervised; system and user tokens carry no loss.
-  # Examples whose rendering is not prefix-stable are dropped rather than
-  # trained with a guessed mask.
+  # Loss on assistant turns only. Examples whose rendering is not
+  # prefix-stable are dropped rather than trained with a guessed mask.
   assistant_only_loss: true
-  # Costs 179 of 93,733 rows, 0.19%, measured on the whole corpus. Those rows
-  # genuinely lack a closed reasoning block, so training on them would teach a
-  # format the eval harness then scores as a termination failure.
+  # Drops the 179 rows (0.19%) with no closed <think> block, a format the
+  # evaluation scores as a failure.
   require_reasoning_tags: true
+  # Plain text to this tokeniser, not special tokens: <think> tokenises as
+  # ['<th', 'ink', '>'].
   reasoning_start: <think>
   reasoning_end: </think>
-  # Rows carry no system message, so prepare_messages injects this in front of
-  # every example. The eval tiers send the same file.
+  # Rows carry no system message, so this is prepended to every example. The
+  # eval tiers send the same file.
   system_prompt_file: recipes/Qwen2.5-Math-1.5B/system_prompt.txt
 
 optimizer:
-  # 2.0e-4. History on this recipe: run 1 used 1.0e-5 (drastically
-  # under-trained); run 2 used 4.0e-5 (open-r1's 7B from-base value) and its
-  # train loss plateaued at ~0.45 by ~step 600 of 6710 and never moved again
-  # -- epochs 2-4 added nothing. So the rate goes up, past OpenThinker3-1.5B's
-  # 1.6e-4: at 1.5B the width argument favours a hotter rate, and run 2's
-  # observed gradient norm was ~0.016, far below max_grad_norm 0.2, so the
-  # clip has ample headroom for a 5x larger step and is left at 0.2 (a
-  # single-variable change from the 4.0e-5 arm). Watch the first ~250 steps
-  # through peak LR for a spike the clip would not catch at this magnitude.
+  # Higher than open-r1's 4.0e-5 for 7B, at which train loss plateaued near
+  # 0.45 by step 600. Watch the first ~250 steps, through peak LR, for spikes.
   learning_rate: 2.0e-4
   warmup_ratio: 0.03
   min_lr_ratio: 0.1
   b1: 0.9
-  # 0.999, as in both working comparator recipes (open-r1 7B, OpenThinker3).
   b2: 0.999
   eps: 1.0e-8
-  # 0.0 on a full fine-tune: decay here would pull the pretrained weights
-  # themselves toward zero, not regularise an adapter.
+  # Decay on a full fine-tune would pull the pretrained weights towards zero.
   weight_decay: 0.0
-  # open-r1's tight clip. Run 2 (LR 4.0e-5) logged gradient norm ~0.016, so
-  # this never bound; kept at 0.2 for the LR 2.0e-4 run since even a 5x step
-  # stays well under it. Watch the raw gradient norm in the first steps: if it
-  # now approaches 0.2, the clip is silently rescaling the learning rate.
+  # open-r1's value. If the logged gradient norm approaches it, the clip is
+  # rescaling the learning rate.
   max_grad_norm: 0.2
 
 training:
-  # Five epochs, open-r1's count for the 7B from-base distill (and still
-  # 5.6x fewer sequences than their 5 x 350k). From the measured numbers:
-  # 21,485 packed windows per epoch, 16 windows per optimizer step, 1,342
-  # steps per epoch. num_train_epochs is 6 so the input pipeline outlives
-  # this bound rather than running dry.
-  # About 10.2 s per step on a v6e-4, so about 19 hours in all.
+  # Five epochs, open-r1's count: 1,342 steps per epoch at 16 windows per step.
+  # num_train_epochs is 6 so the input pipeline cannot run dry first.
   max_steps: 6710
-  # 16 windows, 425,984 tokens and ~70 examples per optimizer step.
+  # 16 windows, 425,984 tokens and about 70 examples per optimizer step.
   gradient_accumulation_steps: 8
   # Inert while eval_fraction is 0.0.
   eval_every_n_steps: 250
   checkpoint_dir: artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/checkpoints
   checkpointing_options:
-    # Full-state checkpoints carry bf16 parameters plus fp32 Adam moments,
-    # ~15.5 GB each, so max_to_keep is a disk budget as much as a retention
-    # policy: two of these is ~31 GB.
+    # Each full-state checkpoint (bf16 parameters, fp32 Adam moments) is about
+    # 15.5 GB.
     save_interval_steps: 250
     max_to_keep: 2
-    # Synchronous, as in the sibling recipes. An async save holds references to
-    # the live train state, defeating buffer donation and transiently
-    # double-allocating parameters plus Adam moments on device; that spike
-    # OOMed the instruct run's first save. Blocking costs a few percent of
-    # throughput and keeps the spike off the device.
+    # An async save holds the live train state, defeating buffer donation and
+    # briefly doubling parameters and Adam moments on device, which can OOM.
+    # Blocking costs a few percent of throughput.
     enable_async_checkpointing: false
     timeout_secs: 1200
   metrics_log_dir: artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/logs
   project_name: open-r1-tpu
-  # Distinct from the other recipes' run names so wandb.resume: allow cannot
-  # append this run to one of theirs. The -rope300k-lr2e4 suffix also keeps
-  # resume: allow from appending to run 1 (theta 10000, LR 1e-5) or run 2
-  # (-rope300k, LR 4e-5, W&B 69fabmkn, stopped at step 5870).
+  # Unique per recipe, so wandb.resume: allow never appends to another run.
   run_name: qwen2.5-math-1.5b-r1-distill-sft-rope300k-lr2e4
   flush_every_n_steps: 10
   wandb:
@@ -268,15 +154,13 @@ training:
     tags: [tpu, sft, full-finetune, qwen2.5, math, reasoning, v6e-4]
     resume: allow
     save_code: true
-  # Disabled: an autoregressive decode, a second XLA compilation and a KV cache
-  # on a memory profile that has no measured slack. Worth enabling once peak
-  # HBM is known -- whether the model closes </think> and stops is a question
-  # only generation answers.
+  # Off: sampling adds a decode compilation and a KV cache. Turn it on to see
+  # whether the model closes </think> and stops.
   transcripts:
     enabled: false
     every_n_steps: 250
     max_new_tokens: 512
-    # Greedy decoding keeps successive samples comparable across steps.
+    # Greedy, so samples compare across steps.
     temperature: 0.0
     seed: 42
     log_to_wandb: true
@@ -285,18 +169,17 @@ training:
     prompts: null
     # Defaults to max_prompt_length + max_new_tokens.
     cache_size: null
-    # Null derives it from model.flash_attention_block_size; the splash kernel
-    # requires that block size to divide the prompt length.
+    # Null derives it from model.flash_attention_block_size, which must divide
+    # the prompt length.
     max_prompt_length: null
   data_sharding_axis: [fsdp]
   max_inflight_computations: 1
 
 export:
-  # Writes an unsharded Hugging Face checkpoint next to the base model's copied
-  # config and tokeniser files, which is what vLLM serves for evaluation.
-  # write_turn_end_generation_config runs on the way out and names <|im_end|>
-  # as an EOS: the base generation_config carries <|endoftext|> only, and a
-  # server reading it would never stop at the end of a turn.
+  # An unsharded Hugging Face checkpoint for vLLM, with the base's config and
+  # tokeniser files. The export adds <|im_end|> to generation_config.json's
+  # EOS ids: the base lists only <|endoftext|>, so a server would never stop at
+  # the end of a turn.
   enabled: true
   overwrite: true
   output_dir: artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/merged

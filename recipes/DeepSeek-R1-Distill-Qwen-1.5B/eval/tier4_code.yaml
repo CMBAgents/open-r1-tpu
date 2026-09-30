@@ -2,23 +2,16 @@
 #
 #   LiveCodeBench pass@1  published 16.9  (metric `codegen_pass@1:16`)
 #
-# `lcb:codegeneration` is LightEval's default LiveCodeBench subset, which is
-# `v4_v5` of `lighteval/code_generation_lite` -- problems first published
-# between 2024-08 and 2025-01. That is the same window the model card names,
-# so this is a like-for-like comparison rather than a differently-dated one.
+# `lcb:codegeneration` is LightEval's default subset, `v4_v5` of
+# lighteval/code_generation_lite: problems published 2024-08 to 2025-01, the
+# window the card names. Sixteen replicates, as the metric name declares; on
+# about 270 problems that is a binomial standard error of +/-0.6 points.
 #
-# Sixteen replicates, matching the sixteen LightEval's own metric name
-# declares. On roughly 270 problems that is a binomial standard error of
-# +/-0.6 points against 16.9.
-#
-# **This tier executes model-generated Python on the VM.** LightEval's
-# `codegen_metrics` runs each extracted solution against the problem's test
-# cases in its own subprocess, behind the upstream reliability guard (the
-# usual disabled-builtins, resource limits and per-test timeouts), with
-# `num_process_evaluate=8`. That is the standard and only way a code
-# benchmark can be scored, but it is a real difference in kind from every
-# other tier here, which only ever does arithmetic on strings. Run it on the
-# eval VM, not on a machine holding anything you care about.
+# THIS TIER EXECUTES MODEL-GENERATED PYTHON ON THE VM. LightEval's
+# codegen_metrics runs each solution against the problem's tests in a
+# subprocess, behind its reliability guard (disabled builtins, resource
+# limits, per-test timeouts), eight processes at a time. Run it on a
+# dedicated eval VM, not a machine holding anything you care about.
 extends: base.yaml
 
 eval:
@@ -34,7 +27,7 @@ server:
 sampling:
   temperature: 0.6
   top_p: 0.95
-  # DeepSeek's published budget, matched exactly; see tier 1.
+  # The card's budget.
   max_new_tokens: 32768
   system_prompt_file: null
 

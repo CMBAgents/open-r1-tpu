@@ -1,38 +1,23 @@
-# Tier 1: the decision tier. Run on every checkpoint worth keeping, ~1 hour.
+# Tier 1: the decision tier, about an hour per checkpoint worth keeping.
+# MATH-500 over three seeds: 500 problems spanning difficulty, and seed
+# variance alone moves reasoning benchmarks by 5-15 points (arXiv 2504.07086),
+# more than most recipe changes are worth.
 #
-# This is the tier that decides whether a recipe change helped. MATH-500 is
-# the workhorse and, since 2026-09-03, the whole tier: 500 problems is large
-# enough that three seeds pin the mean down, and it spans difficulty rather
-# than clustering at the top like GSM8K or at the ceiling like AIME. GSM8K
-# used to run here as the arithmetic floor; it moved out when tier 1 became
-# the single-task protocol that recipes/DeepSeek-R1-Distill-Qwen-1.5B/eval's
-# tier 1 now shares, so the published distill and this export compare on one
-# benchmark under one set of generation parameters. GSM8K coverage remains in
-# tier 0, and a single-task tier also makes the summary's pooled generation
-# stats (truncation_rate above all) MATH-500's own rather than a blend across
-# benchmarks.
-#
-# Three seeds, not one. Seed variance alone moves reasoning benchmarks by 5-15
-# points (arXiv 2504.07086), which is larger than most recipe changes are worth,
-# so a single number cannot tell an improvement from noise. Three is the
-# documented minimum for a benchmark this size.
-#
-# This tier compares directly with recipes/DeepSeek-R1-Distill-Qwen-1.5B's
-# tier 1: same task, seeds and sampling block, so the gap to the published distill is measured
-# under identical generation parameters -- only the prompt side differs, on
-# purpose (this export keeps its training system prompt; DeepSeek's distills
-# run without one, per their card). Neither number is the card's MATH-500
-# 83.9, which DeepSeek measured at a 32768-token budget; see base.yaml for
-# how to run that protocol against this export.
+# Task, seeds and sampling match ../../DeepSeek-R1-Distill-Qwen-1.5B/eval/
+# tier1_core.yaml (tests/test_evaluate.py keeps them matched), so the two
+# compare directly; only the prompt differs, as this export keeps its training
+# system prompt and DeepSeek's distill runs without one. Measured: the SFT
+# export 0.833 +/- 0.011, DeepSeek-R1-Distill-Qwen-1.5B 0.798 +/- 0.013.
+# Neither is the card's 83.9, measured at 32768 tokens; base.yaml says how to
+# run that protocol.
 extends: base.yaml
 
 eval:
   tier: tier1-core
   tasks:
     - "math_500|0"
-    # AMC23 is not in LightEval's table -- Open-R1 carries it as a custom
-    # task. Left out rather than vendored: 40 problems swing 2.5pp per
-    # question, so it decides nothing that MATH-500 does not.
+    # AMC23 is not in LightEval's table, and at 40 problems it would decide
+    # nothing MATH-500 does not.
   seeds: [0, 1, 2]
   max_samples: null
 
@@ -40,18 +25,14 @@ server:
   max_model_len: 20480
 
 sampling:
-  # The DeepSeek-R1 recommended settings, which is what most published numbers
-  # for distilled reasoning models use. Greedy decoding on a reasoning model
-  # collapses into repetition often enough not to be a safe default, and it
-  # makes pass@k meaningless.
+  # DeepSeek-R1's recommended settings, used by most published numbers for
+  # distilled reasoning models. Greedy decoding loops too often on a reasoning
+  # model and makes pass@k meaningless.
   temperature: 0.6
   top_p: 0.95
-  # Deliberately large. A trace cut off by the cap scores as wrong and reads as
-  # a reasoning failure, so an undersized cap silently understates the model.
-  # Watch generation.truncation_rate in the summary: if it is not near zero,
-  # this number is too low and the accuracy below it is not trustworthy. This
-  # export was trained on whole traces up to 25,733 tokens, so it has seen,
-  # and may reproduce, traces longer than this cap.
+  # A trace cut off at the cap scores as wrong, so watch
+  # generation.truncation_rate: if it is not near zero, the accuracy
+  # understates the model. Training traces ran to 25,733 tokens, past this cap.
   max_new_tokens: 16384
   system_prompt_file: recipes/Qwen2.5-Math-1.5B/system_prompt.txt
 

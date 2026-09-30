@@ -1,6 +1,9 @@
-# Shared across every DeepSeek-R1-Distill-Qwen-1.5B eval tier.
-#
-# **These recipes replicate the published model card table**, row for row:
+# Shared settings for the eval tiers of DeepSeek-R1-Distill-Qwen-1.5B, the
+# published distill the Qwen2.5-Math-1.5B SFT is measured against. Tiers 2, 4
+# and 5 replicate its model card rows at the card's protocol (32768-token
+# budget, the card's replicate counts, no system prompt). Tiers 0 and 1 match
+# ../../Qwen2.5-Math-1.5B/eval's tiers of the same number, so the two compare
+# directly; tier 3 is the reference for that directory's regression tier.
 #
 # | Row                    | Published | Tier |
 # | ---------------------- | --------- | ---- |
@@ -11,66 +14,44 @@
 # | LiveCodeBench pass@1   | 16.9      | 4    |
 # | CodeForces rating      | 954       | —    |
 #
-# *Tier 1 runs MATH-500 at the project's comparison protocol (16384-token
-# budget, three seeds), not the card's; its header carries the overrides that
-# reproduce the published row's protocol.
+# *Tier 1 uses the comparison protocol; its header gives the overrides for the
+# card's. CodeForces is a rating from contest placement, not an accuracy, and
+# LightEval 0.13.0 has no task for it, so it is not approximated.
 #
-# CodeForces has no tier because it cannot be measured here: LightEval 0.13.0
-# ships no CodeForces task and no Elo harness, and the published 954 is a
-# rating derived from percentile placement against human contestants on ten
-# Div.2 contests, not a benchmark accuracy. Nothing in this directory
-# approximates it, deliberately -- a made-up proxy compared against 954 would
-# be worse than an absent number.
-#
-# **Two purposes share this directory.** Tiers 2, 4 and 5 replicate the
-# card: DeepSeek's token budget, their sample counts, their task list. Tiers
-# 0 and 1 instead line up task-for-task with the project's own tiers of the
-# same number (recipes/Qwen2.5-Math-1.5B/eval),
-# so the reference model and this project's models are directly comparable on
-# this stack -- tier 1 moved back to this footing on 2026-09-03 for the
-# MATH-500 comparison, at the price that its number no longer reproduces the
-# card's 83.9 (its header carries the overrides that do).
-#
-# `server.max_model_len` is deliberately absent here: it differs per tier
-# because it must exceed that tier's `sampling.max_new_tokens` with room left
-# for the prompt, which the recipe loader enforces.
+# Stage the weights and run a tier on one v6e chip:
+#   hf download deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B \
+#     --local-dir models/DeepSeek-R1-Distill-Qwen-1.5B
+#   RECIPE=recipes/DeepSeek-R1-Distill-Qwen-1.5B/eval/tier0_smoke.yaml ./scripts/run_eval_tpu.sh
 
 server:
-  # The released Hugging Face weights, staged onto the VM's local disk from
-  # the bucket; vLLM reads the safetensors directly.
+  # Each tier sets max_model_len, which must exceed its
+  # sampling.max_new_tokens with room for the prompt.
   model_path: models/DeepSeek-R1-Distill-Qwen-1.5B
   served_model_name: null
-  # DeepSeek's chat template closes each turn with the tokenizer's own
-  # end-of-sentence token, and its generation_config.json names that id
-  # (151643) as the EOS. The bars are full-width characters: this string
-  # must match the tokenizer's exactly.
+  # DeepSeek's template ends each turn with this token, id 151643, which its
+  # generation_config.json names as the EOS. The bars are full-width
+  # characters and must match the tokeniser's exactly.
   turn_end_token: <｜end▁of▁sentence｜>
   serve_command: ["scripts/run_vllm_tpu_container.sh"]
   host: 127.0.0.1
   port: 8000
   tensor_parallel_size: 1
-  # ~15 minutes. TPU startup includes weight transfer and an XLA compilation,
-  # neither of which is fast the first time.
+  # First start includes weight transfer and XLA compilation.
   startup_timeout_secs: 900
   extra_args: []
-  # Bounds the runner's concurrent in-flight chat completion requests. One
-  # TPU chip serving one model at a time: wide enough to keep the server
-  # busy through generation latency, not so wide that queued requests starve
-  # each other's decode step. At the 36864-token window the card-budget
-  # tiers (2 and 5) ask for, eight concurrent sequences is about 8 GiB of KV cache
-  # on a 32 GiB v6e chip, so this width is bounded by decode economics rather
-  # than by memory.
+  # Concurrent chat requests. At the card tiers' 36,864-token window, eight
+  # sequences take about 8 GiB of KV cache on a 32 GiB v6e chip, so decode
+  # throughput, not memory, sets this.
   max_concurrency: 8
-  # Consecutive request failures (after each has exhausted its own retries)
-  # before the runner stops the whole tier rather than grinding through
-  # every remaining document against a dead server.
+  # Consecutive failed requests, each after its own retries, before the tier
+  # stops.
   fail_fast_after: 10
 
 reporting:
   summary_path: null
-  # Null on purpose: the chat template appends `<think>\n` to the generation
-  # prompt, so a completion can never carry the opening tag and a trace
-  # counts as closed when the closing tag appears.
+  # Null: the chat template opens <think> in the prompt, so a completion never
+  # carries the opening tag, and a trace counts as closed when </think>
+  # appears.
   reasoning_start: null
   reasoning_end: </think>
   answer_marker: "\\boxed{"
