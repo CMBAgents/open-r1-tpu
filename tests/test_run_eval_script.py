@@ -90,7 +90,7 @@ def test_runs_the_experiment_entry_point_with_tracing_config(tmp_path):
     argv_lines = capture_file.read_text().splitlines()
     assert argv_lines == [
         "-m",
-        "open_r1_tpu.evaluation.experiment",
+        "open_r1_tpu.evaluation.run",
         "--config",
         "recipes/fake/eval/tier0.yaml",
         "--tracing-config",
@@ -146,7 +146,7 @@ def _run_stubbed(tmp_path, *args, trace_config=None):
 def test_without_a_trace_config_the_run_is_local(tmp_path):
     assert _run_stubbed(tmp_path, "reporting.wandb.enabled=false") == [
         "-m",
-        "open_r1_tpu.evaluation.experiment",
+        "open_r1_tpu.evaluation.run",
         "--config",
         "recipes/fake/eval/tier0.yaml",
         "reporting.wandb.enabled=false",

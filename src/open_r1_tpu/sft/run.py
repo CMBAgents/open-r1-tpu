@@ -8,13 +8,12 @@ Run with::
 
 from __future__ import annotations
 
-import argparse
 import logging
 import math
 from typing import Any
 
+from open_r1_tpu.core.cli import parse_recipe_args, recipe_parser
 from open_r1_tpu.core.config import load_config
-from open_r1_tpu.core.logging import LOG_LEVELS, configure_logging
 from open_r1_tpu.model.export import export_model
 from open_r1_tpu.model.loading import absolute_checkpoint_dir, create_model
 from open_r1_tpu.model.metrics import metrics_logger_options
@@ -23,24 +22,6 @@ from open_r1_tpu.sft import transcripts
 from open_r1_tpu.sft.data import load_reasoning_datasets
 
 LOGGER = logging.getLogger(__name__)
-
-
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", required=True, help="YAML recipe path")
-    parser.add_argument(
-        "--log-level",
-        default="info",
-        choices=sorted(LOG_LEVELS),
-        type=str.lower,
-        help="Stderr log level. debug restores the demoted library logs.",
-    )
-    parser.add_argument(
-        "overrides",
-        nargs="*",
-        help="Tunix-style overrides such as dataset.max_examples=128",
-    )
-    return parser.parse_args()
 
 
 def _model_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -228,8 +209,7 @@ def run(config: dict[str, Any]) -> None:
 
 
 def main() -> None:
-    args = _parse_args()
-    configure_logging(LOG_LEVELS[args.log_level])
+    args = parse_recipe_args(recipe_parser(__doc__))
     config = load_config(args.config, args.overrides)
     run(config)
 

@@ -1,9 +1,18 @@
 import argparse
+import importlib.util
 import json
+import sys
+from pathlib import Path
 
 import pytest
 
-from open_r1_tpu.evaluation import benchmark
+SCRIPT_PATH = Path(__file__).parents[1] / "scripts" / "benchmark_generation.py"
+SPEC = importlib.util.spec_from_file_location("benchmark_generation", SCRIPT_PATH)
+assert SPEC is not None and SPEC.loader is not None
+benchmark = importlib.util.module_from_spec(SPEC)
+# Registered before it runs: dataclasses look their module up by name.
+sys.modules[SPEC.name] = benchmark
+SPEC.loader.exec_module(benchmark)
 
 
 class FakeTokenizer:

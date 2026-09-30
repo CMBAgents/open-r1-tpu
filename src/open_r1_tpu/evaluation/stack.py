@@ -18,7 +18,7 @@ EVALUATION_PACKAGE_VERSIONS = {
     "langfuse": "4.14.5",
     "latex2sympy2-extended": "1.0.6",
     "lighteval": "0.13.0",
-    # No litellm: evaluation.runner reaches vLLM directly over openai, never
+    # No litellm: evaluation.generate reaches vLLM directly over openai, never
     # through litellm -- see the eval extra's own comment in pyproject.toml.
     "openai": "2.54.0",
     "xxhash": "3.8.1",

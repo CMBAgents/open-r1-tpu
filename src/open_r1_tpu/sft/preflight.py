@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import argparse
 import math
 import os
 from importlib import metadata
 from typing import Any
 
+from open_r1_tpu.core.cli import parse_recipe_args, recipe_parser
 from open_r1_tpu.core.config import load_config, read_prompt_file
 from open_r1_tpu.model.export import safetensors_entry_fn
 from open_r1_tpu.sft.data import (
@@ -59,10 +59,7 @@ def _preflight_example(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", required=True, help="YAML recipe path")
-    parser.add_argument("overrides", nargs="*")
-    args = parser.parse_args()
+    args = parse_recipe_args(recipe_parser(__doc__))
     config = load_config(args.config, args.overrides)
 
     import jax

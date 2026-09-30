@@ -1,8 +1,8 @@
-"""Tests for `open_r1_tpu.evaluation.runner`'s generation primitives, against
+"""Tests for `open_r1_tpu.evaluation.generate`'s generation primitives, against
 a stub OpenAI-compatible HTTP server (stdlib `http.server`, no network, no
 Docker, no real vLLM): `generate_one`'s retry policy and `render_messages`'s
 prompt construction. `runner` no longer owns the generation loop itself
-(`evaluation.task_fn`/`evaluation.experiment` do, driven by
+(`evaluation.generate`/`evaluation.run` do, driven by
 `dataset.run_experiment()`, which owns concurrency) -- the circuit-breaker
 and failure-containment logic that replaced the old error budget is covered
 by `test_task_fn.py`, and `LangfuseGuard`'s
@@ -24,7 +24,7 @@ pytest.importorskip("openai")
 
 import openai
 
-from open_r1_tpu.evaluation import runner
+from open_r1_tpu.evaluation import generate
 
 # --- a stub OpenAI-compatible server -----------------------------------------
 
@@ -128,7 +128,7 @@ async def _generate(client, **overrides):
         "max_tokens": 16,
     }
     kwargs.update(overrides)
-    return await runner.generate_one(client, **kwargs)
+    return await generate.generate_one(client, **kwargs)
 
 
 # --- generate_one: retry policy ---------------------------------------------
@@ -150,14 +150,14 @@ def test_generate_one_never_retries_a_4xx(stub_server):
     server = stub_server(
         lambda n, body: (400, {"error": {"message": "bad sampling params"}})
     )
-    with pytest.raises(runner.GenerationRefused, match="bad sampling params"):
+    with pytest.raises(generate.GenerationRefused, match="bad sampling params"):
         asyncio.run(_generate(_client_for(server)))
     assert server.request_count == 1
 
 
 def test_generate_one_retries_a_5xx_then_succeeds(stub_server, monkeypatch):
-    monkeypatch.setattr(runner, "BACKOFF_BASE_SECS", 0.001)
-    monkeypatch.setattr(runner, "BACKOFF_MAX_SECS", 0.01)
+    monkeypatch.setattr(generate, "BACKOFF_BASE_SECS", 0.001)
+    monkeypatch.setattr(generate, "BACKOFF_MAX_SECS", 0.01)
 
     def behavior(n, body):
         if n < 3:
@@ -172,12 +172,12 @@ def test_generate_one_retries_a_5xx_then_succeeds(stub_server, monkeypatch):
 
 
 def test_generate_one_exhausts_retries_and_raises(stub_server, monkeypatch):
-    monkeypatch.setattr(runner, "MAX_ATTEMPTS", 3)
-    monkeypatch.setattr(runner, "BACKOFF_BASE_SECS", 0.001)
-    monkeypatch.setattr(runner, "BACKOFF_MAX_SECS", 0.01)
+    monkeypatch.setattr(generate, "MAX_ATTEMPTS", 3)
+    monkeypatch.setattr(generate, "BACKOFF_BASE_SECS", 0.001)
+    monkeypatch.setattr(generate, "BACKOFF_MAX_SECS", 0.01)
 
     server = stub_server(lambda n, body: (500, {"error": {"message": "boom"}}))
-    with pytest.raises(runner.GenerationFailed):
+    with pytest.raises(generate.GenerationFailed):
         asyncio.run(_generate(_client_for(server)))
     assert server.request_count == 3
 
@@ -198,18 +198,18 @@ class _StubDoc:
 
 def test_render_messages_prepends_a_system_prompt_when_set():
     doc = _StubDoc("x")
-    messages = runner.render_messages(doc, "be nice")
+    messages = generate.render_messages(doc, "be nice")
     assert messages[0] == {"role": "system", "content": "be nice"}
     assert messages[-1] == {"role": "user", "content": doc.query}
 
 
 def test_render_messages_omits_the_system_turn_when_none():
     doc = _StubDoc("x")
-    messages = runner.render_messages(doc, None)
+    messages = generate.render_messages(doc, None)
     assert messages == [{"role": "user", "content": doc.query}]
 
 
 def test_render_messages_rejects_fewshot_documents():
     doc = _StubDoc("x", fewshot_samples=["something"])
     with pytest.raises(NotImplementedError):
-        runner.render_messages(doc, None)
+        generate.render_messages(doc, None)

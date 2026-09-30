@@ -1,4 +1,4 @@
-"""`open_r1_tpu.tracing.config`: the one place tracing deployment values are
+"""`open_r1_tpu.evaluation.traced`: the one place tracing deployment values are
 loaded and validated. See its module docstring for the schema.
 """
 
@@ -12,7 +12,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-from open_r1_tpu.tracing import config as tracing_config
+# The tracing client needs the `eval` extra; a training-only install skips.
+pytest.importorskip("openai")
+
+from open_r1_tpu.evaluation import traced as tracing_config
 
 EXAMPLE_CONFIG = Path(__file__).parents[1] / "configs" / "tracing.example.yaml"
 

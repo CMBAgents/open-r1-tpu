@@ -4,7 +4,7 @@ Most of this module's real work -- reading `LightevalTaskConfig` off the
 installed LightEval's own registry -- needs `lighteval` installed, so those
 tests are `@pytest.mark.integration` per the project convention (deselected
 by default; run with `pytest -m integration` once the `eval` extra is
-installed). The pure helpers (`_bare_name`, `import_prompt_function`, the diff
+installed). The pure helpers (`_bare_name`, the diff
 logic) are tested unconditionally.
 """
 
@@ -25,18 +25,6 @@ def test_bare_name_strips_fewshot_suffix():
 def test_bare_name_rejects_missing_name():
     with pytest.raises(ValueError, match=r"name\|num_fewshot"):
         taskpack._bare_name("|0")
-
-
-def test_import_prompt_function_resolves_a_stdlib_callable():
-    fn = taskpack.import_prompt_function("json:loads")
-    import json
-
-    assert fn is json.loads
-
-
-def test_import_prompt_function_rejects_a_bare_module():
-    with pytest.raises(ValueError, match="module:qualname"):
-        taskpack.import_prompt_function("json")
 
 
 def test_diff_strict_reports_every_moved_field():

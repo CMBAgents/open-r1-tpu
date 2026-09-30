@@ -114,7 +114,7 @@ def test_training_and_eval_resolve_the_same_file_to_identical_text(tmp_path):
     # caller's own resolution path end to end rather than trusting the
     # shared helper alone -- a recipe that names the same file for both
     # stages must not drift even if one caller's plumbing changes.
-    from open_r1_tpu.evaluation.run import resolve_settings as eval_resolve_settings
+    from open_r1_tpu.evaluation.config import resolve_settings as eval_resolve_settings
     from open_r1_tpu.sft.preflight import _preflight_example
 
     prompt_path = tmp_path / "prompt.txt"

@@ -300,6 +300,8 @@ def test_doc_from_item_coerces_non_string_expected_output_to_str():
 
 @pytest.mark.integration
 def test_lighteval_evaluator_scores_a_correct_and_an_incorrect_completion():
+    from open_r1_tpu.evaluation import traced
+
     config, row = _row_and_config("gsm8k|0")
     doc = scoring.build_doc(config.prompt_function, row, "gsm8k")
     gold = doc.get_golds()[0]
@@ -310,7 +312,7 @@ def test_lighteval_evaluator_scores_a_correct_and_an_incorrect_completion():
         "query": doc.query,
     }
 
-    evaluator = scoring.lighteval_evaluator("gsm8k|0")
+    evaluator = traced.lighteval_evaluator("gsm8k|0")
 
     correct = evaluator(
         input=doc.query,
@@ -341,7 +343,9 @@ def test_lighteval_evaluator_scores_a_correct_and_an_incorrect_completion():
 
 @pytest.mark.integration
 def test_lighteval_evaluator_accepts_a_bare_string_output():
-    # The task function always returns a dict (see evaluation.task_fn), but
+    from open_r1_tpu.evaluation import traced
+
+    # The task function always returns a dict (see evaluation.generate), but
     # the evaluator's own Mapping check should not crash on a plain string.
     config, row = _row_and_config("gsm8k|0")
     doc = scoring.build_doc(config.prompt_function, row, "gsm8k")
@@ -353,7 +357,7 @@ def test_lighteval_evaluator_accepts_a_bare_string_output():
         "query": doc.query,
     }
 
-    evaluator = scoring.lighteval_evaluator("gsm8k|0")
+    evaluator = traced.lighteval_evaluator("gsm8k|0")
     evaluations = evaluator(
         input=doc.query, output=gold, expected_output=gold, metadata=metadata
     )
@@ -365,6 +369,8 @@ def test_lighteval_evaluator_accepts_a_bare_string_output():
 
 @pytest.mark.integration
 def test_lighteval_evaluator_returns_several_named_scores_for_a_grouping_metric():
+    from open_r1_tpu.evaluation import traced
+
     config, row = _row_and_config("ifeval|0")
     doc = scoring.build_doc(config.prompt_function, row, "ifeval")
     metadata = {
@@ -374,7 +380,7 @@ def test_lighteval_evaluator_returns_several_named_scores_for_a_grouping_metric(
         "query": doc.query,
     }
 
-    evaluator = scoring.lighteval_evaluator("ifeval|0")
+    evaluator = traced.lighteval_evaluator("ifeval|0")
     evaluations = evaluator(
         input=doc.query,
         output={
@@ -392,6 +398,7 @@ def test_lighteval_evaluator_returns_several_named_scores_for_a_grouping_metric(
 @pytest.mark.integration
 def test_lighteval_evaluator_marks_a_metric_failure(monkeypatch):
     from open_r1_tpu.evaluation import taskpack as taskpack_module
+    from open_r1_tpu.evaluation import traced
 
     class _RaisingMetric:
         metric_name = "boom"
@@ -408,7 +415,7 @@ def test_lighteval_evaluator_marks_a_metric_failure(monkeypatch):
         taskpack_module, "resolve_task_configs", lambda tasks: {tasks[0]: _FakeConfig()}
     )
 
-    evaluator = scoring.lighteval_evaluator("gsm8k|0")
+    evaluator = traced.lighteval_evaluator("gsm8k|0")
     metadata = {
         "task": "gsm8k|0",
         "doc_id": "0",

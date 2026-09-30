@@ -6,7 +6,7 @@ runs locally and writes the same results. With `TRACE_CONFIG` set, each run
 syncs the recipe's tasks into Langfuse datasets, then
 `dataset.run_experiment()` generates and scores each document and posts its
 trace and scores here. This file covers only operating the stack; see
-`open_r1_tpu.evaluation.experiment` for the pipeline itself.
+`open_r1_tpu.evaluation.run` for the pipeline itself.
 
 ## Setup
 
@@ -158,11 +158,11 @@ database containers are no longer in the picture.
 ## The manual UI check
 
 Nothing here automates looking at the result: after a tier-0 smoke run,
-open the UI (above), find the experiment `evaluation.experiment` just
+open the UI (above), find the experiment `evaluation.run` just
 created for that `(task, seed)`, and confirm a trace is there with its
 input, output, and scores attached. That is a human confirming a web page
 renders what it should -- do it once after standing up a new Langfuse
-instance, and again after any change to `evaluation.experiment`/`.task_fn`/
+instance, and again after any change to `evaluation.run`/`.task_fn`/
 `.scoring`.
 
 ## Python environment

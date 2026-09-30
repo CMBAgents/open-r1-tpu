@@ -1,6 +1,6 @@
 """Freeze LightEval's own task definitions into a committed, diffable spec.
 
-The comparability spine for the Langfuse-native runner (`evaluation.runner`)
+The comparability spine for generation (`evaluation.generate`)
 and scorer bridge (`evaluation.scoring`): everything that decides *what the
 model is asked* and *how the answer is judged* is read once out of LightEval's
 own `LightevalTaskConfig` -- the prompt function, the dataset coordinates, the
@@ -30,7 +30,7 @@ enforces:
 - Generation size and stop sequence are recorded for visibility but are never
   authoritative: the recipe's `sampling.max_new_tokens` always wins over a
   task's upstream `generation_size` (see `math_500`'s note below), and this
-  project sends no stop sequences at all (`evaluation.run.vllm_serve_command`'s
+  project sends no stop sequences at all (`evaluation.server.vllm_serve_command`'s
   docstring explains why a stop *string* can never match the real EOS token).
 
 Known upstream/recipe divergences, recorded rather than papered over:
@@ -53,7 +53,7 @@ Known upstream/recipe divergences, recorded rather than papered over:
   here as a strict-field diff. Its `specific`
   struct carries every public and private test case for the problem, which is
   orders of magnitude larger than any other task's -- see
-  `evaluation.dataset_sync`, which stores `specific` in each Langfuse dataset
+  `evaluation.traced`, which stores `specific` in each Langfuse dataset
   item's metadata.
 
 Run from the repository root::
@@ -67,15 +67,16 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from hashlib import sha256
-from importlib import import_module
 from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from open_r1_tpu.core.logging import LOG_LEVELS, configure_logging
 
 LOGGER = logging.getLogger(__name__)
 
@@ -321,8 +322,8 @@ def dataset_fingerprint(spec: TaskSpec) -> str:
 
 def dataset_name(task: str, spec: TaskSpec, max_samples: int | None = None) -> str:
     """`{task}@{fingerprint}`, plus `[:N]` when the recipe caps the task at
-    `N` documents -- the Langfuse dataset name `evaluation.dataset_sync`
-    upserts into and `evaluation.experiment` reads back from. A capped and an
+    `N` documents -- the Langfuse dataset name `evaluation.traced`
+    upserts into and `evaluation.run` reads back from. A capped and an
     uncapped run never share a dataset, since `run_experiment` scores every
     item a dataset holds. See `dataset_fingerprint`.
     """
@@ -448,23 +449,6 @@ def verify_task_specs(
     return (errors, warnings)
 
 
-def import_prompt_function(ref: str) -> Callable[[Mapping[str, Any], str], Any]:
-    """Import a `"module:qualname"` prompt function reference.
-
-    Used at generation time by `evaluation.runner`, never by this module's own
-    derive/verify path, which reads `prompt_function` straight off the live
-    `LightevalTaskConfig` instead.
-    """
-    module_name, sep, qualname = ref.partition(":")
-    if not sep:
-        raise ValueError(f"prompt function reference {ref!r} is not module:qualname")
-    module = import_module(module_name)
-    target: Any = module
-    for part in qualname.split("."):
-        target = getattr(target, part)
-    return target
-
-
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -479,12 +463,15 @@ def _parse_args() -> argparse.Namespace:
         default=list(KNOWN_TASKS),
         help="Task strings (default: every task this project evaluates)",
     )
+    parser.add_argument(
+        "--log-level", default="info", choices=sorted(LOG_LEVELS), type=str.lower
+    )
     return parser.parse_args()
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
     args = _parse_args()
+    configure_logging(LOG_LEVELS[args.log_level])
     if args.derive:
         pack = derive_taskpack(args.tasks)
         write_taskpack(args.pack, pack)

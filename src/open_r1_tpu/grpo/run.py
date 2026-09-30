@@ -44,7 +44,6 @@ the model is responding can be read, not just scored.
 
 from __future__ import annotations
 
-import argparse
 import copy
 import json
 import logging
@@ -54,8 +53,8 @@ import threading
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from open_r1_tpu.core.cli import parse_recipe_args, recipe_parser
 from open_r1_tpu.core.config import load_config
-from open_r1_tpu.core.logging import LOG_LEVELS, configure_logging
 from open_r1_tpu.grpo.behaviour import build_behaviour_metric_fn
 from open_r1_tpu.grpo.data import load_grpo_prompts
 from open_r1_tpu.grpo.rewards import reward_fns_from_names
@@ -82,24 +81,6 @@ LOSS_AGG_MODES = frozenset(
 KL_LOSS_MODES = frozenset({"kl", "mse_kl", "low_var_kl"})
 
 
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", required=True, help="YAML GRPO recipe path")
-    parser.add_argument(
-        "--log-level",
-        default="info",
-        choices=sorted(LOG_LEVELS),
-        type=str.lower,
-        help="Stderr log level. debug restores the demoted library logs.",
-    )
-    parser.add_argument(
-        "overrides",
-        nargs="*",
-        help="Tunix-style overrides such as grpo.num_generations=4",
-    )
-    return parser.parse_args()
-
-
 def validate_grpo_config(config: dict[str, Any]) -> None:
     """Fail early for a GRPO recipe mistake, before any TPU time is spent.
 
@@ -107,7 +88,7 @@ def validate_grpo_config(config: dict[str, Any]) -> None:
     tokenized dataset, no rollout section; GRPO: raw prompts, a rollout
     section, a required LoRA actor), so it is its own validator rather than
     an extension of that one -- mirroring how
-    ``evaluation.run.validate_eval_config`` is its own function rather than
+    ``evaluation.config.validate_eval_config`` is its own function rather than
     a variant of the training validator.
     """
     for section in (
@@ -566,8 +547,7 @@ def run(config: dict[str, Any]) -> None:
 
 
 def main() -> None:
-    args = _parse_args()
-    configure_logging(LOG_LEVELS[args.log_level])
+    args = parse_recipe_args(recipe_parser(__doc__))
     config = load_config(args.config, args.overrides, validator=validate_grpo_config)
     run(config)
 

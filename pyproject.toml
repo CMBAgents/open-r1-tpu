@@ -38,11 +38,11 @@ eval = [
   #     it maths accuracy falls back to string equality, which understates it
   #     substantially. LightEval used Math-Verify for this until 0.13 and now
   #     parses LaTeX directly, so nothing here should name Math-Verify.
-  # No litellm extra: the Langfuse-native runner (open_r1_tpu.evaluation.runner)
-  # reaches vLLM directly over the openai SDK, and LightEval itself is used as
-  # a library for its task registry, Doc/ModelResponse types, and metric
-  # objects (open_r1_tpu.evaluation.taskpack/.scoring) -- never for its own
-  # runner, its models, or its litellm client. Every eval blocker recorded in
+  # No litellm extra: open_r1_tpu.evaluation.generate reaches vLLM directly
+  # over the openai SDK, and LightEval itself is used as a library for its
+  # task registry, Doc/ModelResponse types, and metric objects
+  # (open_r1_tpu.evaluation.taskpack/.scoring) -- never for its own runner,
+  # its models, or its litellm client. Every eval blocker recorded in
   # this project's history (double generation, cache-replayed seeds, a proxy
   # misroute to api.openai.com, a 3.5 hour retry burn) was litellm's; dropping
   # it removes the whole layer those came from, not just the litellm package.
@@ -67,23 +67,17 @@ eval = [
   # because LightEval cannot pin what it does not declare.
   "xxhash==3.8.1",
   # The runner's transport to vLLM: a chat completion request per document,
-  # with this project's own retry policy (open_r1_tpu.evaluation.runner),
+  # with this project's own retry policy (open_r1_tpu.evaluation.generate),
   # never the SDK's default. No litellm anywhere in this path.
   "openai==2.54.0",
-  # Drives generation and scoring itself: open_r1_tpu.evaluation.experiment
-  # calls dataset.run_experiment() per task/seed, which iterates the dataset,
-  # invokes the task function (open_r1_tpu.evaluation.task_fn) and evaluator
-  # (open_r1_tpu.evaluation.scoring.lighteval_evaluator), and posts the
-  # resulting trace and scores itself -- on the critical path, on the VM, at
-  # eval time, not an optional side pipeline. open_r1_tpu.evaluation.dataset_sync
-  # additionally uses `Client.create_dataset`/`create_dataset_item` to populate
-  # the dataset run_experiment() iterates. Exact pin, matching this project's
-  # convention elsewhere: the Python SDK's OpenTelemetry-native generation
-  # (what Langfuse's own docs call "Python SDK v3"; the PyPI package's own
-  # version numbering moved to a 4.x major version for it).
+  # Traces an evaluation when it is given a tracing config
+  # (open_r1_tpu.evaluation.traced): it syncs the recipe's datasets, then
+  # dataset.run_experiment() drives generation and scoring per task and seed.
+  # A local evaluation never imports it. Exact pin, matching this project's
+  # convention elsewhere.
   "langfuse==4.14.5",
 ]
-# vLLM is deliberately absent. Nothing here imports it -- open_r1_tpu.evaluation.run
+# vLLM is deliberately absent. Nothing here imports it -- the evaluation
 # starts an external inference service and talks to it over HTTP -- so declaring
 # it would buy nothing and cost the install: tpu-inference classifies as Python
 # 3.10-3.12 and this project is on 3.13, which makes the extra unresolvable.
@@ -98,6 +92,15 @@ dev = [
   "pytest>=8.0",
   "ruff>=0.14",
 ]
+
+[project.scripts]
+open-r1-tpu-sft = "open_r1_tpu.sft.run:main"
+open-r1-tpu-sft-preflight = "open_r1_tpu.sft.preflight:main"
+open-r1-tpu-grpo = "open_r1_tpu.grpo.run:main"
+open-r1-tpu-eval = "open_r1_tpu.evaluation.run:main"
+open-r1-tpu-eval-preflight = "open_r1_tpu.evaluation.preflight:main"
+open-r1-tpu-taskpack = "open_r1_tpu.evaluation.taskpack:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

@@ -1,11 +1,11 @@
 """cons@n: the one number that cannot be read off a per-seed mean.
 
 Every other metric in this pipeline is per-document and per-replicate, so
-`evaluation.reduce` can score each replicate on its own and average. A
+`evaluation.summary` can score each replicate on its own and average. A
 consensus number is not: it needs all `n` replicates of a *single* document
 together, because the vote is between them. This module performs that join,
-over the same JSONL records `evaluation.reduce` reads, and returns one value
-per task for `evaluation.run.build_summary`.
+over the same JSONL records `evaluation.summary` reads, and returns one value
+per task for `evaluation.summary.build_summary`.
 
 The vote is over **extracted answers, not raw completions**. LightEval's own
 `MajAtN` votes on preprocessed prediction strings, which for a long-CoT model
@@ -52,7 +52,7 @@ from pathlib import Path
 from typing import Any
 
 from open_r1_tpu.evaluation import scoring
-from open_r1_tpu.evaluation.run import task_slug
+from open_r1_tpu.evaluation.config import task_slug
 
 LOGGER = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ LOGGER = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class ConsensusResult:
     """One task's consensus number, in the shape
-    `evaluation.run.build_summary` files under `summary["consensus"]`.
+    `evaluation.summary.build_summary` files under `summary["consensus"]`.
 
     `documents_without_consensus` is reported rather than folded silently
     into `value`: a zero earned because no replicate produced an extractable
@@ -117,10 +117,10 @@ def _records_by_document(
     """Every replicate of every document, keyed by `doc_id`, in seed order.
 
     Only `status: ok` records are collected: a dropped or failed generation
-    has no answer to contribute, and `evaluation.reduce` already counts it
+    has no answer to contribute, and `evaluation.summary` already counts it
     against the tier's own document totals.
     """
-    from open_r1_tpu.evaluation.reduce import read_jsonl
+    from open_r1_tpu.evaluation.summary import read_jsonl
 
     by_document: dict[str, list[dict[str, Any]]] = {}
     for seed in seeds:
@@ -197,7 +197,7 @@ def consensus_for_task(
     voting_seeds = list(seeds)[:n]
 
     # The corpus reduction is the metric's own, looked up by name rather than
-    # assumed to be a mean -- the same rule `evaluation.reduce` follows, and
+    # assumed to be a mean -- the same rule `evaluation.summary` follows, and
     # for the same reason.
     metrics = list(config.metrics)
     declared: dict[str, Any] = {}

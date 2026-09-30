@@ -1,4 +1,4 @@
-"""Tests for `open_r1_tpu.evaluation.dataset_sync`, against a faked Langfuse
+"""Tests for `open_r1_tpu.evaluation.traced`, against a faked Langfuse
 client -- no lighteval registry, no dataset download, no network. `sync_task`
 takes its dataset `name` as a parameter (rather than deriving one itself) for
 exactly this reason: naming is `taskpack.dataset_fingerprint`'s job, already
@@ -12,8 +12,8 @@ import pytest
 # The evaluation client needs the `eval` extra; a training-only install skips.
 pytest.importorskip("openai")
 
-from open_r1_tpu.evaluation import dataset_sync
-from open_r1_tpu.evaluation.runner import LangfuseGuard
+from open_r1_tpu.evaluation import traced
+from open_r1_tpu.evaluation.traced import LangfuseGuard
 
 
 class _StubDoc:
@@ -94,7 +94,7 @@ class _SelectiveDatasetClient:
 
 def _fake_iter_documents(monkeypatch, count):
     monkeypatch.setattr(
-        dataset_sync,
+        traced,
         "iter_documents",
         lambda config, *, max_samples: [(str(i), {"id": i}) for i in range(count)],
     )
@@ -104,11 +104,11 @@ def _fake_iter_documents(monkeypatch, count):
 
 
 def test_item_id_is_deterministic_on_dataset_and_doc_id():
-    first = dataset_sync.item_id("gsm8k|0@abcd1234", "3")
-    second = dataset_sync.item_id("gsm8k|0@abcd1234", "3")
+    first = traced.item_id("gsm8k|0@abcd1234", "3")
+    second = traced.item_id("gsm8k|0@abcd1234", "3")
     assert first == second
-    assert first != dataset_sync.item_id("gsm8k|0@abcd1234", "4")
-    assert first != dataset_sync.item_id("gsm8k|0@deadbeef", "3")
+    assert first != traced.item_id("gsm8k|0@abcd1234", "4")
+    assert first != traced.item_id("gsm8k|0@deadbeef", "3")
 
 
 # --- sync_task -----------------------------------------------------------
@@ -122,7 +122,7 @@ def test_sync_task_upserts_one_item_per_document(monkeypatch):
         prompt_function=lambda row, task_name: _StubDoc(row["id"], choices=["answer"])
     )
 
-    count = dataset_sync.sync_task(
+    count = traced.sync_task(
         guard,
         "stub_task|0",
         config,
@@ -143,7 +143,7 @@ def test_sync_task_upserts_one_item_per_document(monkeypatch):
             "specific": None,
             "query": f"question {i}",
         }
-        assert call["id"] == dataset_sync.item_id("stub_task|0@abcd1234", str(i))
+        assert call["id"] == traced.item_id("stub_task|0@abcd1234", str(i))
 
 
 def test_sync_task_stores_lightevals_gold_verbatim_including_prefix(monkeypatch):
@@ -157,7 +157,7 @@ def test_sync_task_stores_lightevals_gold_verbatim_including_prefix(monkeypatch)
         )
     )
 
-    dataset_sync.sync_task(
+    traced.sync_task(
         guard,
         "math_500|0",
         config,
@@ -177,7 +177,7 @@ def test_sync_task_prepends_the_system_prompt_when_set(monkeypatch):
         prompt_function=lambda row, task_name: _StubDoc(row["id"], choices=["answer"])
     )
 
-    dataset_sync.sync_task(
+    traced.sync_task(
         guard,
         "stub_task|0",
         config,
@@ -199,7 +199,7 @@ def test_sync_task_is_idempotent_across_reruns(monkeypatch):
     )
 
     first_client = FakeLangfuseClient()
-    dataset_sync.sync_task(
+    traced.sync_task(
         LangfuseGuard(first_client),
         "stub_task|0",
         config,
@@ -208,7 +208,7 @@ def test_sync_task_is_idempotent_across_reruns(monkeypatch):
         max_samples=None,
     )
     second_client = FakeLangfuseClient()
-    dataset_sync.sync_task(
+    traced.sync_task(
         LangfuseGuard(second_client),
         "stub_task|0",
         config,
@@ -233,7 +233,7 @@ def test_sync_task_rejects_a_multi_gold_document(monkeypatch):
     )
 
     with pytest.raises(ValueError, match="single gold"):
-        dataset_sync.sync_task(
+        traced.sync_task(
             guard,
             "stub_task|0",
             config,
@@ -251,7 +251,7 @@ def test_sync_task_survives_a_dead_langfuse(monkeypatch):
     )
 
     # Must not raise: a dead Langfuse costs missing items, never a crashed sync.
-    count = dataset_sync.sync_task(
+    count = traced.sync_task(
         guard, "stub_task|0", config, name="ds", system_prompt=None, max_samples=None
     )
     assert count == 5
@@ -265,14 +265,14 @@ def test_ensure_dataset_creates_the_named_dataset():
     client = FakeLangfuseClient()
     guard = LangfuseGuard(client)
 
-    assert dataset_sync.ensure_dataset(guard, "stub_task|0@abcd1234") is True
+    assert traced.ensure_dataset(guard, "stub_task|0@abcd1234") is True
     assert client.dataset_calls == [{"name": "stub_task|0@abcd1234"}]
 
 
 def test_ensure_dataset_returns_false_on_a_dead_langfuse():
     guard = LangfuseGuard(_AlwaysRaisingClient())
 
-    assert dataset_sync.ensure_dataset(guard, "ds") is False
+    assert traced.ensure_dataset(guard, "ds") is False
     assert guard.failures == 1
 
 
@@ -280,12 +280,10 @@ def test_ensure_dataset_returns_false_on_a_dead_langfuse():
 
 
 def _fake_resolve_and_name(monkeypatch, configs_by_task):
+    monkeypatch.setattr(traced, "resolve_task_configs", lambda tasks: configs_by_task)
+    monkeypatch.setattr(traced, "derive_task_spec", lambda task, config: None)
     monkeypatch.setattr(
-        dataset_sync, "resolve_task_configs", lambda tasks: configs_by_task
-    )
-    monkeypatch.setattr(dataset_sync, "derive_task_spec", lambda task, config: None)
-    monkeypatch.setattr(
-        dataset_sync,
+        traced,
         "taskpack_dataset_name",
         lambda task, spec, max_samples=None: (
             f"{task}@fixed" + (f"[:{max_samples}]" if max_samples else "")
@@ -302,7 +300,7 @@ def test_sync_recipe_creates_the_dataset_before_any_item(monkeypatch):
     client = _SelectiveDatasetClient(failing_name="nothing-fails")
     guard = LangfuseGuard(client)
 
-    results = dataset_sync.sync_recipe(guard, {"tasks": ["stub_task|0"]})
+    results = traced.sync_recipe(guard, {"tasks": ["stub_task|0"]})
 
     assert results == {"stub_task|0": ("stub_task|0@fixed", 3)}
     kinds = [kind for kind, _ in client.calls]
@@ -330,7 +328,7 @@ def test_sync_recipe_skips_a_tasks_items_when_its_dataset_cannot_be_ensured(
     client = _SelectiveDatasetClient(failing_name="broken_task|0@fixed")
     guard = LangfuseGuard(client)
 
-    results = dataset_sync.sync_recipe(guard, {"tasks": ["broken_task|0", "ok_task|0"]})
+    results = traced.sync_recipe(guard, {"tasks": ["broken_task|0", "ok_task|0"]})
 
     assert results["broken_task|0"] == ("broken_task|0@fixed", 0)
     assert results["ok_task|0"] == ("ok_task|0@fixed", 2)
@@ -349,16 +347,14 @@ def test_sync_recipe_names_a_capped_task_by_its_cap(monkeypatch):
         seen["max_samples"] = max_samples
         return [(str(i), {"id": i}) for i in range(max_samples)]
 
-    monkeypatch.setattr(dataset_sync, "iter_documents", fake_iter_documents)
+    monkeypatch.setattr(traced, "iter_documents", fake_iter_documents)
     config = _StubConfig(
         prompt_function=lambda row, task_name: _StubDoc(row["id"], choices=["answer"])
     )
     _fake_resolve_and_name(monkeypatch, {"stub_task|0": config})
     guard = LangfuseGuard(FakeLangfuseClient())
 
-    results = dataset_sync.sync_recipe(
-        guard, {"tasks": ["stub_task|0"], "max_samples": 2}
-    )
+    results = traced.sync_recipe(guard, {"tasks": ["stub_task|0"], "max_samples": 2})
 
     assert results == {"stub_task|0": ("stub_task|0@fixed[:2]", 2)}
     assert seen["max_samples"] == 2

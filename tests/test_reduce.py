@@ -1,5 +1,5 @@
-"""Tests for `open_r1_tpu.evaluation.reduce` -- fixture JSONL in, the same
-summary shape `evaluation.run.build_summary` has always produced out. No
+"""Tests for `open_r1_tpu.evaluation.summary` -- fixture JSONL in, the same
+summary shape `evaluation.summary.build_summary` has always produced out. No
 LightEval needed: `FakeMetric` stands in for a real `Metric`, exposing only
 `get_corpus_aggregations()`.
 """
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from open_r1_tpu.evaluation import reduce
+from open_r1_tpu.evaluation import summary as eval_summary
 
 
 class FakeMetric:
@@ -41,13 +41,13 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
 
 def test_read_jsonl_missing_file_is_a_named_error(tmp_path):
     with pytest.raises(FileNotFoundError, match="No runner output"):
-        reduce.read_jsonl(tmp_path / "nope.jsonl")
+        eval_summary.read_jsonl(tmp_path / "nope.jsonl")
 
 
 def test_read_jsonl_skips_blank_lines(tmp_path):
     path = tmp_path / "records.jsonl"
     path.write_text('{"a": 1}\n\n{"a": 2}\n', encoding="utf-8")
-    assert reduce.read_jsonl(path) == [{"a": 1}, {"a": 2}]
+    assert eval_summary.read_jsonl(path) == [{"a": 1}, {"a": 2}]
 
 
 # --- reduce_task_metrics --------------------------------------------------
@@ -59,7 +59,7 @@ def test_reduce_task_metrics_uses_the_metrics_own_corpus_fn():
         {"status": "ok", "scores": {"acc": 1.0}},
         {"status": "ok", "scores": {"acc": 0.0}},
     ]
-    assert reduce.reduce_task_metrics(records, [metric]) == {"acc": 0.5}
+    assert eval_summary.reduce_task_metrics(records, [metric]) == {"acc": 0.5}
 
 
 def test_reduce_task_metrics_skips_none_missing_and_failed_documents():
@@ -71,7 +71,7 @@ def test_reduce_task_metrics_skips_none_missing_and_failed_documents():
         {"status": "generation_failed"},
     ]
     # Only the first record has a usable value; a mean of one value is itself.
-    assert reduce.reduce_task_metrics(records, [metric]) == {"acc": 1.0}
+    assert eval_summary.reduce_task_metrics(records, [metric]) == {"acc": 1.0}
 
 
 def test_reduce_task_metrics_uses_a_non_mean_corpus_fn_when_the_metric_has_one():
@@ -87,7 +87,7 @@ def test_reduce_task_metrics_uses_a_non_mean_corpus_fn_when_the_metric_has_one()
         {"status": "ok", "scores": {"inst_level_strict_acc": [True]}},
     ]
     # 2 of 3 instructions correct overall, not a mean of [0.5, 1.0] (= 0.75).
-    assert reduce.reduce_task_metrics(records, [metric]) == pytest.approx(
+    assert eval_summary.reduce_task_metrics(records, [metric]) == pytest.approx(
         {"inst_level_strict_acc": 2 / 3}
     )
 
@@ -95,7 +95,7 @@ def test_reduce_task_metrics_uses_a_non_mean_corpus_fn_when_the_metric_has_one()
 def test_reduce_task_metrics_returns_nothing_when_no_document_has_a_value():
     metric = FakeMetric({"acc": statistics.fmean})
     records = [{"status": "generation_failed"}]
-    assert reduce.reduce_task_metrics(records, [metric]) == {}
+    assert eval_summary.reduce_task_metrics(records, [metric]) == {}
 
 
 # --- completion_stats_from_records ---------------------------------------
@@ -119,7 +119,7 @@ def test_truncation_rate_comes_from_finish_reason_not_token_count():
             "finish_reason": "length",
         },
     ]
-    stats = reduce.completion_stats_from_records(
+    stats = eval_summary.completion_stats_from_records(
         records, reasoning_start=None, reasoning_end="</think>", answer_marker="ANSWER:"
     )
     assert stats["truncation_rate"] == 0.5
@@ -141,7 +141,7 @@ def test_completion_stats_reasoning_and_marker_rates():
         },
         {"status": "generation_failed"},
     ]
-    stats = reduce.completion_stats_from_records(
+    stats = eval_summary.completion_stats_from_records(
         records, reasoning_start=None, reasoning_end="</think>", answer_marker="ANSWER:"
     )
     assert stats["documents"] == 3
@@ -153,7 +153,7 @@ def test_completion_stats_reasoning_and_marker_rates():
 
 
 def test_completion_stats_reports_null_rates_with_no_completions():
-    stats = reduce.completion_stats_from_records(
+    stats = eval_summary.completion_stats_from_records(
         [{"status": "generation_failed"}],
         reasoning_start=None,
         reasoning_end="</think>",
@@ -185,7 +185,7 @@ def test_reduce_seed_raises_naming_the_task_with_no_scored_documents(tmp_path):
     configs = {"gsm8k|0": FakeConfig([FakeMetric({"acc": statistics.fmean})])}
 
     with pytest.raises(ValueError, match="gsm8k\\|0"):
-        reduce.reduce_seed(settings, 0, configs, tmp_path)
+        eval_summary.reduce_seed(settings, 0, configs, tmp_path)
 
 
 def test_reduce_seed_allows_two_tasks_to_report_the_same_metric_name(tmp_path):
@@ -203,7 +203,7 @@ def test_reduce_seed_allows_two_tasks_to_report_the_same_metric_name(tmp_path):
     metric = FakeMetric({"dup": statistics.fmean})
     configs = {"task-a|0": FakeConfig([metric]), "task-b|0": FakeConfig([metric])}
 
-    metrics, _ = reduce.reduce_seed(settings, 0, configs, tmp_path)
+    metrics, _ = eval_summary.reduce_seed(settings, 0, configs, tmp_path)
     assert metrics == {"task-a|0": {"dup": 1.0}, "task-b|0": {"dup": 0.0}}
 
 
@@ -248,7 +248,7 @@ def test_build_summary_from_records_single_seed_has_null_std(tmp_path):
         "gsm8k|0": FakeConfig([FakeMetric({"extractive_match": statistics.fmean})])
     }
 
-    summary = reduce.build_summary_from_records(settings, configs, tmp_path)
+    summary = eval_summary.build_summary_from_records(settings, configs, tmp_path)
 
     assert summary["tasks_metrics"]["gsm8k|0"]["extractive_match"]["mean"] == 0.5
     assert summary["tasks_metrics"]["gsm8k|0"]["extractive_match"]["std"] is None

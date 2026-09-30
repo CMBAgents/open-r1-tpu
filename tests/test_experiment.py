@@ -1,10 +1,10 @@
-"""Tests for `open_r1_tpu.evaluation.experiment`.
+"""Tests for `open_r1_tpu.evaluation.run` and its Langfuse path, `.traced`.
 
 The Langfuse path runs against a faked Langfuse client/dataset -- no real
 `run_experiment`, no network, no lighteval registry: it only ever calls
 `dataset.run_experiment()` and reads back its return value, so faking that
 one call exercises the run name, the evaluator/task wiring, and the JSONL
-record shape `evaluation.reduce` reads. The local path runs end to end
+record shape `evaluation.summary` reads. The local path runs end to end
 against a stub OpenAI-compatible server and stub task configs.
 """
 
@@ -20,7 +20,9 @@ import pytest
 # The evaluation client needs the `eval` extra; a training-only install skips.
 pytest.importorskip("openai")
 
-from open_r1_tpu.evaluation import experiment, reduce
+from open_r1_tpu.evaluation import run as eval_run
+from open_r1_tpu.evaluation import summary as eval_summary
+from open_r1_tpu.evaluation import traced
 
 
 class _FakeEvaluation:
@@ -34,7 +36,7 @@ class _FakeDatasetItem:
     def __init__(self, item_id, metadata, expected_output="gold"):
         self.id = item_id
         self.metadata = metadata
-        # The gold `evaluation.dataset_sync` stored. Carried into every JSONL
+        # The gold `evaluation.traced` stored. Carried into every JSONL
         # record so `evaluation.consensus` can judge a cons@n winner without
         # reading anything back out of Langfuse.
         self.expected_output = expected_output
@@ -124,7 +126,7 @@ def test_record_from_item_result_matches_reduce_expected_shape(tmp_path):
     dataset = _FakeDataset(items=[item], result=result)
 
     output_path = tmp_path / "seed-0" / "stub_task-0.jsonl"
-    experiment.write_experiment_jsonl(
+    traced.write_experiment_jsonl(
         result, dataset, task="stub_task|0", seed=0, output_path=output_path
     )
 
@@ -167,7 +169,7 @@ def test_write_experiment_jsonl_writes_a_dropped_record_for_a_missing_item(tmp_p
     dataset = _FakeDataset(items=[present, missing], result=result)
 
     output_path = tmp_path / "out.jsonl"
-    experiment.write_experiment_jsonl(
+    traced.write_experiment_jsonl(
         result, dataset, task="stub_task|0", seed=1, output_path=output_path
     )
 
@@ -204,7 +206,7 @@ def test_write_experiment_jsonl_reconstructs_scoring_failed_metadata(tmp_path):
     dataset = _FakeDataset(items=[item], result=result)
 
     output_path = tmp_path / "out.jsonl"
-    experiment.write_experiment_jsonl(
+    traced.write_experiment_jsonl(
         result, dataset, task="stub_task|0", seed=0, output_path=output_path
     )
 
@@ -240,13 +242,11 @@ def test_run_experiment_for_task_seed_calls_run_experiment_once_with_expected_ar
     def fake_make_task(settings, *, client):
         return lambda **kwargs: None
 
-    monkeypatch.setattr(
-        experiment.scoring, "lighteval_evaluator", fake_lighteval_evaluator
-    )
-    monkeypatch.setattr(experiment, "make_task", fake_make_task)
+    monkeypatch.setattr(traced, "lighteval_evaluator", fake_lighteval_evaluator)
+    monkeypatch.setattr(traced, "make_task", fake_make_task)
 
     settings = _settings()
-    experiment.run_experiment_for_task_seed(
+    traced.run_experiment_for_task_seed(
         client,
         task="stub_task|0",
         seed=2,
@@ -285,13 +285,13 @@ def test_run_calls_run_experiment_for_every_task_seed_pair(tmp_path, monkeypatch
             pass
 
     monkeypatch.setattr(
-        experiment, "run_experiment_for_task_seed", fake_run_experiment_for_task_seed
+        traced, "run_experiment_for_task_seed", fake_run_experiment_for_task_seed
     )
     monkeypatch.setattr(
-        experiment.openai, "AsyncOpenAI", lambda **kwargs: _FakeAsyncClient()
+        eval_run.openai, "AsyncOpenAI", lambda **kwargs: _FakeAsyncClient()
     )
     monkeypatch.setattr(
-        experiment,
+        traced,
         "sync_datasets",
         lambda langfuse_client, settings: {t: f"{t}@fp" for t in settings["tasks"]},
     )
@@ -299,7 +299,7 @@ def test_run_calls_run_experiment_for_every_task_seed_pair(tmp_path, monkeypatch
     settings = _settings(
         tasks=["gsm8k|0", "math_500|0"], seeds=[0, 1], output_dir=str(tmp_path)
     )
-    experiment.run(settings, langfuse_client=object(), recipe_path="r.yaml")
+    eval_run.run(settings, langfuse_client=object(), recipe_path="r.yaml")
 
     assert set(calls) == {
         ("gsm8k|0", 0),
@@ -328,18 +328,16 @@ def _run_with_client(monkeypatch, client, **settings_overrides):
         return client
 
     monkeypatch.setattr(
-        experiment, "run_experiment_for_task_seed", fake_run_experiment_for_task_seed
+        traced, "run_experiment_for_task_seed", fake_run_experiment_for_task_seed
     )
-    monkeypatch.setattr(experiment.openai, "AsyncOpenAI", fake_async_openai)
+    monkeypatch.setattr(eval_run.openai, "AsyncOpenAI", fake_async_openai)
     monkeypatch.setattr(
-        experiment,
+        traced,
         "sync_datasets",
         lambda langfuse_client, settings: {t: f"{t}@fp" for t in settings["tasks"]},
     )
     settings = _settings(**settings_overrides)
-    output_dir = experiment.run(
-        settings, langfuse_client=object(), recipe_path="r.yaml"
-    )
+    output_dir = eval_run.run(settings, langfuse_client=object(), recipe_path="r.yaml")
     return built, calls, output_dir
 
 
@@ -390,20 +388,20 @@ def test_run_teardown_failure_never_masks_the_real_one(tmp_path, monkeypatch):
         raise RuntimeError("the server refused this request")
 
     monkeypatch.setattr(
-        experiment, "run_experiment_for_task_seed", fake_run_experiment_for_task_seed
+        traced, "run_experiment_for_task_seed", fake_run_experiment_for_task_seed
     )
     monkeypatch.setattr(
-        experiment.openai, "AsyncOpenAI", lambda **kwargs: _FakeAsyncClient()
+        eval_run.openai, "AsyncOpenAI", lambda **kwargs: _FakeAsyncClient()
     )
     monkeypatch.setattr(
-        experiment,
+        traced,
         "sync_datasets",
         lambda langfuse_client, settings: {t: f"{t}@fp" for t in settings["tasks"]},
     )
 
     settings = _settings(output_dir=str(tmp_path))
     with pytest.raises(RuntimeError, match="the server refused this request"):
-        experiment.run(settings, langfuse_client=object(), recipe_path="r.yaml")
+        eval_run.run(settings, langfuse_client=object(), recipe_path="r.yaml")
 
 
 def test_the_langfuse_path_syncs_before_it_runs_and_uses_the_synced_names(
@@ -422,16 +420,16 @@ def test_the_langfuse_path_syncs_before_it_runs_and_uses_the_synced_names(
     def fake_run_experiment_for_task_seed(langfuse_client, *, task, seed, **kwargs):
         events.append((task, seed, kwargs["dataset_name"]))
 
-    monkeypatch.setattr(experiment, "sync_datasets", fake_sync)
+    monkeypatch.setattr(traced, "sync_datasets", fake_sync)
     monkeypatch.setattr(
-        experiment, "run_experiment_for_task_seed", fake_run_experiment_for_task_seed
+        traced, "run_experiment_for_task_seed", fake_run_experiment_for_task_seed
     )
     monkeypatch.setattr(
-        experiment.openai, "AsyncOpenAI", lambda **kwargs: _FakeAsyncClient()
+        eval_run.openai, "AsyncOpenAI", lambda **kwargs: _FakeAsyncClient()
     )
 
     settings = _settings(tasks=["gsm8k|0"], seeds=[0, 1], output_dir=str(tmp_path))
-    experiment.run(settings, langfuse_client=object(), recipe_path="r.yaml")
+    eval_run.run(settings, langfuse_client=object(), recipe_path="r.yaml")
 
     assert events == [
         "sync",
@@ -449,9 +447,9 @@ def test_sync_datasets_stops_when_langfuse_failed(monkeypatch):
         guard.failures += 1
         return {"gsm8k|0": ("gsm8k|0@fp", 0)}
 
-    monkeypatch.setattr(experiment.dataset_sync, "sync_recipe", fake_sync_recipe)
+    monkeypatch.setattr(traced, "sync_recipe", fake_sync_recipe)
     with pytest.raises(RuntimeError, match="drop --tracing-config"):
-        experiment.sync_datasets(_FlushingClient(), _settings(tasks=["gsm8k|0"]))
+        traced.sync_datasets(_FlushingClient(), _settings(tasks=["gsm8k|0"]))
 
 
 def test_sync_datasets_returns_each_tasks_dataset_name(monkeypatch):
@@ -460,11 +458,11 @@ def test_sync_datasets_returns_each_tasks_dataset_name(monkeypatch):
             pass
 
     monkeypatch.setattr(
-        experiment.dataset_sync,
+        traced,
         "sync_recipe",
         lambda guard, settings: {"gsm8k|0": ("gsm8k|0@fp", 3)},
     )
-    names = experiment.sync_datasets(_FlushingClient(), _settings(tasks=["gsm8k|0"]))
+    names = traced.sync_datasets(_FlushingClient(), _settings(tasks=["gsm8k|0"]))
     assert names == {"gsm8k|0": "gsm8k|0@fp"}
 
 
@@ -595,10 +593,10 @@ def _local_settings(server, tmp_path, **overrides):
 
 def _patch_local_task(monkeypatch, config):
     monkeypatch.setattr(
-        experiment, "resolve_task_configs", lambda tasks: dict.fromkeys(tasks, config)
+        eval_run, "resolve_task_configs", lambda tasks: dict.fromkeys(tasks, config)
     )
     monkeypatch.setattr(
-        experiment,
+        eval_run,
         "iter_documents",
         lambda config, *, max_samples: [
             (str(i), row) for i, row in enumerate(ROWS[:max_samples])
@@ -617,7 +615,7 @@ def test_the_local_path_generates_scores_and_writes_what_reduce_reads(
     _patch_local_task(monkeypatch, config)
     settings = _local_settings(server, tmp_path)
 
-    output_dir = experiment.run(settings)
+    output_dir = eval_run.run(settings)
 
     records = [
         json.loads(line)
@@ -640,7 +638,9 @@ def test_the_local_path_generates_scores_and_writes_what_reduce_reads(
     assert len(server.requests) == 6  # 3 documents x 2 seeds
     assert config.metrics[0].threads == {threading.main_thread()}
 
-    metrics, stats = reduce.reduce_seed(settings, 0, {"arith|0": config}, output_dir)
+    metrics, stats = eval_summary.reduce_seed(
+        settings, 0, {"arith|0": config}, output_dir
+    )
     assert metrics == {"arith|0": {"em": pytest.approx(2 / 3)}}
     assert stats["documents"] == 3
 
@@ -650,7 +650,7 @@ def test_the_local_path_honours_max_samples(tmp_path, monkeypatch, answer_server
     server = answer_server({})
     _patch_local_task(monkeypatch, _LocalConfig())
 
-    experiment.run(_local_settings(server, tmp_path, seeds=[0], max_samples=2))
+    eval_run.run(_local_settings(server, tmp_path, seeds=[0], max_samples=2))
 
     lines = (tmp_path / "seed-0" / "arith-0.jsonl").read_text().splitlines()
     assert len(lines) == 2
@@ -663,7 +663,7 @@ def test_the_local_path_records_a_refused_request_as_failed(
     server = answer_server({}, status=400)
     _patch_local_task(monkeypatch, _LocalConfig())
 
-    experiment.run(_local_settings(server, tmp_path, seeds=[0]))
+    eval_run.run(_local_settings(server, tmp_path, seeds=[0]))
 
     records = [
         json.loads(line)
@@ -687,5 +687,5 @@ def test_the_local_path_rejects_a_multi_gold_document_before_generating(
     _patch_local_task(monkeypatch, config)
 
     with pytest.raises(ValueError, match="single gold"):
-        experiment.run(_local_settings(server, tmp_path, seeds=[0]))
+        eval_run.run(_local_settings(server, tmp_path, seeds=[0]))
     assert server.requests == []

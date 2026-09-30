@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Compare vLLM service generation speed with Tunix's direct sampler.
 
 Accuracy harness timings are not backend benchmarks. LightEval currently sends
@@ -38,13 +39,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from open_r1_tpu.evaluation.run import (
-    load_eval_config,
-    wait_for_server,
-)
-from open_r1_tpu.evaluation.run import (
-    resolve_settings as resolve_eval_settings,
-)
+from open_r1_tpu.evaluation.config import load_eval_config
+from open_r1_tpu.evaluation.config import resolve_settings as resolve_eval_settings
+from open_r1_tpu.evaluation.server import wait_for_server
 
 
 @dataclass(frozen=True)

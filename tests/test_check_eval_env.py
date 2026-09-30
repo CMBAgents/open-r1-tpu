@@ -6,13 +6,12 @@ from typing import Any
 import pytest
 
 from open_r1_tpu.evaluation import preflight as check_eval_env
+from open_r1_tpu.evaluation.config import load_eval_config, resolve_settings
 from open_r1_tpu.evaluation.preflight import (
     check_dependency_versions,
     check_export_dir,
     check_server_runtime,
-    check_task_names,
 )
-from open_r1_tpu.evaluation.run import load_eval_config, resolve_settings
 from open_r1_tpu.evaluation.stack import (
     EVALUATION_PACKAGE_VERSIONS,
     EVALUATION_PYTHON_VERSION,
@@ -364,76 +363,9 @@ def test_a_model_with_its_own_turn_end_token_passes(tmp_path):
     assert errors == []
 
 
-# A small stand-in for LightEval's registry. The real one is built by a
-# constructor that reaches the network, so the unit tests supply the set of
-# known names directly; the integration test below is the one that checks the
-# recipes against what is actually installed.
-KNOWN = {
-    "gsm8k",
-    "math_500",
-    "gpqa:diamond",
-    "gpqa:mc",
-    "ifeval",
-    "olympiad_bench:OE_TO_maths_en_COMP",
-}
-
-
-def test_task_names_in_the_registry_pass():
-    errors, warnings = check_task_names(["gsm8k|0", "ifeval|0"], known=KNOWN)
-
-    assert errors == []
-    assert warnings == []
-
-
-def test_a_task_missing_from_the_registry_is_an_error():
-    errors, _ = check_task_names(["amc23|0"], known=KNOWN)
-
-    assert any("not in LightEval's registry" in error for error in errors)
-
-
-def test_a_suite_prefix_warns_and_names_the_form_that_replaced_it():
-    # 0.13 keys its registry by bare name and discards a leading suite without
-    # saying anything useful, so the recipe drifts from what actually ran.
-    errors, warnings = check_task_names(["lighteval|gsm8k|0"], known=KNOWN)
-
-    assert errors == []
-    assert len(warnings) == 1
-    assert "'gsm8k|0'" in warnings[0]
-
-
-def test_a_near_miss_is_suggested():
-    errors, _ = check_task_names(["gpqa:diamnod|0"], known=KNOWN)
-
-    assert "gpqa:diamond" in errors[0]
-
-
-def test_a_task_string_with_no_few_shot_field_is_an_error():
-    errors, _ = check_task_names(["gsm8k"], known=KNOWN)
-
-    assert any("name|num_fewshot" in error for error in errors)
-
-
-def test_the_removed_fourth_task_field_is_rejected():
-    # LightEval 0.13 fails to resolve a four-field name rather than warning.
-    errors, _ = check_task_names(["lighteval|gsm8k|0|0"], known=KNOWN)
-
-    assert len(errors) == 1
-    assert "'gsm8k|0'" in errors[0]
-
-
-def test_an_unreadable_registry_warns_rather_than_failing_everything(monkeypatch):
-    monkeypatch.setattr(check_eval_env, "registry_task_names", lambda: None)
-
-    errors, warnings = check_eval_env.check_task_names(["gsm8k|0"])
-
-    assert errors == []
-    assert any("unchecked" in warning for warning in warnings)
-
-
 @pytest.mark.integration
 def test_every_recipe_task_resolves_against_the_installed_lighteval():
-    known = check_eval_env.registry_task_names()
-    assert known is not None, "LightEval's registry could not be read"
+    from open_r1_tpu.evaluation.taskpack import resolve_task_configs
 
     # base.yaml is not a standalone recipe -- it has no eval:/sampling: of its
     # own and is only ever reached through another recipe's `extends`.
@@ -441,6 +373,5 @@ def test_every_recipe_task_resolves_against_the_installed_lighteval():
         if recipe.name == "base.yaml":
             continue
         settings = resolve_settings(load_eval_config(str(recipe)))
-        errors, warnings = check_task_names(settings["tasks"], known=known)
-        assert errors == [], f"{recipe}: {errors}"
-        assert warnings == [], f"{recipe}: {warnings}"
+        resolved = resolve_task_configs(settings["tasks"])
+        assert sorted(resolved) == sorted(settings["tasks"]), recipe

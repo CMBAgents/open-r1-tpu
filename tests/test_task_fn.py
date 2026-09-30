@@ -1,4 +1,4 @@
-"""Tests for `open_r1_tpu.evaluation.task_fn`, against a stub OpenAI-compatible
+"""Tests for `open_r1_tpu.evaluation.generate`, against a stub OpenAI-compatible
 HTTP server (stdlib `http.server`, no network, no Docker, no real vLLM) --
 the same style `test_runner.py` uses for `generate_one`, since `make_task` is
 a thin wrapper over exactly that function.
@@ -19,8 +19,8 @@ pytest.importorskip("openai")
 
 import openai
 
-from open_r1_tpu.evaluation import task_fn
-from open_r1_tpu.evaluation.runner import GenerationFailed, GenerationRefused
+from open_r1_tpu.evaluation import generate
+from open_r1_tpu.evaluation.generate import GenerationFailed, GenerationRefused
 
 # --- a stub OpenAI-compatible server, matching test_runner.py's -------------
 
@@ -124,7 +124,7 @@ async def _call(task, n=1):
 
 def test_make_task_returns_a_dict_with_text_and_usage(stub_server):
     server = stub_server(lambda n: (200, _success_payload()))
-    task = task_fn.make_task(_settings(), client=_client_for(server))
+    task = generate.make_task(_settings(), client=_client_for(server))
 
     (output,) = asyncio.run(_call(task))
 
@@ -158,7 +158,7 @@ def test_make_task_never_sends_a_seed(stub_server):
     server.RequestHandlerClass = _CapturingHandler
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        task = task_fn.make_task(_settings(), client=_client_for(server))
+        task = generate.make_task(_settings(), client=_client_for(server))
         asyncio.run(_call(task))
     finally:
         server.shutdown()
@@ -172,7 +172,7 @@ def test_make_task_never_sends_a_seed(stub_server):
 
 def test_a_refusal_trips_the_breaker_for_every_later_call(stub_server):
     server = stub_server(lambda n: (400, {"error": {"message": "bad sampling params"}}))
-    task = task_fn.make_task(_settings(), client=_client_for(server))
+    task = generate.make_task(_settings(), client=_client_for(server))
 
     async def run():
         with pytest.raises(GenerationRefused):
@@ -188,7 +188,7 @@ def test_a_refusal_trips_the_breaker_for_every_later_call(stub_server):
 
 def test_a_refusal_never_retries(stub_server):
     server = stub_server(lambda n: (400, {"error": {"message": "bad sampling params"}}))
-    task = task_fn.make_task(_settings(), client=_client_for(server))
+    task = generate.make_task(_settings(), client=_client_for(server))
 
     with pytest.raises(GenerationRefused):
         asyncio.run(_call(task))
@@ -199,9 +199,9 @@ def test_a_refusal_never_retries(stub_server):
 
 
 def test_fail_fast_after_trips_after_n_consecutive_failures(stub_server, monkeypatch):
-    monkeypatch.setattr("open_r1_tpu.evaluation.runner.MAX_ATTEMPTS", 1)
+    monkeypatch.setattr("open_r1_tpu.evaluation.generate.MAX_ATTEMPTS", 1)
     server = stub_server(lambda n: (500, {"error": {"message": "boom"}}))
-    task = task_fn.make_task(_settings(fail_fast_after=2), client=_client_for(server))
+    task = generate.make_task(_settings(fail_fast_after=2), client=_client_for(server))
 
     async def run():
         with pytest.raises(GenerationFailed):
@@ -218,7 +218,7 @@ def test_fail_fast_after_trips_after_n_consecutive_failures(stub_server, monkeyp
 
 
 def test_a_success_resets_the_consecutive_failure_count(stub_server, monkeypatch):
-    monkeypatch.setattr("open_r1_tpu.evaluation.runner.MAX_ATTEMPTS", 1)
+    monkeypatch.setattr("open_r1_tpu.evaluation.generate.MAX_ATTEMPTS", 1)
     behavior_calls = []
 
     def behavior(n):
@@ -228,7 +228,7 @@ def test_a_success_resets_the_consecutive_failure_count(stub_server, monkeypatch
         return 200, _success_payload()
 
     server = stub_server(behavior)
-    task = task_fn.make_task(_settings(fail_fast_after=2), client=_client_for(server))
+    task = generate.make_task(_settings(fail_fast_after=2), client=_client_for(server))
 
     async def run():
         with pytest.raises(GenerationFailed):

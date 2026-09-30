@@ -1,29 +1,19 @@
-"""Generation primitives shared by the Langfuse-native evaluation path.
+"""Generation: documents, prompts, and one chat completion per document.
 
-Talks to vLLM directly over the `openai` SDK, no litellm and no proxy in
-front of it -- every blocker once recorded against this project's eval
-pipeline (double generation, seed-1/seed-2 cache replay, a proxy misroute to
-`api.openai.com`, a 3.5 hour retry burn on a refused sampling parameter) was
-litellm's, or the absence of a callback hook, never the scoring.
-
-This module used to also own the generation loop itself (`run_async`,
-`run_seed_task`, a `main()` CLI): `dataset.run_experiment()` now drives
-iteration and concurrency (see `evaluation.experiment`, `evaluation.task_fn`),
-so that half was deleted once the tier-1 parity gate passed. What remains is
-what `evaluation.task_fn.make_task` and `evaluation.dataset_sync` still
-build on: `generate_one` (one chat completion, with this project's own retry
-policy), `render_messages`/`iter_documents` (prompt rendering and dataset
-iteration, matching LightEval's own zero-shot prompt construction), and
-`LangfuseGuard` (every Langfuse call funnelled through one place, so a dead
-Langfuse costs a missing trace or dataset item, never a generation).
+Talks to vLLM directly over the `openai` SDK with this project's own retry
+policy (`generate_one`), renders each document's prompt the way LightEval's
+zero-shot prompt construction does (`render_messages`), and wraps both in the
+task function every evaluation path drives (`make_task`), whose circuit
+breaker stops sending requests once the server refuses one or
+`server.fail_fast_after` in a row fail.
 """
 
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import logging
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -31,15 +21,18 @@ import openai
 
 LOGGER = logging.getLogger(__name__)
 
+
 # Retry mechanics are not recipe-configurable (unlike `max_concurrency` and
 # `fail_fast_after`, which are deployment/policy choices): these are fixed
 # implementation constants, the same way `evaluation.run.wait_for_server`'s
 # poll interval is.
 MAX_ATTEMPTS = 5
+
 BACKOFF_BASE_SECS = 1.0
+
 BACKOFF_MAX_SECS = 30.0
+
 REQUEST_TIMEOUT_SECS = 600.0
-LANGFUSE_FLUSH_TIMEOUT_SECS = 10.0
 
 
 class GenerationRefused(RuntimeError):
@@ -177,78 +170,109 @@ def iter_documents(config: Any, *, max_samples: int | None) -> list[tuple[str, A
     return [(str(index), dataset[index]) for index in range(len(dataset))]
 
 
-class LangfuseGuard:
-    """Every Langfuse call funnelled through here, so a dead Langfuse costs a
-    missing trace, score, or dataset item, never a generation. The first
-    failure in a run logs a full warning; every subsequent one is counted
-    silently, and the total is logged once at the end -- a dead Langfuse must
-    not spam the log once per document across a 1,819-document tier.
+class _CircuitBreaker:
+    """See the module docstring for what this can and cannot do. Scoped to
+    one `make_task` call: `evaluation.experiment` builds a fresh task
+    function (and so a fresh breaker) per `(task, seed)`
+    `dataset.run_experiment()` call -- matching `server.fail_fast_after`'s
+    old per-seed scope at worst, and improving on it (per task *and* seed,
+    rather than shared across a seed's tasks) at best.
+
+    Safe without a lock: every task function this drives is `async def`
+    running under one `run_experiment` call's own `asyncio.gather`, on that
+    call's own event loop and thread, and asyncio is single-threaded and
+    cooperative, so a plain read/increment between `await` points cannot
+    race -- the same reasoning the old `ErrorBudget` relied on.
     """
 
-    def __init__(self, client: Any):
-        self.client = client
-        self.failures = 0
-        self._warned = False
+    def __init__(self, fail_fast_after: int):
+        self._fail_fast_after = fail_fast_after
+        self._consecutive_failures = 0
+        self._tripped: Exception | None = None
 
-    def flush(self) -> None:
-        # The SDK's own flush() has no timeout, and a hung export must not
-        # hang the run -- so it is bounded from outside, in a worker thread
-        # (safe here: unlike evaluation.scoring.compute_scores, nothing
-        # Langfuse does depends on running on the main thread).
-        try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                executor.submit(self.client.flush).result(
-                    timeout=LANGFUSE_FLUSH_TIMEOUT_SECS
-                )
-        except Exception:
-            self.failures += 1
-            LOGGER.warning("Langfuse flush failed or timed out", exc_info=True)
+    def check(self) -> None:
+        if self._tripped is not None:
+            raise self._tripped
 
-    def create_dataset(self, **kwargs: Any) -> Any | None:
-        """Ensure one Langfuse dataset exists before any
-        `create_dataset_item` call reaches it -- `create_dataset_item` 404s
-        against a dataset that was never created, which is exactly what
-        happened the first time `evaluation.dataset_sync` ran against a live
-        Langfuse without this call. `POST /api/public/v2/datasets`'s
-        generated client (checked against the installed `langfuse==4.14.5`)
-        has no documented conflict response for an existing name -- every
-        status this endpoint's spec models falls through to a 200, so a
-        repeat call is expected to return the existing dataset rather than
-        error. If that ever turns out wrong in practice, it would show up
-        here as `failures` climbing on every routine re-sync, not as a
-        silent 404 per item -- a far cheaper failure mode to notice.
-        Returns the `Dataset`, or `None` if Langfuse failed.
-        """
-        try:
-            return self.client.create_dataset(**kwargs)
-        except Exception:
-            self.failures += 1
-            if not self._warned:
-                LOGGER.warning(
-                    "Langfuse call failed; continuing without ensuring "
-                    "further datasets exist (further failures are counted, "
-                    "not logged)",
-                    exc_info=True,
-                )
-                self._warned = True
-            return None
+    def record_success(self) -> None:
+        self._consecutive_failures = 0
 
-    def create_dataset_item(self, **kwargs: Any) -> Any | None:
-        """Every `evaluation.dataset_sync` upsert funnelled through here: a
-        dead Langfuse must cost a missing dataset item, never stop the sync
-        -- and the run it gates -- from starting. Returns the created
-        `DatasetItem`, or `None` if Langfuse failed.
-        """
+    def record_refused(self, error: GenerationRefused) -> None:
+        # Sticky: every other request in this (task, seed) carries the same
+        # sampling parameters (see GenerationRefused's own docstring), so a
+        # refusal here means every other request is expected to be refused
+        # too.
+        if self._tripped is None:
+            self._tripped = error
+
+    def record_failure(self, error: GenerationFailed) -> None:
+        self._consecutive_failures += 1
+        if (
+            self._consecutive_failures >= self._fail_fast_after
+            and self._tripped is None
+        ):
+            self._tripped = GenerationFailed(
+                f"{self._consecutive_failures} consecutive document failures "
+                f"(server.fail_fast_after={self._fail_fast_after}); every "
+                "further item in this (task, seed) fails immediately rather "
+                "than attempting a request against what is almost certainly "
+                "a dead server"
+            )
+
+
+def make_task(settings: Mapping[str, Any], *, client: Any) -> Callable[..., Any]:
+    """Build the `task(*, item, **kwargs)` callable for one `(task, seed)`
+    `dataset.run_experiment()` call.
+
+    `settings` is this recipe's resolved settings
+    (`evaluation.run.resolve_settings`'s output); `client` is a shared
+    `openai.AsyncOpenAI`, built once per CLI invocation by
+    `evaluation.experiment` and passed in here so every `(task, seed)` sends
+    its requests through one client, configured and torn down in one place.
+    Connections themselves are deliberately not reused, there or here: each
+    `(task, seed)` runs on its own event loop, and a pooled connection
+    cannot outlive the loop that opened it -- see `evaluation.experiment`'s
+    module docstring.
+
+    Deliberately no per-request `seed`: vLLM classifies a request carrying
+    one as `SamplingType.RANDOM_SEED` whenever `temperature > 0`, and the TPU
+    backend refuses that outright (`TpuPlatform.validate_request` raises
+    "JAX does not support per-request seed."), reaching the client as an
+    empty-body HTTP 500. `eval.seeds` therefore indexes independent
+    replicates rather than determining them, and `generate_one` never sends
+    one.
+    """
+    breaker = _CircuitBreaker(int(settings["fail_fast_after"]))
+    served_model_name = settings["served_model_name"]
+    temperature = settings["temperature"]
+    top_p = settings["top_p"]
+    max_tokens = settings["max_new_tokens"]
+
+    async def task(*, item: Any, **kwargs: Any) -> dict[str, Any]:
+        breaker.check()
         try:
-            return self.client.create_dataset_item(**kwargs)
-        except Exception:
-            self.failures += 1
-            if not self._warned:
-                LOGGER.warning(
-                    "Langfuse call failed; continuing without syncing "
-                    "further dataset items (further failures are counted, "
-                    "not logged)",
-                    exc_info=True,
-                )
-                self._warned = True
-            return None
+            outcome = await generate_one(
+                client,
+                served_model_name=served_model_name,
+                messages=item.input,
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+            )
+        except GenerationRefused as error:
+            breaker.record_refused(error)
+            raise
+        except GenerationFailed as error:
+            breaker.record_failure(error)
+            raise
+        breaker.record_success()
+        return {
+            "text": outcome.text,
+            "finish_reason": outcome.finish_reason,
+            "prompt_tokens": outcome.prompt_tokens,
+            "completion_tokens": outcome.completion_tokens,
+            "latency_s": outcome.latency_s,
+            "attempts": outcome.attempts,
+        }
+
+    return task

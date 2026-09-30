@@ -116,7 +116,7 @@ USAGE
 
 # An address typed as a URL ("http://<addr>:3000") is the predictable
 # mistake: both files want a bare host, and the client composes the scheme and
-# port itself (open_r1_tpu.tracing.config.build_langfuse_client). Caught here,
+# port itself (open_r1_tpu.evaluation.traced.build_langfuse_client). Caught here,
 # it is one error message; uncaught, it is a stack that boots and a client that
 # fails to connect with nothing obviously wrong in either file.
 require_bare_host() {

@@ -44,7 +44,7 @@ read_setting() {
   python3 - "$EVAL_RECIPE" "$1" "${OVERRIDES[@]}" <<'PY'
 import sys
 
-from open_r1_tpu.evaluation.run import load_eval_config, resolve_settings
+from open_r1_tpu.evaluation.config import load_eval_config, resolve_settings
 
 recipe, key, *overrides = sys.argv[1:]
 print(resolve_settings(load_eval_config(recipe, overrides))[key])
@@ -80,9 +80,8 @@ stop_server() {
 trap stop_server EXIT INT TERM
 mkdir -p "$OUTPUT_DIR"
 
-SERVER_CMD="$(python3 -m open_r1_tpu.evaluation.run \
+SERVER_CMD="$(python3 -m open_r1_tpu.evaluation.server \
   --config "$EVAL_RECIPE" \
-  --print-server-command \
   "${OVERRIDES[@]}")"
 echo "Starting: $SERVER_CMD" >&2
 echo "Server log: $SERVER_LOG" >&2
@@ -100,12 +99,12 @@ if ! kill -0 "$SERVER_PID" 2>/dev/null; then
 fi
 
 python3 -c \
-  "import sys; from open_r1_tpu.evaluation.run import wait_for_server; wait_for_server(sys.argv[1])" \
+  "import sys; from open_r1_tpu.evaluation.server import wait_for_server; wait_for_server(sys.argv[1])" \
   "$BASE_URL"
 VLLM_STARTUP_SECONDS="$SECONDS"
 
 # shellcheck disable=SC2086 # BATCH_SIZES is intentionally a whitespace list.
-python3 -m open_r1_tpu.evaluation.benchmark run \
+python3 "$(dirname "$0")/benchmark_generation.py" run \
   --backend vllm \
   --eval-config "$EVAL_RECIPE" \
   --model-path "$MODEL_PATH" \
@@ -121,7 +120,7 @@ python3 -m open_r1_tpu.evaluation.benchmark run \
 stop_server
 
 # shellcheck disable=SC2086 # BATCH_SIZES is intentionally a whitespace list.
-python3 -m open_r1_tpu.evaluation.benchmark run \
+python3 "$(dirname "$0")/benchmark_generation.py" run \
   --backend tunix \
   --eval-config "$EVAL_RECIPE" \
   --sft-config "$SFT_RECIPE" \
@@ -134,7 +133,7 @@ python3 -m open_r1_tpu.evaluation.benchmark run \
   --max-prompt-length "$MAX_PROMPT_LENGTH" \
   "${OVERRIDES[@]}"
 
-python3 -m open_r1_tpu.evaluation.benchmark compare \
+python3 "$(dirname "$0")/benchmark_generation.py" compare \
   --vllm "$OUTPUT_DIR/vllm.json" \
   --tunix "$OUTPUT_DIR/tunix.json" \
   --output-json "$OUTPUT_DIR/comparison.json" \

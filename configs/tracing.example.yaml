@@ -3,13 +3,13 @@
 # real deployment identifier. Only needed to trace evaluations in Langfuse
 # (TRACE_CONFIG); scripts/gen_langfuse_env.sh writes the real file.
 #
-# Loaded and validated by `open_r1_tpu.tracing.config`; see its module
+# Loaded and validated by `open_r1_tpu.evaluation.traced`; see its module
 # docstring for the schema. `docker/langfuse/README.md` explains how
 # `langfuse.host`/`langfuse.port` here must agree with docker/langfuse/.env's
 # LANGFUSE_WEB_PORT.
 #
 # Secrets are not config: LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY are read
-# from the environment (see `evaluation.experiment`/`evaluation.dataset_sync`),
+# from the environment (see `evaluation.traced`),
 # never written into this file.
 
 langfuse:

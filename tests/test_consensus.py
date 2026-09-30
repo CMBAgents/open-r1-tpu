@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from open_r1_tpu.evaluation import consensus
-from open_r1_tpu.evaluation.run import task_slug
+from open_r1_tpu.evaluation.config import task_slug
 
 
 class FakeMetric:
