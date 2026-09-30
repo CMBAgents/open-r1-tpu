@@ -6,27 +6,22 @@ set -euo pipefail
 # Owns the vLLM server's lifecycle and nothing else: the recipe decides what to
 # serve and how (the server command is always built via
 # `open_r1_tpu.evaluation.run --print-server-command`), and
-# `open_r1_tpu.evaluation.experiment` -- the Langfuse-native path,
-# `dataset.run_experiment()` per task/seed -- runs against it. Both halves read
-# the same recipe and the same dotted overrides, so the port and the served
-# model name cannot drift apart.
+# `open_r1_tpu.evaluation.experiment` generates and scores against it. Both
+# halves read the same recipe and the same dotted overrides, so the port and
+# the served model name cannot drift apart.
 #
-#   RECIPE=recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml \
-#     TRACE_CONFIG=configs/tracing.yaml ./scripts/run_eval_tpu.sh
+#   RECIPE=recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml ./scripts/run_eval_tpu.sh
 #
 # RECIPE is required and has no default: an expensive run must name its tier
 # on purpose rather than falling into whichever one happened to be the
-# default. TRACE_CONFIG is required too -- the experiment path needs a
-# Langfuse section to trace and score against -- and there is no default path
-# for it: it is deployment-specific and gitignored (see
-# `open_r1_tpu.tracing.config`'s module docstring), so a literal here would be
-# either wrong or a leak.
+# default. Set TRACE_CONFIG to a tracing config (see
+# configs/tracing.example.yaml and docker/langfuse/README.md) to trace the run
+# in Langfuse; without it the run is local and needs nothing else running.
 #
 # Overrides pass straight through, which is how the base model gets measured on
 # the identical stack -- the only baseline worth comparing against:
 #
-#   RECIPE=recipes/Qwen3-1.7B-Math/eval/tier1_core.yaml \
-#     TRACE_CONFIG=configs/tracing.yaml ./scripts/run_eval_tpu.sh \
+#   RECIPE=recipes/Qwen3-1.7B-Math/eval/tier1_core.yaml ./scripts/run_eval_tpu.sh \
 #     server.model_path=models/Qwen3-1.7B-Base
 #
 # Needs the locked host stack and pinned service image:
@@ -40,13 +35,13 @@ SKIP_SERVER="${SKIP_SERVER:-0}"
 TRACE_CONFIG="${TRACE_CONFIG:-}"
 
 if [[ -z "$RECIPE" ]]; then
-  echo "Usage: RECIPE=recipes/<model>/eval/<tier>.yaml TRACE_CONFIG=<tracing config path> ./scripts/run_eval_tpu.sh [overrides...]" >&2
+  echo "Usage: RECIPE=recipes/<model>/eval/<tier>.yaml [TRACE_CONFIG=<tracing config>] ./scripts/run_eval_tpu.sh [overrides...]" >&2
   exit 1
 fi
 
-if [[ -z "$TRACE_CONFIG" ]]; then
-  echo "TRACE_CONFIG=<tracing config path> is required (the Langfuse section open_r1_tpu.evaluation.experiment traces and scores against)" >&2
-  exit 1
+TRACE_ARGS=()
+if [[ -n "$TRACE_CONFIG" ]]; then
+  TRACE_ARGS=(--tracing-config "$TRACE_CONFIG")
 fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -92,4 +87,4 @@ if [[ "$SKIP_SERVER" != "1" ]]; then
 fi
 
 python3 -m open_r1_tpu.evaluation.experiment --config "$RECIPE" \
-  --tracing-config "$TRACE_CONFIG" "$@"
+  ${TRACE_ARGS[@]+"${TRACE_ARGS[@]}"} "$@"

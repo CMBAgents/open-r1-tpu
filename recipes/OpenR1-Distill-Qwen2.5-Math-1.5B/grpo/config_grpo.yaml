@@ -44,6 +44,10 @@
 # for the API details verified directly against this project's pinned Tunix
 # commit rather than assumed from either notebook).
 #
+# FLOAT32 AND PLAIN ATTENTION, as in ../../Qwen2.5-1.5B-SimpleRL-Zoo/grpo:
+# bfloat16 or splash attention corrupts Qwen2 GRPO rollouts on the pinned
+# Tunix (see that recipe's header).
+#
 # STEP BUDGET IS A STARTING POINT, NOT A MEASURED ONE. Nothing about this
 # recipe's wall-clock or peak HBM has been run on a TPU. A smoke test (a
 # handful of steps, HBM sampler running) is the gate before committing to
@@ -59,10 +63,10 @@ model:
   intermediate_ckpt_dir: /tmp/open-r1-tpu/intermediate_ckpt-grpo
   rng_seed: 42
   model_display: false
-  dtype: bfloat16
-  load_dtype: bfloat16
+  dtype: float32
+  load_dtype: float32
   remat_config: DECODER
-  use_flash_attention: true
+  use_flash_attention: false
   flash_attention_block_size: 1024
   # Must match the SFT recipe's value: the merged export's weights were
   # trained at this theta, and rope_theta here (unlike the export's own
@@ -209,17 +213,8 @@ rollout:
   top_k: 50
 
 export:
-  # False until the Qwen2 gap README's "Checkpoints and GRPO handoff"
-  # section flags is closed: Tunix's merged-LoRA safetensors exporter
-  # (save_lora_merged_model_as_safetensors) is confirmed for Qwen3 only, and
-  # this recipe's actor is Qwen2.5-Math. Flipping export.enabled without
-  # also setting i_have_verified_qwen2_lora_export would spend the whole
-  # training run's TPU time then fail on the very last step; validate_grpo_
-  # config refuses that combination outright. Check on the VM whether
-  # tunix.models.automodel's params module for this model exposes that
-  # function; the LoRA checkpoint (training.checkpoint_dir) is the durable
-  # training artifact either way.
+  # Off until a smoke run looks right; the Qwen2 merged-LoRA export itself
+  # works (tested with the SimpleRL-Zoo recipe).
   enabled: false
-  i_have_verified_qwen2_lora_export: false
   overwrite: true
   output_dir: artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/grpo-merged

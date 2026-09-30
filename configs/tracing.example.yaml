@@ -1,6 +1,7 @@
 # Example tracing configuration -- copy to configs/tracing.yaml (gitignored)
 # and replace the placeholder host/port with real values. Nothing here is a
-# real deployment identifier.
+# real deployment identifier. Only needed to trace evaluations in Langfuse
+# (TRACE_CONFIG); scripts/gen_langfuse_env.sh writes the real file.
 #
 # Loaded and validated by `open_r1_tpu.tracing.config`; see its module
 # docstring for the schema. `docker/langfuse/README.md` explains how

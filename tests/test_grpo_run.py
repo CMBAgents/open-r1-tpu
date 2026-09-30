@@ -43,7 +43,7 @@ def test_recipe_kv_cache_covers_prompt_plus_generation():
     )
 
 
-def test_recipe_export_is_disabled_until_verified():
+def test_recipe_export_is_off_by_default():
     config = load_config(RECIPE, [], validator=validate_grpo_config)
     assert config["export"]["enabled"] is False
 
@@ -72,16 +72,9 @@ def test_zero_num_generations_is_rejected():
         load_config(RECIPE, ["grpo.num_generations=0"], validator=validate_grpo_config)
 
 
-def test_export_enabled_without_verification_is_rejected():
-    with pytest.raises(ValueError, match="i_have_verified_qwen2_lora_export"):
-        load_config(RECIPE, ["export.enabled=true"], validator=validate_grpo_config)
-
-
-def test_export_enabled_with_verification_is_accepted():
+def test_export_can_be_enabled():
     config = load_config(
-        RECIPE,
-        ["export.enabled=true", "export.i_have_verified_qwen2_lora_export=true"],
-        validator=validate_grpo_config,
+        RECIPE, ["export.enabled=true"], validator=validate_grpo_config
     )
     assert config["export"]["enabled"] is True
 
@@ -291,7 +284,11 @@ def test_simplerl_recipe_matches_the_published_setup():
     # <|endoftext|>, <|im_end|>, "Question", "Answer", "Problem".
     assert config["rollout"]["eos_token_ids"] == [151643, 151645, 14582, 16141, 31198]
     assert config["optimizer"]["min_lr_ratio"] == 1.0
-    assert config["export"]["enabled"] is False
+    # The tested configuration: bfloat16 or splash attention corrupts rollouts.
+    assert config["model"]["dtype"] == config["model"]["load_dtype"] == "float32"
+    assert config["model"]["use_flash_attention"] is False
+    assert config["model"]["mesh"]["shape"] == [4, 1]
+    assert config["export"]["enabled"] is True
     block = config["model"]["flash_attention_block_size"]
     rollout = config["rollout"]
     assert rollout["max_prompt_length"] % block == 0

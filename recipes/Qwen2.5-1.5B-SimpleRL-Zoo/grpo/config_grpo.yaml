@@ -1,5 +1,9 @@
 # GRPO positive control: Qwen2.5-1.5B (base) on SimpleRL-Zoo's data, to check
-# this pipeline against a published RL result. One v6e-1 chip.
+# this pipeline against a published RL result. Tested on a v6e-4 (four chips,
+# mesh [4, 1]):
+#
+#   python -m open_r1_tpu.grpo.run \
+#     --config recipes/Qwen2.5-1.5B-SimpleRL-Zoo/grpo/config_grpo.yaml
 #
 # THE TARGET. SimpleRL-Zoo (arXiv 2503.18892, Table 1) trained this base
 # with GRPO and a correctness-only reward and reports GSM8K 55.7 -> 74.4 and
@@ -8,7 +12,10 @@
 # and this run's export with ../eval under one protocol, and see whether this
 # run reaches it. A run that stays at the base's score, or collapses, means
 # the pipeline is broken. This base starts at 30-55% correct, so most rollout
-# groups mix right and wrong answers and carry a learning signal.
+# groups mix right and wrong answers and carry a learning signal. This
+# recipe's 400 steps took about 14 hours and scored GSM8K 68.2 (first 200
+# problems) and MATH-500 54.7 under ../eval's tier 1, against 74.5 and 57.2
+# for their checkpoint scored the same way.
 #
 # WHAT IS COPIED FROM SIMPLERL-ZOO (code: github.com/hkust-nlp/simpleRL-reason,
 # branch v1, which runs on verl):
@@ -31,25 +38,26 @@
 # WHAT IS NOT, AND WHY:
 # - Scale. They take 1,024 prompts x 8 rollouts per step, up to 8,192 new
 #   tokens, split into 4 updates, for about 120 steps: roughly 480 updates
-#   over a million rollouts. One v6e-1 cannot do that. This takes 16 prompts
-#   x 8 rollouts and one update per step for 400 steps: a similar number of
-#   updates from about 1/20th of the rollouts, each update noisier. Extend
-#   training.max_steps (the resume picks up) if eval reward is still rising.
-#   On a v6e-4, model.mesh.shape=[4,1] with a larger dataset.batch_size is
-#   the way toward their batch, but no GRPO run here has used more than one
-#   chip yet, so smoke it there first.
+#   over a million rollouts. This takes 16 prompts x 8 rollouts and one
+#   update per step for 400 steps: a similar number of updates from about
+#   1/20th of the rollouts, each update noisier. Extend training.max_steps
+#   (the resume picks up) if eval reward is still rising.
 # - LoRA, not a full fine-tune. The GRPO actor here is always a LoRA adapter
-#   (grpo.run's validator), and a full fine-tune at their 5e-7 would also
-#   lose its updates to bfloat16 rounding. LoRA matches full fine-tuning for
-#   RL at about ten times the learning rate, hence 5e-6 below.
+#   (grpo.run's validator). LoRA matches full fine-tuning for RL at about ten
+#   times the learning rate, hence 5e-6 below.
 # - 2,048 new tokens, not 8,192. Their stops end most answers well before
 #   this, and the logits for 8 x 2,560 tokens is what fits beside two 1.5B
-#   models on one chip. If many rollouts hit the cap, the cap is costing
-#   reward.
+#   models. About 1-2% of rollouts hit the cap in the tested run.
 # - No entropy bonus (theirs is 0.001): the pinned Tunix GRPO has none.
 # - Prompt filter by tokens (512), not by characters (1,024): it keeps 39 of
 #   the 108 long problems theirs drops.
 # - Grader: a string normaliser, not math_verify (see math_answer_reward).
+#
+# FLOAT32 AND PLAIN ATTENTION. With splash attention the rollouts are
+# gibberish: Tunix's sampler prefill passes no segment_ids, so every prompt
+# attends to its left padding. In bfloat16, plain attention overflows
+# Qwen2.5's attention biases (runs of token 0, "!") and the loss is NaN by
+# step 2. Peak HBM in float32 was 20.5 of 31.25 GiB per chip.
 #
 # STAGING, on the VM:
 #   hf download hkust-nlp/SimpleRL-Zoo-Data --repo-type dataset \
@@ -57,20 +65,14 @@
 #   hf download Qwen/Qwen2.5-1.5B --local-dir models/Qwen2.5-1.5B
 #
 # BEFORE THE REAL RUN:
-# 1. `python -m pytest tests/test_qwen2_lora_export.py` on the VM. Tunix has
-#    no merged-LoRA exporter for Qwen2; that test checks this project's.
-#    Only once it passes, add `export.enabled=true
-#    export.i_have_verified_qwen2_lora_export=true` to the launch, or there
-#    is nothing for ../eval to serve.
-# 2. A smoke, with the HBM sampler running: `training.max_steps=3
-#    dataset.eval_max_examples=4 training.wandb.enabled=false` plus
-#    separate checkpoint, log and rollout paths. Peak HBM must leave room;
-#    if not, lower rollout.max_tokens_to_generate (and kv_cache_size) first.
-# 3. Check the step-0 eval. Qwen2.5-1.5B's attention biases overflow
-#    bfloat16 in the plain-attention generation path (runs of token 0, "!",
-#    in greedy evals). The earlier Qwen GRPO rollouts showed none, but if the
-#    eval rollouts do, or step-0 eval reward is far below the base's score
-#    at ../eval, the rollouts are corrupt and nothing after them means much.
+# 1. A smoke: `training.max_steps=3 dataset.eval_max_examples=4
+#    training.wandb.enabled=false export.enabled=false` plus separate
+#    checkpoint, log and rollout paths. On other hardware, check peak HBM
+#    leaves room; if not, lower rollout.max_tokens_to_generate (and
+#    kv_cache_size) first.
+# 2. Check the step-0 eval: the tested run scored 5.9% on the 64 held-out
+#    problems. Rollouts of gibberish or "!" runs mean the settings above were
+#    changed.
 model:
   model_name: qwen2.5-1.5b
   model_id: Qwen/Qwen2.5-1.5B
@@ -80,20 +82,22 @@ model:
   intermediate_ckpt_dir: /tmp/open-r1-tpu/intermediate_ckpt/simplerl-zoo-grpo
   rng_seed: 42
   model_display: false
-  dtype: bfloat16
-  load_dtype: bfloat16
+  # See the header: bfloat16 or splash attention corrupts the rollouts.
+  dtype: float32
+  load_dtype: float32
   remat_config: DECODER
-  use_flash_attention: true
-  # Must divide every query length the kernel sees: the rollout prefill at
-  # rollout.max_prompt_length (512) and prompt plus completion (2,560).
+  use_flash_attention: false
+  # Used only by splash attention: must divide the rollout prefill (512) and
+  # prompt plus completion (2,560).
   flash_attention_block_size: 512
   rope_theta: 1000000
   lora_config:
     module_path: ".*q_proj|.*k_proj|.*v_proj|.*o_proj|.*gate_proj|.*up_proj|.*down_proj"
     rank: 64
     alpha: 64.0
+  # Four chips, each holding a quarter of both models.
   mesh:
-    shape: [1, 1]
+    shape: [4, 1]
     axis_names: [fsdp, tp]
 
 tokenizer:
@@ -179,7 +183,7 @@ training:
     mode: online
     group: qwen2.5-1.5b-simplerl-zoo
     job_type: grpo
-    tags: [tpu, grpo, rl, qwen2.5, math, positive-control, v6e-1]
+    tags: [tpu, grpo, rl, qwen2.5, math, positive-control, v6e-4, fp32]
     resume: allow
     save_code: false
   offload_to_cpu: false
@@ -204,9 +208,7 @@ rollout:
   eos_token_ids: [151643, 151645, 14582, 16141, 31198]
 
 export:
-  # Off until tests/test_qwen2_lora_export.py has passed on the VM; see the
-  # header. Then enable it from the launch command.
-  enabled: false
-  i_have_verified_qwen2_lora_export: false
+  # The merged export ../eval serves.
+  enabled: true
   overwrite: true
   output_dir: artifacts/Qwen2.5-1.5B-SimpleRL-Zoo/grpo/merged

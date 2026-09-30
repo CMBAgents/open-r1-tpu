@@ -17,6 +17,7 @@ committed tree never learns where anything actually runs.
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parents[1]
@@ -76,6 +77,19 @@ def test_every_file_covered_exists():
 
 def test_the_real_tracing_config_is_not_committed():
     # configs/tracing.example.yaml is documentation, with a placeholder host
-    # -- never read by a script -- but the real, gitignored
-    # configs/tracing.yaml must not be committed at all.
-    assert not (REPO_ROOT / "configs" / "tracing.yaml").exists()
+    # -- never read by a script -- but the real configs/tracing.yaml that
+    # scripts/gen_langfuse_env.sh writes must stay out of git. It may exist
+    # on disk; it must not be tracked or be trackable.
+    path = "configs/tracing.yaml"
+    tracked = subprocess.run(
+        ["git", "ls-files", "--", path],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert not tracked.strip()
+    ignored = subprocess.run(
+        ["git", "check-ignore", "-q", "--no-index", "--", path], cwd=REPO_ROOT
+    )
+    assert ignored.returncode == 0

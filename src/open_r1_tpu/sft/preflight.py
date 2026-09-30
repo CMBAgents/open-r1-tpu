@@ -15,8 +15,6 @@ from open_r1_tpu.sft.data import (
     message_schema_from_config,
 )
 
-DEFAULT_CONFIG = "recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml"
-
 
 def _version(distribution: str) -> str:
     try:
@@ -62,7 +60,7 @@ def _preflight_example(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default=DEFAULT_CONFIG)
+    parser.add_argument("--config", required=True, help="YAML recipe path")
     parser.add_argument("overrides", nargs="*")
     args = parser.parse_args()
     config = load_config(args.config, args.overrides)

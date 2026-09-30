@@ -19,7 +19,7 @@ example passes; ``RLCluster`` is confirmed to still be an alias for
 ``RLEngine``, so passing an ``RLCluster`` instance as ``rl_engine=`` is
 correct). See ``tunix.readthedocs.io``'s rollout page for why the "vanilla"
 rollout engine (in-process JAX/Flax, no external server) is the right choice
-for a single-chip v6e-1: it is what that page recommends for single-device
+for a single TPU VM: it is what that page recommends for single-host
 setups, and it is what every published Tunix GRPO example uses.
 
 The actor and the reference are the *same* merged SFT checkpoint, loaded
@@ -244,20 +244,6 @@ def validate_grpo_config(config: dict[str, Any]) -> None:
         value = grpo.get(key)
         if value is not None and value not in allowed:
             raise ValueError(f"grpo.{key} must be one of {sorted(allowed)}")
-
-    export = config.get("export", {})
-    if export.get("enabled") and not export.get("i_have_verified_qwen2_lora_export"):
-        raise ValueError(
-            "export.enabled requires export.i_have_verified_qwen2_lora_export: "
-            "true, set only after a smoke run's merged export has been checked "
-            "on the VM. README's 'Checkpoints and GRPO handoff' section: "
-            "Tunix's own merged-LoRA exporter covers Qwen3 only, and Qwen2 "
-            "goes through open_r1_tpu.model.export's "
-            "save_qwen2_lora_merged_model_as_safetensors, which has not been "
-            "run on a TPU yet. Until then, the Tunix/Orbax LoRA checkpoint "
-            "under training.checkpoint_dir (actor/<step>/model_params) is the "
-            "durable artifact."
-        )
 
 
 def _is_per_completion_column(value: Any, width: int) -> bool:

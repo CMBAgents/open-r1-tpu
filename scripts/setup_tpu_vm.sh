@@ -22,7 +22,7 @@ usage() {
 Usage: scripts/setup_tpu_vm.sh [--recreate] [--skip-verify] [--with-eval]
 
   --recreate      Delete and rebuild .venv from scratch.
-  --skip-verify   Skip the JAX device check and unit tests.
+  --skip-verify   Skip the TPU device check and unit tests.
   --with-eval     Install the locked evaluation stack and build vLLM TPU.
 USAGE
 }
@@ -130,14 +130,13 @@ fi
 
 # --- Verification --------------------------------------------------------
 if [[ ${VERIFY} -eq 1 ]]; then
-  log "Checking JAX sees exactly one TPU device"
+  log "Checking JAX sees the TPU"
   if ! "${VENV_DIR}/bin/python" - <<'PY'
 import jax
 
 devices = jax.devices()
-print(f"jax {jax.__version__}: {devices}")
+print(f"jax {jax.__version__}: {len(devices)} device(s): {devices}")
 assert devices and all(d.platform == "tpu" for d in devices), "no TPU devices visible"
-assert len(devices) == 1, f"expected 1 device, found {len(devices)}"
 PY
   then
     echo "WARNING: TPU check failed. If a training job is running it holds the" >&2
@@ -156,13 +155,15 @@ cat <<NEXT
   source ${ENV_FILE}
   source ${VENV_DIR}/bin/activate
 
-  # 2. Copy GCS bucket data to local disk (skip to train from the Hub instead):
-  scripts/copy_gcs_bucket_data.sh
+  # 2. Stage the training data (see "Quick start on a TPU VM" in README.md):
+  hf download open-r1/OpenR1-Math-220k --repo-type dataset \\
+    --include 'data/*' --local-dir data/OpenR1-Math-220k
 
-  # 3. Preflight, then launch. See "Quick start on a TPU VM" in README.md for
-  #    the local-input overrides both commands need after step 2.
-  python -m open_r1_tpu.sft.preflight
-  scripts/run_sft_tpu.sh training.project_name="\${WANDB_PROJECT}"
+  # 3. Preflight, then launch:
+  python -m open_r1_tpu.sft.preflight \\
+    --config recipes/Qwen3-1.7B-Math/sft/config_distill.yaml
+  RECIPE=recipes/Qwen3-1.7B-Math/sft/config_distill.yaml \\
+    scripts/run_sft_tpu.sh training.project_name="\${WANDB_PROJECT}"
 NEXT
 
 if [[ ${WITH_EVAL} -eq 1 ]]; then

@@ -11,10 +11,9 @@ The stack is three decoupled layers:
 
 - generation is vLLM on the TPU, serving the merged export behind an
   OpenAI-compatible endpoint;
-- the harness is `open_r1_tpu.evaluation.experiment`, Langfuse's own
-  `dataset.run_experiment()` driving iteration and concurrency per task/seed
-  (`open_r1_tpu.evaluation.task_fn`/`.runner` reach vLLM directly over the
-  `openai` SDK -- no litellm, no subprocess);
+- the harness is `open_r1_tpu.evaluation.experiment`, which reaches vLLM
+  directly over the `openai` SDK, either on its own or, with a tracing
+  config, through Langfuse's `dataset.run_experiment()`;
 - scoring is whatever metric the LightEval task declares, which for maths uses
   latex2sympy2-extended symbolic equivalence rather than string equality,
   called as a library through `open_r1_tpu.evaluation.scoring`.
@@ -39,8 +38,7 @@ the TPU chip, so the training job must have exited before the server starts.
 
 Run through `scripts/run_eval_tpu.sh`, which owns the server's lifecycle::
 
-    RECIPE=recipes/Qwen3-1.7B-Math/eval/tier1_core.yaml \
-      TRACE_CONFIG=configs/tracing.yaml ./scripts/run_eval_tpu.sh
+    RECIPE=recipes/Qwen3-1.7B-Math/eval/tier1_core.yaml ./scripts/run_eval_tpu.sh
 
 WHY SEEDS ARE MANDATORY. Seed variance alone moves small reasoning benchmarks
 by 5-15 points (arXiv 2504.07086), which is more than most recipe changes are
@@ -138,11 +136,11 @@ SERVER_KEYS = {
     "extra_args",
     "startup_timeout_secs",
     "base_url",
-    # Required by `evaluation.runner`, the Langfuse-native generation loop.
-    # No default for either: a concurrency width and an error budget are
-    # deliberate per-deployment choices (a wider width saturates a bigger
-    # server; a laxer budget is wrong for a flaky one), not values worth
-    # guessing on a recipe's behalf.
+    # Required by `evaluation.experiment`'s generation loop. No default for
+    # either: a concurrency width and an error budget are deliberate
+    # per-deployment choices (a wider width saturates a bigger server; a
+    # laxer budget is wrong for a flaky one), not values worth guessing on a
+    # recipe's behalf.
     "max_concurrency",
     "fail_fast_after",
 }

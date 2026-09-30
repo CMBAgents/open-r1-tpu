@@ -1,9 +1,9 @@
 """`scripts/run_eval_tpu.sh` has no default recipe: an expensive run must name
-its tier on purpose. `RECIPE`/`TRACE_CONFIG` validation runs before anything
-Docker- or TPU-related, so it is safe to exercise from a laptop with no
-server up. The happy-path tests stub `python3` in a copied `scripts/`
-directory, so they too need neither Docker nor a live server: with
-SKIP_SERVER=1 the real script never reaches anything that does.
+its tier on purpose. `RECIPE` validation runs before anything Docker- or
+TPU-related, so it is safe to exercise from a laptop with no server up. The
+happy-path tests stub `python3` in a copied `scripts/` directory, so they too
+need neither Docker nor a live server: with SKIP_SERVER=1 the real script
+never reaches anything that does.
 """
 
 import shutil
@@ -44,39 +44,6 @@ def test_an_empty_recipe_is_treated_as_missing():
 
     assert completed.returncode == 1
     assert "RECIPE=" in completed.stderr
-
-
-def test_a_missing_trace_config_errors_before_launching_anything():
-    completed = subprocess.run(
-        ["bash", str(SCRIPT_PATH)],
-        capture_output=True,
-        text=True,
-        env={
-            "PATH": "/usr/bin:/bin",
-            "RECIPE": "recipes/fake/eval/tier0.yaml",
-        },
-        cwd=SCRIPT_PATH.parents[1],
-    )
-
-    assert completed.returncode == 1
-    assert "TRACE_CONFIG" in completed.stderr
-
-
-def test_an_empty_trace_config_is_treated_as_missing():
-    completed = subprocess.run(
-        ["bash", str(SCRIPT_PATH)],
-        capture_output=True,
-        text=True,
-        env={
-            "PATH": "/usr/bin:/bin",
-            "RECIPE": "recipes/fake/eval/tier0.yaml",
-            "TRACE_CONFIG": "",
-        },
-        cwd=SCRIPT_PATH.parents[1],
-    )
-
-    assert completed.returncode == 1
-    assert "TRACE_CONFIG" in completed.stderr
 
 
 def _stubbed_scripts_dir(tmp_path, capture_file):
@@ -153,3 +120,39 @@ def test_forwards_overrides_after_tracing_config(tmp_path):
     assert completed.returncode == 0, completed.stderr
     argv_lines = capture_file.read_text().splitlines()
     assert argv_lines[-1] == "reporting.wandb.enabled=false"
+
+
+def _run_stubbed(tmp_path, *args, trace_config=None):
+    capture_file = tmp_path / "argv.txt"
+    scripts_dir, bin_dir = _stubbed_scripts_dir(tmp_path, capture_file)
+    env = {
+        "PATH": f"{bin_dir}:/usr/bin:/bin",
+        "RECIPE": "recipes/fake/eval/tier0.yaml",
+        "SKIP_SERVER": "1",
+    }
+    if trace_config is not None:
+        env["TRACE_CONFIG"] = trace_config
+    completed = subprocess.run(
+        ["bash", str(scripts_dir / "run_eval_tpu.sh"), *args],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return capture_file.read_text().splitlines()
+
+
+def test_without_a_trace_config_the_run_is_local(tmp_path):
+    assert _run_stubbed(tmp_path, "reporting.wandb.enabled=false") == [
+        "-m",
+        "open_r1_tpu.evaluation.experiment",
+        "--config",
+        "recipes/fake/eval/tier0.yaml",
+        "reporting.wandb.enabled=false",
+    ]
+
+
+def test_an_empty_trace_config_is_treated_as_missing(tmp_path):
+    argv = _run_stubbed(tmp_path, trace_config="")
+    assert "--tracing-config" not in argv

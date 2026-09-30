@@ -1,21 +1,27 @@
 # Local Langfuse (self-hosted)
 
-Self-hosted Langfuse (web, worker, Postgres, ClickHouse, Redis, MinIO). This
-is where `open_r1_tpu.evaluation.experiment` drives an evaluation from --
-`dataset.run_experiment()` reads the dataset `evaluation.dataset_sync`
-populated here, generates and scores each document, and posts the resulting
-trace and scores itself. This file covers only operating the stack; see
-`open_r1_tpu.evaluation.experiment`/`.dataset_sync`/`.task_fn` for the
-pipeline itself.
+Self-hosted Langfuse (web, worker, Postgres, ClickHouse, Redis, MinIO), for
+tracing evaluations. It is optional: without it, `scripts/run_eval_tpu.sh`
+runs locally and writes the same results. With `TRACE_CONFIG` set, each run
+syncs the recipe's tasks into Langfuse datasets, then
+`dataset.run_experiment()` generates and scores each document and posts its
+trace and scores here. This file covers only operating the stack; see
+`open_r1_tpu.evaluation.experiment` for the pipeline itself.
 
 ## Setup
 
 ```bash
 scripts/gen_langfuse_env.sh
+scripts/run_langfuse_stack.sh up
+scripts/gen_langfuse_env.sh --print-keys >> ~/.open-r1-tpu.env
+source ~/.open-r1-tpu.env
+TRACE_CONFIG=configs/tracing.yaml \
+  RECIPE=recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml ./scripts/run_eval_tpu.sh
 ```
 
-This writes `docker/langfuse/.env` and `configs/tracing.yaml` together, with a
-fresh set of secrets and every value that must match already matching:
+The first command writes `docker/langfuse/.env` and `configs/tracing.yaml`
+together, with a fresh set of secrets and every value that must match already
+matching:
 `DATABASE_URL`'s embedded password, the `LANGFUSE_S3_*` MinIO credentials, and
 `langfuse.port` against `LANGFUSE_WEB_PORT`. `.env` has no variable
 interpolation, so those are the pairs a hand-edit of `.env.example` gets wrong.
@@ -31,7 +37,7 @@ fill in every value, keeping the inline "must equal" notes. Either way,
 `.env`'s `LANGFUSE_WEB_BIND`/`LANGFUSE_WEB_PORT` and the tracing config's
 `langfuse.host`/`langfuse.port` describe the same endpoint -- the first pair as
 the server publishes it, the second as the client reaches it -- and must agree,
-or `evaluation.experiment`/`.dataset_sync` will connect to the wrong instance.
+or the evaluation will connect to the wrong instance.
 
 ## Running the stack on its own host
 
@@ -58,8 +64,8 @@ On the host running the evaluation -- the client half only, no secrets and no
 scripts/gen_langfuse_env.sh --tracing-only --langfuse-host <stack host address>
 ```
 
-then append the two `export` lines from `--print-keys` to the file the eval
-launch sources (e.g. `~/.tpu-env`) on *this* host, and launch as usual with
+then append the two `export` lines from `--print-keys` to
+`~/.open-r1-tpu.env` on *this* host, source it, and launch as usual with
 `TRACE_CONFIG=configs/tracing.yaml`.
 
 Three things this does not do for you:
@@ -100,25 +106,13 @@ gone with the VM -- which is the strongest argument for the separate host
 above. On a long-lived VM it persists, and rebuilding is an exception rather
 than the routine.
 
-Either way, on a freshly provisioned host, rebuild the instance and its
-datasets:
-
-```bash
-scripts/gen_langfuse_env.sh                 # .env + configs/tracing.yaml are gone with the old host
-scripts/run_langfuse_stack.sh up
-scripts/gen_langfuse_env.sh --print-keys >> ~/.tpu-env   # the file the eval launch sources
-# once healthy (headless init has created the org/project/user/keys), sync
-# every task the recipe you intend to run needs:
-python -m open_r1_tpu.evaluation.dataset_sync \
-  --config recipes/<model>/eval/<tier>.yaml --tracing-config configs/tracing.yaml
-```
-
-`dataset_sync`'s own deterministic item ids (`uuid5(dataset_name, doc_id)`)
-mean a re-run against an unchanged task upserts every item and creates
-nothing new, so this is safe to run again on an already-populated instance.
-Traces and scores themselves are not recovered this way -- they are written
-fresh by the next `scripts/run_eval_tpu.sh` launch, since nothing durable
-outside this stack captures them.
+Either way, on a freshly provisioned host, rebuild the instance with the three
+setup commands above (`.env` and `configs/tracing.yaml` are gone with the old
+host). The datasets come back on their own: every traced run syncs its
+recipe's tasks first, and the deterministic item ids
+(`uuid5(dataset_name, doc_id)`) make that an upsert. Old traces and scores are
+not recovered; the results JSONL and summary on the evaluation host are the
+durable record.
 
 ## Viewing the UI
 
@@ -173,9 +167,8 @@ instance, and again after any change to `evaluation.experiment`/`.task_fn`/
 
 ## Python environment
 
-`langfuse` is part of the frozen evaluation environment (`pyproject.toml`'s
-`eval` extra) -- it is on the critical path for `open_r1_tpu.evaluation.experiment`,
-which talks to it in-process, so it lives beside `openai`, `lighteval`, and
-the rest of that extra. `uv sync --extra eval` (or
+The `langfuse` client is part of the frozen evaluation environment
+(`pyproject.toml`'s `eval` extra), beside `openai` and `lighteval`, and is
+used only when `TRACE_CONFIG` is set. `uv sync --extra eval` (or
 `scripts/setup_tpu_vm.sh --with-eval`) is the whole setup, on the VM and on a
 Mac alike.

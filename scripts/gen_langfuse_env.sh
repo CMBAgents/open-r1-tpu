@@ -23,8 +23,7 @@
 #
 #   scripts/gen_langfuse_env.sh
 #   scripts/run_langfuse_stack.sh up
-#   scripts/gen_langfuse_env.sh --print-keys >> ~/.tpu-env   # or wherever the
-#                                                            # eval launch sources
+#   scripts/gen_langfuse_env.sh --print-keys >> ~/.open-r1-tpu.env
 #
 # TWO HOSTS. The stack and the evaluation need not share a machine, and the
 # two files then live on different ones: .env on the host running the stack,
@@ -109,7 +108,7 @@ Usage: scripts/gen_langfuse_env.sh [--force] [--web-bind ADDR] [--langfuse-host 
                         docker/langfuse/.env and print, to stdout, the two
                         `export LANGFUSE_PUBLIC_KEY=/SECRET_KEY=` lines the eval
                         harness authenticates with. Append them to the file the
-                        eval launch sources (e.g. ~/.tpu-env). Run it on the
+                        eval launch sources (~/.open-r1-tpu.env). Run it on the
                         host holding .env; in a two-host deployment that is the
                         stack's host, and the output is copied to the other.
 USAGE
@@ -358,14 +357,15 @@ if [[ "$WRITE_ENV" == "1" ]]; then
 
 Next:
   1. scripts/run_langfuse_stack.sh up
-  2. scripts/gen_langfuse_env.sh --print-keys >> <the file the eval launch sources>
+  2. scripts/gen_langfuse_env.sh --print-keys >> ~/.open-r1-tpu.env
+     source ~/.open-r1-tpu.env
   3. RECIPE=<recipe> TRACE_CONFIG=configs/tracing.yaml ./scripts/run_eval_tpu.sh
 EOF
 else
   cat >&2 <<EOF
 
 Next, on this host:
-  1. Append the stack host's keys to <the file the eval launch sources>:
+  1. Append the stack host's keys to ~/.open-r1-tpu.env and source it:
        scripts/gen_langfuse_env.sh --print-keys   # run there, paste here
   2. RECIPE=<recipe> TRACE_CONFIG=configs/tracing.yaml ./scripts/run_eval_tpu.sh
 EOF

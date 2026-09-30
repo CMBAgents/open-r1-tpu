@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import pytest
 
+# The evaluation client needs the `eval` extra; a training-only install skips.
+pytest.importorskip("openai")
+
 from open_r1_tpu.evaluation import dataset_sync
 from open_r1_tpu.evaluation.runner import LangfuseGuard
 
@@ -282,7 +285,11 @@ def _fake_resolve_and_name(monkeypatch, configs_by_task):
     )
     monkeypatch.setattr(dataset_sync, "derive_task_spec", lambda task, config: None)
     monkeypatch.setattr(
-        dataset_sync, "taskpack_dataset_name", lambda task, spec: f"{task}@fixed"
+        dataset_sync,
+        "taskpack_dataset_name",
+        lambda task, spec, max_samples=None: (
+            f"{task}@fixed" + (f"[:{max_samples}]" if max_samples else "")
+        ),
     )
 
 
@@ -333,3 +340,25 @@ def test_sync_recipe_skips_a_tasks_items_when_its_dataset_cannot_be_ensured(
     assert all(call["dataset_name"] == "ok_task|0@fixed" for call in item_calls)
     assert len(item_calls) == 2
     assert guard.failures == 1
+
+
+def test_sync_recipe_names_a_capped_task_by_its_cap(monkeypatch):
+    seen = {}
+
+    def fake_iter_documents(config, *, max_samples):
+        seen["max_samples"] = max_samples
+        return [(str(i), {"id": i}) for i in range(max_samples)]
+
+    monkeypatch.setattr(dataset_sync, "iter_documents", fake_iter_documents)
+    config = _StubConfig(
+        prompt_function=lambda row, task_name: _StubDoc(row["id"], choices=["answer"])
+    )
+    _fake_resolve_and_name(monkeypatch, {"stub_task|0": config})
+    guard = LangfuseGuard(FakeLangfuseClient())
+
+    results = dataset_sync.sync_recipe(
+        guard, {"tasks": ["stub_task|0"], "max_samples": 2}
+    )
+
+    assert results == {"stub_task|0": ("stub_task|0@fixed[:2]", 2)}
+    assert seen["max_samples"] == 2

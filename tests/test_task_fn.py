@@ -12,8 +12,12 @@ import json
 import threading
 from typing import cast
 
-import openai
 import pytest
+
+# The evaluation client needs the `eval` extra; a training-only install skips.
+pytest.importorskip("openai")
+
+import openai
 
 from open_r1_tpu.evaluation import task_fn
 from open_r1_tpu.evaluation.runner import GenerationFailed, GenerationRefused

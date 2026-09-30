@@ -87,6 +87,9 @@ The default path is:
   to their command line and wire format rather than to their Python API, both
   of which move faster. Only one process can hold the chip, so evaluation runs
   after training, not beside it.
+- Keep Langfuse optional. An evaluation without `--tracing-config` must need
+  nothing but the vLLM server, and the local and Langfuse paths in
+  `open_r1_tpu.evaluation.experiment` must write identical JSONL records.
 - Keep vLLM out of the project's dependencies. It is a service this package
   invokes, not a library it imports, and its inference stack does not belong in
   the Python 3.13 LightEval/training environment. Use the local image derived
@@ -204,17 +207,20 @@ unresolved-import warning is a real finding.
 Target-TPU preflight:
 
 ```bash
-python -m open_r1_tpu.sft.preflight
+export RECIPE=recipes/Qwen3-1.7B-Math/sft/config_distill.yaml
+python -m open_r1_tpu.sft.preflight --config "$RECIPE"
 ```
 
-Short TPU smoke run:
+Short TPU smoke run, with `RECIPE` set:
 
 ```bash
 ./scripts/run_sft_tpu.sh \
   dataset.max_examples=128 \
   training.max_steps=4 \
   training.gradient_accumulation_steps=1 \
-  training.checkpointing_options.save_interval_steps=2
+  training.checkpointing_options.save_interval_steps=2 \
+  training.checkpoint_dir=/tmp/sft-smoke/checkpoints \
+  export.enabled=false
 ```
 
 Full run:
@@ -223,7 +229,16 @@ Full run:
 ./scripts/run_sft_tpu.sh
 ```
 
-Evaluation preflight and smoke tier, with the `eval` extra installed:
+GRPO (the tested recipe needs a v6e-4):
+
+```bash
+python -m open_r1_tpu.grpo.run \
+  --config recipes/Qwen2.5-1.5B-SimpleRL-Zoo/grpo/config_grpo.yaml
+```
+
+Evaluation preflight and smoke tier, with the `eval` extra installed. Add
+`TRACE_CONFIG=configs/tracing.yaml` to trace the run in Langfuse
+(`docker/langfuse/README.md`):
 
 ```bash
 ./scripts/setup_tpu_vm.sh --with-eval

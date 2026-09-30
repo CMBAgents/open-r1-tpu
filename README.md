@@ -1,24 +1,23 @@
 # open-r1-tpu
 
 `open-r1-tpu` is a TPU-native post-training and evaluation workflow for open
-language models. It supports instruction tuning and reasoning distillation with
-JAX and [Google Tunix](https://github.com/google/tunix).
+language models. It supports instruction tuning, reasoning distillation and
+GRPO with JAX and [Google Tunix](https://github.com/google/tunix).
 
 The repository is organized around complete, repeatable model-development
 runs: train models, save resumable Orbax checkpoints, export merged
 safetensors weights, and evaluate the resulting model against versioned,
 tiered benchmark recipes. Evaluation uses LightEval metrics and fixed task
-definitions, while self-hosted [Langfuse](https://langfuse.com/) records each
-task-and-seed experiment with its inputs, outputs, traces, scores, and
-provenance for inspection and comparison.
+definitions; self-hosted [Langfuse](https://langfuse.com/) can optionally
+record each task-and-seed run with its inputs, outputs, traces and scores.
 
 It includes:
 
-- TPU-focused recipes for instruction tuning and reasoning SFT;
+- TPU-focused recipes for instruction tuning, reasoning SFT and GRPO;
 - reproducible local or GCS-backed data and model staging;
 - checkpointing, model export, and W&B training metrics;
 - multi-seed benchmark evaluation and consensus scoring; and
-- Langfuse-native evaluation tracing and experiment review.
+- optional Langfuse tracing and experiment review.
 
 Deployment-specific values and credentials stay outside the repository; recipes
 and scripts remain portable across TPU VMs.
@@ -45,7 +44,9 @@ corresponding modules inside those subpackages.
 ## Quick start on a TPU VM
 
 Run every step on the TPU VM itself, over SSH. Both scripts are re-runnable, so
-a failed step can simply be repeated.
+a failed step can simply be repeated. The example trains
+[`recipes/Qwen3-1.7B-Math`](recipes/Qwen3-1.7B-Math/sft/config_distill.yaml), a
+full fine-tune of Qwen3-1.7B-Base on OpenR1-Math-220k that fits one v6e chip.
 
 **1. Clone the repository.**
 
@@ -61,9 +62,10 @@ cd open-r1-tpu
 ```
 
 This installs `uv`, the CPython build pinned in `.python-version`, a `.venv`,
-and the project with its test extra. It then confirms JAX sees exactly one TPU
-and runs the unit suite. Add `--skip-verify` if another job is already holding
-the TPU, or `--recreate` to rebuild `.venv` from scratch.
+and the project with its test extra. It then confirms JAX sees the TPU and
+runs the unit suite. Add `--with-eval` to also install the evaluation stack,
+`--skip-verify` if another job is already holding the TPU, or `--recreate` to
+rebuild `.venv` from scratch.
 
 **3. Fill in the private environment file.**
 
@@ -71,10 +73,10 @@ Step 2 writes `~/.open-r1-tpu.env` with every value commented out. Uncomment
 and set the ones you need, then load it:
 
 ```bash
-export GCS_BUCKET=gs://your-bucket        # source bucket for step 4
+export HF_TOKEN=hf_...                    # the recipe loads the base from the Hub
 export WANDB_ENTITY=your-user-or-team     # W&B account or team
 export WANDB_PROJECT=your-project         # W&B project
-export HF_TOKEN=hf_...                    # only for Hub-sourced runs
+export GCS_BUCKET=gs://your-bucket        # only to stage data from a bucket
 ```
 
 ```bash
@@ -86,53 +88,50 @@ Keep deployment-specific values here rather than in the recipe. The file lives
 outside the repository and is created `chmod 600`, so nothing lands in git or
 in shell history.
 
-**4. Copy GCS bucket data.**
+**4. Stage the training data.**
 
 ```bash
-./scripts/copy_gcs_bucket_data.sh
+hf download open-r1/OpenR1-Math-220k --repo-type dataset \
+  --include 'data/*' --local-dir data/OpenR1-Math-220k
 ```
 
-This copies the base model and the dataset from `$GCS_BUCKET` into the ignored
-`models/` and `data/` directories, then reports what arrived. It is only needed
-if you train from bucket data; skip it to pull from the Hub instead. See
-[Copying GCS bucket data](#copying-gcs-bucket-data) for the bucket layout it
-expects.
+The recipe reads these Parquet shards from the ignored `data/` directory. To
+copy data you keep in a GCS bucket instead, see
+[Copying GCS bucket data](#copying-gcs-bucket-data).
 
 **5. Run preflight.**
 
 ```bash
-python -m open_r1_tpu.sft.preflight \
-  model.model_source=local \
-  model.model_path=models/Qwen3-1.7B-Base \
-  tokenizer.tokenizer_path=models/Qwen3-1.7B-Base
+export RECIPE=recipes/Qwen3-1.7B-Math/sft/config_distill.yaml
+python -m open_r1_tpu.sft.preflight --config "$RECIPE"
 ```
-
-Drop the three overrides to validate a Hub-sourced run instead.
 
 **6. Smoke test, then train.**
 
 ```bash
 ./scripts/run_sft_tpu.sh \
-  model.model_source=local \
-  model.model_path=models/Qwen3-1.7B-Base \
-  tokenizer.tokenizer_path=models/Qwen3-1.7B-Base \
-  dataset.name=parquet \
-  dataset.config=null \
-  dataset.data_files='data/Mixture-of-Thoughts/all/*.parquet' \
   training.project_name="${WANDB_PROJECT}" \
   dataset.max_examples=128 \
   training.max_steps=4 \
   training.gradient_accumulation_steps=1 \
-  training.checkpointing_options.save_interval_steps=2
+  training.checkpointing_options.save_interval_steps=2 \
+  training.checkpoint_dir=/tmp/sft-smoke/checkpoints \
+  export.enabled=false
 ```
 
-Drop the last four overrides for the full run. The first step includes JAX/XLA
-compilation and is much slower than the rest.
+Drop every override but the first for the full run: 2,400 optimizer steps that
+write a merged export to `artifacts/Qwen3-1.7B-Math/merged`. The first step
+includes JAX/XLA compilation and is much slower than the rest.
+`run_sft_tpu.sh` trains whichever recipe `RECIPE` names; the smoke writes its
+checkpoints to `/tmp` because training resumes from the newest checkpoint in
+`training.checkpoint_dir`.
 
 ## TPU VM setup
 
-Use standard CPython 3.13 (the repository default is 3.13.14) on a TPU VM with
-one visible device. Do not use the free-threaded `3.13t` build.
+Use standard CPython 3.13 (the repository default is 3.13.14) on a TPU VM. The
+recipes here have run on v6e-1 and v6e-4; `model.mesh.shape` must multiply
+out to the number of visible chips. Do not use the free-threaded `3.13t`
+build.
 
 `scripts/setup_tpu_vm.sh` covers step 2 above. To do the same by hand:
 
@@ -141,11 +140,7 @@ python3.13 -m venv .venv
 source .venv/bin/activate
 uv sync --frozen --extra test
 
-python - <<'PY'
-import jax
-print(jax.devices())
-assert len(jax.devices()) == 1
-PY
+python -c "import jax; print(jax.devices())"
 ```
 
 Set `HF_TOKEN` before launch (Tunix's Hugging Face downloader expects a logged-in
@@ -157,7 +152,7 @@ Validate the environment on the TPU VM itself before downloading the full model
 or starting a training job:
 
 ```bash
-python -m open_r1_tpu.sft.preflight
+python -m open_r1_tpu.sft.preflight --config "$RECIPE"
 ```
 
 This initializes JAX and requires the configured mesh device count to consist
@@ -180,11 +175,13 @@ GCS to local disk without passing through a workstation. The bucket comes from
 ./scripts/copy_gcs_bucket_data.sh
 ./scripts/copy_gcs_bucket_data.sh --bucket gs://another-bucket
 ./scripts/copy_gcs_bucket_data.sh --dataset smoltalk
+./scripts/copy_gcs_bucket_data.sh --model Qwen2.5-1.5B --dataset OpenR1-Math-220k
 ```
 
-It reads `models/Qwen3-1.7B-Base` and `datasets/NAME` from the bucket, writing
-them to `models/Qwen3-1.7B-Base` and `data/NAME` locally. `NAME` comes from
-`--dataset` or `$GCS_DATASET` and defaults to `Mixture-of-Thoughts`; the
+It reads `models/MODEL` and `datasets/NAME` from the bucket, writing them to
+`models/MODEL` and `data/NAME` locally. `MODEL` comes from `--model` or
+`$GCS_MODEL` and defaults to `Qwen3-1.7B-Base`; `NAME` comes from `--dataset`
+or `$GCS_DATASET` and defaults to `Mixture-of-Thoughts`; the
 instruction-tuning corpus is `smoltalk`. Set `$GCS_MODEL_PREFIX`,
 `$GCS_DATA_PREFIX`, or `$GCS_DATA_GLOB` for a different layout. Afterwards it
 reports how many Parquet shards the *training glob* matches — not merely how many
@@ -320,7 +317,9 @@ in the recipes. Pass `--system-prompt` to try one.
 
 ## Smoke test
 
-Start with a short run before allocating a full training job:
+Start with a short run before allocating a full training job. Every
+`run_sft_tpu.sh` example below assumes `RECIPE` names the recipe, as in the
+quick start:
 
 ```bash
 ./scripts/run_sft_tpu.sh \
@@ -371,8 +370,8 @@ so this adds an autoregressive decode, a second XLA compilation, and a KV cache
 to a memory profile validated without them. Enable it once you know you have HBM
 headroom, and watch the first sampling step for an OOM.
 
-Each interval writes one JSON object per prompt to
-`artifacts/OpenR1-Distill-Qwen3-1.7B/transcripts.jsonl`, recording the step, the
+Each interval writes one JSON object per prompt to the recipe's
+`training.transcripts.output_path`, recording the step, the
 prompt, the completion, and flags for whether the reasoning trace was closed and
 whether the token budget was exhausted. That last flag matters when reading the
 output: a completion that used its whole budget was probably cut off, so a
@@ -419,8 +418,8 @@ wandb login
 export WANDB_ENTITY=your-user-or-team
 ```
 
-The default run is named `qwen3-1.7b-reasoning-sft` and grouped under
-`qwen3-1.7b-reasoning-distillation`. These values can be overridden normally:
+Each recipe names its run (`training.run_name`) and group
+(`training.wandb.group`). These values can be overridden normally:
 
 ```bash
 ./scripts/run_sft_tpu.sh \
@@ -478,7 +477,7 @@ train shards and is deliberately excluded: `dataset.data_files` carries no split
 mapping, so every match would be loaded into the train split. The held-out set
 comes from `dataset.eval_fraction` instead.
 
-`run_sft_tpu.sh` defaults to the reasoning recipe; select this one with `RECIPE`:
+Select this recipe with `RECIPE`:
 
 ```bash
 RECIPE=recipes/Qwen3-1.7B-Instruct/sft/config_instruct.yaml \
@@ -506,7 +505,8 @@ The stage writes a merged export to `artifacts/Qwen3-1.7B-Instruct/merged`. Poin
 the reasoning run at it to chain the two:
 
 ```bash
-./scripts/run_sft_tpu.sh \
+RECIPE=recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml \
+  ./scripts/run_sft_tpu.sh \
   model.model_source=local \
   model.model_path=artifacts/Qwen3-1.7B-Instruct/merged
 ```
@@ -518,9 +518,12 @@ that — and sequencing is mainly worth it to isolate what the reasoning stage a
 
 ## Full reasoning SFT
 
+This section follows the Mixture-of-Thoughts LoRA recipe,
+[`recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml`](recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml).
+
 ### The complete run, from bucket data with transcripts
 
-The default recipe runs 5000 optimizer steps. At `gradient_accumulation_steps: 8`
+The recipe runs 5000 optimizer steps. At `gradient_accumulation_steps: 8`
 and `batch_size: 1` that consumes 40,000 examples — well under one epoch of
 `Mixture-of-Thoughts`, whose `all` subset holds roughly 349k rows before length
 filtering. Along the way it writes 20 checkpoints (keeping the newest 2),
@@ -551,6 +554,7 @@ LOCAL_INPUTS=(
 )
 
 mkdir -p artifacts
+export RECIPE=recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml
 ./scripts/run_sft_tpu.sh "${LOCAL_INPUTS[@]}" \
   training.project_name="${WANDB_PROJECT}" \
   training.transcripts.enabled=true \
@@ -643,12 +647,12 @@ loss cannot show, and it is worth stopping for.
 
 ### Overriding the recipe
 
-The recipe is at
-[`recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml`](recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml).
-Any value can be overridden using Tunix-style dotted arguments, for example:
+Any recipe value can be overridden using Tunix-style dotted arguments, for
+example:
 
 ```bash
-./scripts/run_sft_tpu.sh \
+RECIPE=recipes/OpenR1-Distill-Qwen3-1.7B/sft/config_distill.yaml \
+  ./scripts/run_sft_tpu.sh \
   dataset.config=math \
   training.max_steps=1000
 ```
@@ -733,8 +737,11 @@ fine-tune of `Qwen3-1.7B-Base` on `open-r1/OpenR1-Math-220k` at
 `dataset.max_length: 4096`, dropping over-length traces rather than truncating
 them.
 
+This is the recipe the quick start trains:
+
 ```bash
-./scripts/copy_gcs_bucket_data.sh --dataset OpenR1-Math-220k
+hf download open-r1/OpenR1-Math-220k --repo-type dataset \
+  --include 'data/*' --local-dir data/OpenR1-Math-220k
 RECIPE=recipes/Qwen3-1.7B-Math/sft/config_distill.yaml ./scripts/run_sft_tpu.sh
 ```
 
@@ -778,19 +785,22 @@ reaches the right answer unaided. Those are the questions a reasoning stage is
 judged on, and only free generation scored against a reference answers them.
 
 The stack is three decoupled layers. Generation is vLLM on the TPU, serving the
-merged export behind an OpenAI-compatible endpoint. The generation loop
-(`src/open_r1_tpu/evaluation/runner.py`) reaches it directly over the `openai`
-SDK, with no litellm and no proxy in between; scoring calls LightEval's own
-metric objects as a library (`src/open_r1_tpu/evaluation/scoring.py`), which
-for maths is symbolic equivalence via latex2sympy2-extended rather than string
-equality. Prompt templates, dataset coordinates, and metric configuration come
+merged export behind an OpenAI-compatible endpoint.
+`src/open_r1_tpu/evaluation/experiment.py` sends it each document over the
+`openai` SDK, `server.max_concurrency` requests at a time, then scores every
+reply with LightEval's own metric objects as a library
+(`src/open_r1_tpu/evaluation/scoring.py`), which for maths is symbolic
+equivalence via latex2sympy2-extended rather than string equality. Given a
+tracing config, it runs the same generation and scoring through Langfuse so
+every document is traced; see
+[Tracing in Langfuse](#tracing-in-langfuse-optional). Prompt templates, dataset coordinates, and metric configuration come
 from a frozen task pack derived once from LightEval's own task registry
 (`src/open_r1_tpu/evaluation/taskpack.py`, committed as `configs/taskpack.yaml`)
 and re-verified at preflight, so a LightEval upgrade that moves one of them
 fails loudly there instead of silently moving a headline number.
-`src/open_r1_tpu/evaluation/run.py` owns the reduction half — it validates the
-recipe and reduces what the runner wrote into a single summary — and imports
-neither JAX, Tunix, nor vLLM.
+`src/open_r1_tpu/evaluation/run.py` and `reduce.py` own the reduction half —
+they validate the recipe and reduce what the run wrote into a single summary —
+and import neither JAX, Tunix, nor vLLM.
 
 ### Installing and running
 
@@ -906,6 +916,23 @@ local image ID, digest-pinned base image, service package versions, and complete
 constructed server command. Set `SKIP_SERVER=1` to reuse a server that is
 already up.
 
+### Tracing in Langfuse (optional)
+
+Set `TRACE_CONFIG` to trace an evaluation in a self-hosted Langfuse:
+
+```bash
+TRACE_CONFIG=configs/tracing.yaml \
+  RECIPE=recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml ./scripts/run_eval_tpu.sh
+```
+
+The run first syncs each of the recipe's tasks into a Langfuse dataset, then
+runs one Langfuse experiment per task and seed, so every document's prompt,
+completion and scores can be inspected and runs compared side by side. It
+writes the same results files and summary as a local run. A dataset is named
+by its task and a fingerprint of how it is asked and judged, plus `[:N]` when
+the recipe caps it at `eval.max_samples`. `docker/langfuse/README.md` sets up
+the stack and writes `configs/tracing.yaml`.
+
 To update the evaluation environment intentionally, change the exact versions
 in `pyproject.toml` and `src/open_r1_tpu/evaluation/stack.py`, run `uv lock`,
 then repeat the unit suite and TPU smoke evaluation. Updating vLLM requires a
@@ -915,24 +942,25 @@ real TPU smoke run; never replace the digest-pinned Python base with `latest`.
 ### vLLM versus Tunix generation speed
 
 An evaluation's seconds per sample do not establish which inference engine is
-faster. LightEval currently submits one request at a time, leaving vLLM's
-continuous batching idle, while Tunix compiles a static batch shape and samples
-it directly in-process. Run the controlled comparison on the TPU instead:
+faster: it keeps `server.max_concurrency` requests in flight for vLLM's
+continuous batching, while Tunix compiles a static batch shape and samples it
+directly in-process. Run the controlled comparison on the TPU instead:
 
 ```bash
 ./scripts/benchmark_generation_tpu.sh
 ```
 
-The launcher serves the merged export with vLLM, measures it, releases the TPU,
-then loads the same export into Tunix's direct `Sampler` and measures that. The
-default workload covers batch/concurrency 1 (the current LightEval path) and 8,
+The launcher serves the export the eval recipe names (`server.model_path`, or
+`MODEL_PATH`) with vLLM, measures it, releases the TPU, then loads the same
+export into Tunix's direct `Sampler` and measures that. The default workload
+covers batch/concurrency 1 and 8,
 using the same 16 distinct, pre-rendered prompts, two measured repetitions,
 greedy decoding, and 128 forced output tokens. One warm-up batch per shape is
 excluded from steady-state throughput; server/model startup and warm-up times
 are retained separately. Tunix flash attention is disabled for this short-prompt
 inference workload, avoiding its 1024-token splash block padding requirement.
 
-Raw results land in `artifacts/Qwen3-1.7B-Math/generation-speed/{vllm,tunix}.json`.
+Raw results land in `generation-speed/{vllm,tunix}.json` beside the export.
 `comparison.json` and `comparison.md` report output tokens per second, samples
 per second, and the Tunix/vLLM ratio at each matching batch size. This is a speed
 test only: EOS is deliberately ignored so both engines execute exactly the same
@@ -1161,43 +1189,48 @@ The default `export.overwrite=true` replaces that specific merged-output
 directory on a repeated run; checkpoint and model-cache directories are guarded
 against accidental use as export targets.
 
-Use that merged directory as the initial policy **and** frozen reference model
-for GRPO. In a Tunix Qwen3 GRPO recipe, replace the base-model safetensors path
-used by `create_model_from_safe_tensors(...)` with this directory. Keeping the
-reference fixed at the SFT initialization makes GRPO's KL term constrain policy
-updates relative to the distilled model rather than the original base model.
+Use that merged directory as the starting point for GRPO: set a GRPO recipe's
+`model.model_path` to it. GRPO loads it twice, as the policy (with a fresh
+LoRA adapter) and as the frozen reference whose KL term keeps policy updates
+close to the distilled model rather than the original base.
 
-Merged export currently depends on Tunix's model-specific exporter. The default
-Qwen3 recipe supports it. The pinned Tunix has none for Qwen2, so
-`open_r1_tpu.model.export` supplies one on Tunix's generic merge
-(`save_qwen2_lora_merged_model_as_safetensors`, which reuses Qwen3's key rules
-because the two families name and lay out their projections alike). It has not
-yet run on a TPU: `tests/test_qwen2_lora_export.py` checks it against the staged
-Qwen2.5-1.5B base on the VM, and until that passes GRPO recipes keep
-`export.enabled=false` behind `export.i_have_verified_qwen2_lora_export`. For
-other families, set `export.enabled=false` unless that Tunix params module
-provides `save_lora_merged_model_as_safetensors`.
+Merged LoRA export uses Tunix's model-specific exporter for Qwen3. The pinned
+Tunix has none for Qwen2, so `open_r1_tpu.model.export` supplies one on
+Tunix's generic merge (`save_qwen2_lora_merged_model_as_safetensors`, which
+reuses Qwen3's key rules because the two families name and lay out their
+projections alike); `tests/test_qwen2_lora_export.py` checks it against a
+staged Qwen2.5-1.5B on the VM. For other families, set `export.enabled=false`
+unless that Tunix params module provides
+`save_lora_merged_model_as_safetensors`.
 
-**A GRPO training pipeline is implemented**, targeting
-`OpenR1-Distill-Qwen2.5-Math-1.5B`'s merged SFT export rather than Qwen3:
-`src/open_r1_tpu/grpo/run.py` (the `tunix.rl` orchestration —
-actor/reference loading, the RL cluster, the GRPO learner),
-`src/open_r1_tpu/grpo/data.py` (prompt-and-gold-answer dataset
-loading) and `src/open_r1_tpu/grpo/rewards.py` (format and correctness
-reward functions; a repetition-penalty reward is deferred to keep this a
-core GRPO implementation first), driven by
-`recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/grpo/config_grpo.yaml`. The
-prompt set is `open-r1/DAPO-Math-17k-Processed` (`en` config, staged with
-`./scripts/copy_gcs_bucket_data.sh --dataset DAPO-Math-17k-Processed`), not
-the SFT corpus: the recipe's `dataset` comment explains why. Its API
-usage was verified directly against this project's pinned Tunix commit's
-source rather than assumed from an example notebook (see `grpo/run.py`'s
-module docstring), but nothing here has been run on a TPU yet. Before
-spending chip time, confirm those API assumptions and the Qwen2 LoRA-export
-gap above against whatever Tunix version is actually installed, then measure
-a short smoke run. Same restriction as everywhere else in this section: the exact Qwen2
-LoRA-merge export path is unverified, so this recipe's `export.enabled`
-defaults to `false`.
+## GRPO
+
+`python -m open_r1_tpu.grpo.run` trains a LoRA policy with Tunix's GRPO
+learner. `src/open_r1_tpu/grpo/run.py` loads the policy and reference and
+builds the RL cluster, `data.py` loads prompts with their gold answers, and
+`rewards.py` holds the reward functions a recipe selects with
+`grpo.reward_functions`. The tested recipe reproduces SimpleRL-Zoo on
+Qwen2.5-1.5B on a v6e-4:
+
+```bash
+hf download hkust-nlp/SimpleRL-Zoo-Data --repo-type dataset \
+  --include "simplelr_abel_level3to5/*" --local-dir data/SimpleRL-Zoo-Data
+hf download Qwen/Qwen2.5-1.5B --local-dir models/Qwen2.5-1.5B
+python -m open_r1_tpu.grpo.run \
+  --config recipes/Qwen2.5-1.5B-SimpleRL-Zoo/grpo/config_grpo.yaml
+```
+
+Its 400 steps take about 14 hours and end with a merged export in
+`artifacts/Qwen2.5-1.5B-SimpleRL-Zoo/grpo/merged`. Qwen2 GRPO on the pinned
+Tunix needs `model.dtype: float32` and `model.use_flash_attention: false`:
+splash attention and bfloat16 both corrupt the rollouts, as the recipe header
+explains. If a multi-chip start fails with `START_SESSION failed` after an
+earlier run crashed, `LIBTPU_INIT_ARGS=--noenable_tpunetd_client` lets libtpu
+build the slice itself.
+
+`recipes/OpenR1-Distill-Qwen2.5-Math-1.5B/grpo/config_grpo.yaml` runs GRPO on
+a distilled SFT export with `open-r1/DAPO-Math-17k-Processed` prompts; it has
+not been run.
 
 ### A positive control: reproducing SimpleRL-Zoo on Qwen2.5-1.5B
 
@@ -1205,17 +1238,16 @@ defaults to `false`.
 published RL result. SimpleRL-Zoo (arXiv 2503.18892) trained the Qwen2.5-1.5B
 base with GRPO and a correctness-only reward on 8,523 MATH level 3-5 problems
 and reports GSM8K 55.7 → 74.4 and MATH-500 29.6 → 59.0; their trained model
-is public. A pipeline that works should take the same base most of the way to
-that model when both are scored the same way.
+is public. Scored the same way, this recipe's export reaches GSM8K 68.2 (first
+200 problems) and MATH-500 54.7, against 74.5 and 57.2 for their checkpoint.
 
 - `grpo/config_grpo.yaml` copies their data, plain-text "Abel" prompt (as a
   chat template), stop tokens, 1/0 reward (`math_answer_reward`, which reads
   the answer in their order) and GRPO settings (8 rollouts, temperature 1.0,
   KL 1e-4 with the low-variance estimator, token-mean loss). It cannot copy
-  their scale: 16 prompts per step on one v6e-1 against their 1,024, LoRA
+  their scale: 16 prompts per step on a v6e-4 against their 1,024, LoRA
   against a full fine-tune, and 2,048 new tokens against 8,192. The header
-  lists every difference, the staging commands, and the gates before the
-  real run.
+  lists every difference.
 - `eval/tier1_core.yaml` scores GSM8K and MATH-500 at their generation
   settings (temperature 1.0, top-p 0.95, 16,000 tokens), over three seeds.
   Run it on the base, their checkpoint and this run's export, each staged

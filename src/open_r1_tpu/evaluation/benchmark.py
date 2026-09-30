@@ -660,6 +660,9 @@ def _add_run_parser(subparsers: Any) -> None:
         action="store_true",
         help="Use Tunix splash attention; requires a block-aligned prompt length",
     )
+    parser.add_argument(
+        "overrides", nargs="*", help="Dotted overrides for the eval recipe"
+    )
 
 
 def _add_compare_parser(subparsers: Any) -> None:
@@ -691,7 +694,9 @@ def _run_command(args: argparse.Namespace) -> None:
                 f"size {batch_size}"
             )
 
-    eval_settings = resolve_eval_settings(load_eval_config(args.eval_config))
+    eval_settings = resolve_eval_settings(
+        load_eval_config(args.eval_config, args.overrides)
+    )
     model_path = str(args.model_path or eval_settings["model_path"])
     tokenizer = _load_tokenizer(model_path)
     questions = benchmark_questions(args.prompt_count)

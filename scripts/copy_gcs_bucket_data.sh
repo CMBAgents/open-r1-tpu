@@ -10,27 +10,30 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MODEL_DIR="models/Qwen3-1.7B-Base"
-MODEL_PREFIX="${GCS_MODEL_PREFIX:-models/Qwen3-1.7B-Base}"
+MODEL="${GCS_MODEL:-Qwen3-1.7B-Base}"
 DATASET="${GCS_DATASET:-Mixture-of-Thoughts}"
 BUCKET="${GCS_BUCKET:-}"
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/copy_gcs_bucket_data.sh [--bucket gs://BUCKET] [--dataset NAME]
+Usage: scripts/copy_gcs_bucket_data.sh [--bucket gs://BUCKET] [--model NAME]
+                                       [--dataset NAME]
 
-Copies the base model and one training dataset from a GCS bucket into the
+Copies a base model and one training dataset from a GCS bucket into the
 repository's ignored models/ and data/ directories.
 
   --bucket gs://BUCKET   Source bucket. Defaults to $GCS_BUCKET.
+  --model NAME           Model directory name. Defaults to $GCS_MODEL, or
+                         Qwen3-1.7B-Base.
   --dataset NAME         Dataset directory name. Defaults to $GCS_DATASET, or
                          Mixture-of-Thoughts. Also accepts smoltalk, the
                          instruction-tuning corpus, its smol-smoltalk variant,
                          OpenR1-Math-220k, the math reasoning corpus, and
                          DAPO-Math-17k-Processed, the GRPO prompt set.
 
-Objects are read from datasets/NAME and written to data/NAME. Override the
-layout with $GCS_MODEL_PREFIX, $GCS_DATA_PREFIX, and $GCS_DATA_GLOB.
+Objects are read from the bucket's models/NAME and datasets/NAME and written
+to models/NAME and data/NAME. Override the bucket layout with
+$GCS_MODEL_PREFIX, $GCS_DATA_PREFIX, and $GCS_DATA_GLOB.
 USAGE
 }
 
@@ -42,6 +45,14 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       BUCKET="$2"
+      shift
+      ;;
+    --model)
+      if [[ $# -lt 2 ]]; then
+        echo "--model requires a name" >&2
+        exit 2
+      fi
+      MODEL="$2"
       shift
       ;;
     --dataset)
@@ -58,6 +69,8 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+MODEL_DIR="models/${MODEL}"
+MODEL_PREFIX="${GCS_MODEL_PREFIX:-models/${MODEL}}"
 DATA_DIR="data/${DATASET}"
 DATA_PREFIX="${GCS_DATA_PREFIX:-datasets/${DATASET}}"
 # The training glob is per-corpus because the shard layouts differ, and because
@@ -135,8 +148,8 @@ log "Done. Local-input overrides for preflight and training:"
 cat <<NEXT
 
   model.model_source=local \\
-  model.model_path=models/Qwen3-1.7B-Base \\
-  tokenizer.tokenizer_path=models/Qwen3-1.7B-Base \\
+  model.model_path=${MODEL_DIR} \\
+  tokenizer.tokenizer_path=${MODEL_DIR} \\
   dataset.name=parquet \\
   dataset.config=null \\
   dataset.data_files='${DATA_DIR}/${DATA_GLOB}'

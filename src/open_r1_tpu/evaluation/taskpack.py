@@ -212,6 +212,20 @@ def _metric_spec(metric: Any) -> MetricSpec:
     )
 
 
+# A rendered example's `specific` above this size is summarised rather than
+# committed: `lcb:codegeneration`'s holds every test case for the problem,
+# tens of megabytes for one row.
+_EXAMPLE_SPECIFIC_MAX_CHARS = 2_000
+
+
+def _example_specific(specific: Any) -> Any:
+    size = len(json.dumps(specific, sort_keys=True, default=str))
+    if size <= _EXAMPLE_SPECIFIC_MAX_CHARS:
+        return specific
+    keys = sorted(specific) if isinstance(specific, Mapping) else None
+    return {"omitted_chars": size, "keys": keys}
+
+
 def _render_example(config: Any) -> dict[str, Any]:
     """Render one real dataset row's prompt, for human review and drift
     detection. Best-effort: see the module docstring for why a fetch failure
@@ -238,7 +252,7 @@ def _render_example(config: Any) -> dict[str, Any]:
         "query": doc.query,
         "choices": list(doc.choices),
         "gold_index": doc.gold_index,
-        "specific": doc.specific,
+        "specific": _example_specific(doc.specific),
     }
 
 
@@ -305,12 +319,15 @@ def dataset_fingerprint(spec: TaskSpec) -> str:
     return sha256(canonical.encode("utf-8")).hexdigest()[:8]
 
 
-def dataset_name(task: str, spec: TaskSpec) -> str:
-    """`{task}@{fingerprint}` -- the Langfuse dataset name
-    `evaluation.dataset_sync` upserts into and `evaluation.experiment` reads
-    back from. See `dataset_fingerprint`.
+def dataset_name(task: str, spec: TaskSpec, max_samples: int | None = None) -> str:
+    """`{task}@{fingerprint}`, plus `[:N]` when the recipe caps the task at
+    `N` documents -- the Langfuse dataset name `evaluation.dataset_sync`
+    upserts into and `evaluation.experiment` reads back from. A capped and an
+    uncapped run never share a dataset, since `run_experiment` scores every
+    item a dataset holds. See `dataset_fingerprint`.
     """
-    return f"{task}@{dataset_fingerprint(spec)}"
+    name = f"{task}@{dataset_fingerprint(spec)}"
+    return f"{name}[:{max_samples}]" if max_samples else name
 
 
 def derive_taskpack(tasks: Sequence[str] = KNOWN_TASKS) -> dict[str, Any]:

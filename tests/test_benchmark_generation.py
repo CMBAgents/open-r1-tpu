@@ -150,7 +150,13 @@ def test_run_command_uses_the_recipes_system_prompt_verbatim(
     # exactly that text -- neither gets substituted here.
     captured = {}
 
-    monkeypatch.setattr(benchmark, "load_eval_config", lambda path: {})
+    loaded = {}
+
+    def fake_load_eval_config(path, overrides):
+        loaded["overrides"] = overrides
+        return {}
+
+    monkeypatch.setattr(benchmark, "load_eval_config", fake_load_eval_config)
     monkeypatch.setattr(
         benchmark,
         "resolve_eval_settings",
@@ -182,11 +188,15 @@ def test_run_command_uses_the_recipes_system_prompt_verbatim(
         seed=0,
         startup_seconds=None,
         output=str(tmp_path / "out.json"),
+        overrides=["server.port=8123"],
     )
 
     benchmark._run_command(args)
 
     assert captured["system_prompt"] == system_prompt
+    # The recipe is read with the server's own overrides, so both agree on
+    # the port and served model.
+    assert loaded["overrides"] == ["server.port=8123"]
 
 
 def test_eval_config_and_sft_config_are_required():

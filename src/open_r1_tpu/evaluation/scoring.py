@@ -64,6 +64,20 @@ def build_doc(prompt_function: Any, row: Mapping[str, Any], task_name: str) -> A
     return doc
 
 
+def single_gold(doc: Any, task_name: str, doc_id: str) -> str:
+    """The document's one gold answer. Every JSONL record carries it for
+    `evaluation.consensus`, and `doc_from_item` rebuilds a single-choice
+    `Doc` from it, so a multi-gold document is rejected rather than guessed.
+    """
+    golds = doc.get_golds()
+    if len(golds) != 1:
+        raise ValueError(
+            f"{task_name} document {doc_id}: only a single gold per document is "
+            f"supported, got {len(golds)} golds"
+        )
+    return golds[0]
+
+
 def build_model_response(raw_text: str) -> Any:
     """Construct the `ModelResponse` a LightEval metric expects from one raw
     completion, with the reasoning-tag strip already applied.

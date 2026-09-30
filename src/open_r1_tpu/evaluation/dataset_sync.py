@@ -1,11 +1,12 @@
 """Sync one recipe's tasks into Langfuse datasets.
 
-Task 1 of `eval-langfuse-native-plan.md`: builds the Langfuse datasets that
-`evaluation.experiment`'s `dataset.run_experiment()` drives. One dataset per
-task, one item per document -- the same documents `evaluation.runner` used to
-generate against directly (`taskpack.resolve_task_configs`,
-`runner.iter_documents`, `runner.render_messages`), so a document's identity
-and prompt are identical whichever half of the pipeline produced them.
+Builds the Langfuse datasets that `evaluation.experiment`'s
+`dataset.run_experiment()` drives, and runs automatically at the start of
+every Langfuse-traced evaluation. One dataset per task, one item per document
+-- the same documents the local path generates against
+(`taskpack.resolve_task_configs`, `runner.iter_documents`,
+`runner.render_messages`), so a document's identity and prompt are identical
+whichever path produced them.
 
 **`expected_output` is LightEval's gold string, not the bare answer.**
 `math_500`'s prompt function sets `choices=["ANSWER: {solution}"]` with
@@ -27,7 +28,8 @@ keeps every task correct, not just the deterministic ones.
 **Dataset naming is `{task}@{fingerprint}`** (`taskpack.dataset_name`), so a
 change to what is asked or how it is judged (dataset coordinates, revision,
 prompt function, metrics) yields a new dataset rather than silently mixing
-incomparable runs together. Item ids are `uuid5(dataset_name, doc_id)`, so
+incomparable runs together; a recipe's `eval.max_samples` cap adds `[:N]`.
+Item ids are `uuid5(dataset_name, doc_id)`, so
 re-running this module against an unchanged task upserts every item and
 creates nothing new -- this is also the recovery path for the ephemeral VM
 Langfuse stack; see `docker/langfuse/README.md`.
@@ -44,7 +46,7 @@ before `sync_task`'s per-document loop, and skips that task's items entirely
 if it fails, rather than attempting (and failing) every one of them
 individually against a dataset known not to exist.
 
-Run from the repository root::
+To sync without evaluating, run from the repository root::
 
     python -m open_r1_tpu.evaluation.dataset_sync \\
       --config recipes/Qwen3-1.7B-Math/eval/tier1_core.yaml \\
@@ -118,19 +120,10 @@ def sync_task(
     documents = iter_documents(config, max_samples=max_samples)
     for doc_id, row in documents:
         doc = scoring.build_doc(config.prompt_function, row, task)
-        messages = render_messages(doc, system_prompt)
-        golds = doc.get_golds()
-        if len(golds) != 1:
-            raise ValueError(
-                f"{task} document {doc_id}: dataset_sync only supports a "
-                "single gold per document -- evaluation.scoring.doc_from_item "
-                f"rebuilds a single-choice Doc at scoring time -- got "
-                f"{len(golds)} golds"
-            )
         guard.create_dataset_item(
             dataset_name=name,
-            input=messages,
-            expected_output=golds[0],
+            input=render_messages(doc, system_prompt),
+            expected_output=scoring.single_gold(doc, task, doc_id),
             metadata={
                 "task": task,
                 "doc_id": doc_id,
@@ -155,7 +148,9 @@ def sync_recipe(
     for task in task_names:
         config = resolved[task]
         spec = derive_task_spec(task, config)
-        name = taskpack_dataset_name(task, spec)
+        name = taskpack_dataset_name(
+            task, spec, max_samples=settings.get("max_samples")
+        )
         if not ensure_dataset(guard, name):
             LOGGER.warning(
                 "could not ensure dataset %s exists; skipping %s's documents "

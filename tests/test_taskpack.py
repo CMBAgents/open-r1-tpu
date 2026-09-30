@@ -139,6 +139,26 @@ def test_dataset_name_format():
     assert name == f"gsm8k|0@{taskpack.dataset_fingerprint(spec)}"
 
 
+def test_a_capped_task_gets_its_own_dataset_name():
+    spec = _spec()
+    capped = taskpack.dataset_name("gsm8k|0", spec, max_samples=200)
+    assert capped == f"gsm8k|0@{taskpack.dataset_fingerprint(spec)}[:200]"
+    assert capped != taskpack.dataset_name("gsm8k|0", spec)
+    assert taskpack.dataset_name("gsm8k|0", spec, max_samples=None) == (
+        taskpack.dataset_name("gsm8k|0", spec)
+    )
+
+
+def test_a_large_example_specific_is_summarised_not_committed():
+    small = {"instruction_id_list": ["punctuation:no_comma"]}
+    assert taskpack._example_specific(small) == small
+    assert taskpack._example_specific(None) is None
+    large = {"inputs": ["x" * 5_000], "outputs": ["y"]}
+    summary = taskpack._example_specific(large)
+    assert summary["keys"] == ["inputs", "outputs"]
+    assert summary["omitted_chars"] > 5_000
+
+
 def test_verify_missing_pack_file_is_a_named_error(tmp_path):
     errors, warnings = taskpack.verify_task_specs(tmp_path / "nope.yaml", ["gsm8k|0"])
     assert errors and "could not read task pack" in errors[0]

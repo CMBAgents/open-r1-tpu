@@ -6,8 +6,9 @@ set -euo pipefail
 # hold the TPU. Startup and one compilation/warm-up batch per shape are recorded
 # separately from steady-state throughput.
 #
-# Defaults exercise the current serial evaluation shape (1) and a throughput
-# shape (8), using 16 distinct prompts and two measured repetitions:
+# Defaults exercise a serial shape (1) and a throughput shape (8), using 16
+# distinct prompts and two measured repetitions, on the export the eval recipe
+# names (server.model_path):
 #
 #   ./scripts/benchmark_generation_tpu.sh
 #
@@ -16,20 +17,49 @@ set -euo pipefail
 #
 #   MODEL_PATH=models/Qwen3-1.7B-Base \
 #     ./scripts/benchmark_generation_tpu.sh \
-#       server.serve_command='["/home/me/.venv-vllm/bin/vllm", "serve"]' \
+#       server.serve_command='["/opt/vllm-venv/bin/vllm", "serve"]' \
 #       server.image=null
 
 EVAL_RECIPE="${EVAL_RECIPE:-recipes/Qwen3-1.7B-Math/eval/tier0_smoke.yaml}"
 SFT_RECIPE="${SFT_RECIPE:-recipes/Qwen3-1.7B-Math/sft/config_distill.yaml}"
-MODEL_PATH="${MODEL_PATH:-artifacts/Qwen3-1.7B-Math/merged}"
-OUTPUT_DIR="${OUTPUT_DIR:-artifacts/Qwen3-1.7B-Math/generation-speed}"
-SERVER_LOG="${SERVER_LOG:-${OUTPUT_DIR}/vllm-serve.log}"
 PROMPT_COUNT="${PROMPT_COUNT:-16}"
 REPEATS="${REPEATS:-2}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-128}"
 MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-256}"
 BATCH_SIZES="${BATCH_SIZES:-1 8}"
 MAX_MODEL_LEN=$((MAX_PROMPT_LENGTH + MAX_NEW_TOKENS))
+
+# Every command below reads the eval recipe with the same overrides, so the
+# served model, port and context window cannot drift apart.
+OVERRIDES=(
+  "server.max_model_len=$MAX_MODEL_LEN"
+  "sampling.max_new_tokens=$MAX_NEW_TOKENS"
+)
+if [[ -n "${MODEL_PATH:-}" ]]; then
+  OVERRIDES+=("server.model_path=$MODEL_PATH")
+fi
+OVERRIDES+=("$@")
+
+read_setting() {
+  python3 - "$EVAL_RECIPE" "$1" "${OVERRIDES[@]}" <<'PY'
+import sys
+
+from open_r1_tpu.evaluation.run import load_eval_config, resolve_settings
+
+recipe, key, *overrides = sys.argv[1:]
+print(resolve_settings(load_eval_config(recipe, overrides))[key])
+PY
+}
+
+MODEL_PATH="$(read_setting model_path)"
+BASE_URL="$(read_setting base_url)"
+if [[ ! -d "$MODEL_PATH" ]]; then
+  echo "No merged export at $MODEL_PATH. Train the recipe that writes it, or" >&2
+  echo "set MODEL_PATH to an existing export." >&2
+  exit 1
+fi
+OUTPUT_DIR="${OUTPUT_DIR:-$(dirname "$MODEL_PATH")/generation-speed}"
+SERVER_LOG="${SERVER_LOG:-${OUTPUT_DIR}/vllm-serve.log}"
 
 SERVER_PID=""
 
@@ -53,10 +83,7 @@ mkdir -p "$OUTPUT_DIR"
 SERVER_CMD="$(python3 -m open_r1_tpu.evaluation.run \
   --config "$EVAL_RECIPE" \
   --print-server-command \
-  "server.model_path=$MODEL_PATH" \
-  "server.max_model_len=$MAX_MODEL_LEN" \
-  "sampling.max_new_tokens=$MAX_NEW_TOKENS" \
-  "$@")"
+  "${OVERRIDES[@]}")"
 echo "Starting: $SERVER_CMD" >&2
 echo "Server log: $SERVER_LOG" >&2
 SECONDS=0
@@ -73,7 +100,8 @@ if ! kill -0 "$SERVER_PID" 2>/dev/null; then
 fi
 
 python3 -c \
-  "from open_r1_tpu.evaluation.run import wait_for_server; wait_for_server('http://127.0.0.1:8000/v1')"
+  "import sys; from open_r1_tpu.evaluation.run import wait_for_server; wait_for_server(sys.argv[1])" \
+  "$BASE_URL"
 VLLM_STARTUP_SECONDS="$SECONDS"
 
 # shellcheck disable=SC2086 # BATCH_SIZES is intentionally a whitespace list.
@@ -87,7 +115,8 @@ python3 -m open_r1_tpu.evaluation.benchmark run \
   --repeats "$REPEATS" \
   --max-new-tokens "$MAX_NEW_TOKENS" \
   --max-prompt-length "$MAX_PROMPT_LENGTH" \
-  --startup-seconds "$VLLM_STARTUP_SECONDS"
+  --startup-seconds "$VLLM_STARTUP_SECONDS" \
+  "${OVERRIDES[@]}"
 
 stop_server
 
@@ -102,7 +131,8 @@ python3 -m open_r1_tpu.evaluation.benchmark run \
   --prompt-count "$PROMPT_COUNT" \
   --repeats "$REPEATS" \
   --max-new-tokens "$MAX_NEW_TOKENS" \
-  --max-prompt-length "$MAX_PROMPT_LENGTH"
+  --max-prompt-length "$MAX_PROMPT_LENGTH" \
+  "${OVERRIDES[@]}"
 
 python3 -m open_r1_tpu.evaluation.benchmark compare \
   --vllm "$OUTPUT_DIR/vllm.json" \
