@@ -13,7 +13,8 @@
 #   python scripts/set_rope.py models/Qwen2.5-Math-1.5B-RoPE-300k \
 #     --rope-theta 300000 --max-position-embeddings 32768
 # Launch:
-#   RECIPE=recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml ./scripts/run_sft_tpu.sh
+#   python -m open_r1_tpu.sft.run \
+#     --config recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml
 model:
   model_name: qwen2.5-math-1.5b
   model_id: Qwen/Qwen2.5-Math-1.5B

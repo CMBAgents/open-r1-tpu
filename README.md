@@ -105,7 +105,7 @@ Check the environment, run a four-step smoke test, then train:
 export RECIPE=recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml
 python -m open_r1_tpu.sft.preflight --config "$RECIPE"
 
-./scripts/run_sft_tpu.sh \
+python -m open_r1_tpu.sft.run --config "$RECIPE" \
   dataset.max_examples=128 training.max_steps=4 \
   training.gradient_accumulation_steps=1 \
   training.checkpointing_options.save_interval_steps=2 \
@@ -113,7 +113,7 @@ python -m open_r1_tpu.sft.preflight --config "$RECIPE"
   training.metrics_log_dir=/tmp/sft-smoke/logs \
   training.wandb.enabled=false export.enabled=false
 
-./scripts/run_sft_tpu.sh training.project_name="${WANDB_PROJECT}"
+python -m open_r1_tpu.sft.run --config "$RECIPE" training.project_name="${WANDB_PROJECT}"
 ```
 
 The full run is 6,710 steps, about 19 hours, and ends with a merged export in

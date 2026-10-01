@@ -119,7 +119,7 @@ scores.
 
 On a single host this stack shares CPU and disk with the vLLM container. Stop
 it (`scripts/run_langfuse_stack.sh down`), or run it on its own host, before
-the generation speed benchmark.
+timing generation.
 
 ## Python environment
 

@@ -234,24 +234,6 @@ Set `reporting.wandb.run_id` to the training run's W&B id to log these on the
 same run as the loss curves. W&B resumes by id, not by name, so without one
 they go to a new run.
 
-## vLLM versus Tunix generation speed
-
-An evaluation's time per sample does not compare the engines, because vLLM
-batches many concurrent requests while Tunix samples a fixed batch. For a
-controlled comparison:
-
-```bash
-./scripts/benchmark_generation_tpu.sh
-```
-
-It serves the eval recipe's export (`server.model_path`, or `MODEL_PATH`) with
-vLLM and measures it, frees the TPU, then does the same with Tunix's
-`Sampler`. Both see the same 16 prompts at batch sizes 1 and 8, greedy, with
-exactly 128 output tokens (EOS ignored), after one warm-up batch per size.
-Results go to `generation-speed/` beside the export, with `comparison.md`
-giving tokens and samples per second and the Tunix/vLLM ratio. It measures
-speed only.
-
 ## Limits
 
 - **Only generative tasks.** An OpenAI-compatible server returns no

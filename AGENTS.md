@@ -21,11 +21,10 @@ guides. This file holds the rules for changing the code.
   task pack, the stack pins and the preflight.
 - `recipes/<base model>/{sft,grpo,eval}/`: one YAML per dataset (training) or
   tier (evaluation).
-- `scripts/`: shell launchers (`setup_tpu_vm.sh`, `run_sft_tpu.sh`,
-  `run_eval_tpu.sh`, `run_vllm_tpu_container.sh`, `copy_gcs_bucket_data.sh`,
-  with shared helpers in `scripts/lib/`) and standalone tools (chat,
-  completion, checkpoint export, RoPE editing, staging a model for
-  evaluation, generation benchmarking, Langfuse setup).
+- `scripts/`: shell launchers (`setup_tpu_vm.sh`, `run_eval_tpu.sh`,
+  `run_vllm_tpu_container.sh`, with shared helpers in `scripts/lib/`) and
+  standalone tools (chat, completion, checkpoint export, RoPE editing,
+  staging a model for evaluation, Langfuse setup).
 - `docker/vllm-tpu/`: the pinned vLLM TPU image. `docker/langfuse/`: the
   optional self-hosted Langfuse stack.
 - `configs/`: the frozen LightEval task pack and the tracing config template.

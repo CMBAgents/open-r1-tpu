@@ -106,7 +106,7 @@ if [[ ${WITH_EVAL} -eq 1 ]]; then
 fi
 
 # --- Run-time environment file -------------------------------------------
-# Kept outside the repository so bucket, W&B names and tokens never land in
+# Kept outside the repository so W&B names and tokens never land in
 # git. W&B reads WANDB_ENTITY itself; the project name is passed to training as
 # an override (see the next steps below).
 if [[ -f "${ENV_FILE}" ]]; then
@@ -116,7 +116,6 @@ else
   cat > "${ENV_FILE}" <<'ENVFILE'
 # Sourced before training. Not tracked by git; fill in and keep private.
 export PATH="${HOME}/.local/bin:${PATH}"
-# export GCS_BUCKET=gs://your-bucket
 # export WANDB_ENTITY=your-wandb-entity
 # export WANDB_PROJECT=your-wandb-project
 # export HF_TOKEN=hf_...
@@ -146,7 +145,7 @@ fi
 log "Done. Next steps:"
 cat <<NEXT
 
-  # 1. Fill in the bucket, W&B names, and token; the template ships commented out.
+  # 1. Fill in the W&B names and token; the template ships commented out.
   \$EDITOR ${ENV_FILE}
   source ${ENV_FILE}
   source ${VENV_DIR}/bin/activate
@@ -156,8 +155,9 @@ cat <<NEXT
   # 3. Preflight, then launch:
   python -m open_r1_tpu.sft.preflight \\
     --config recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml
-  RECIPE=recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml \\
-    scripts/run_sft_tpu.sh training.project_name="\${WANDB_PROJECT}"
+  python -m open_r1_tpu.sft.run \\
+    --config recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml \\
+    training.project_name="\${WANDB_PROJECT}"
 NEXT
 
 if [[ ${WITH_EVAL} -eq 1 ]]; then

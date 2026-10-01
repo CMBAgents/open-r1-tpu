@@ -1,6 +1,6 @@
 # Training
 
-SFT (`scripts/run_sft_tpu.sh`, or `python -m open_r1_tpu.sft.run`) and GRPO
+SFT (`python -m open_r1_tpu.sft.run`) and GRPO
 (`python -m open_r1_tpu.grpo.run`) share the recipe loader, checkpointing,
 export and logging described here. The README's quick start is the short
 path; this page covers the rest.
@@ -36,18 +36,14 @@ export is supported for its model.
 Tunix's Hugging Face loader contacts the Hub even when the weights are already
 on disk, so data kept in a bucket is copied to local disk and loaded with the
 recipe's local loaders. Run the copy on the VM, which authenticates with its
-service account:
+service account; a re-run resumes an interrupted copy:
 
 ```bash
-./scripts/copy_gcs_bucket_data.sh --bucket gs://your-bucket
-./scripts/copy_gcs_bucket_data.sh --model Qwen2.5-1.5B --dataset SimpleRL-Zoo-Data
+gcloud storage rsync --recursive gs://your-bucket/Qwen2.5-Math-1.5B-RoPE-300k \
+  models/Qwen2.5-Math-1.5B-RoPE-300k
+gcloud storage rsync --recursive gs://your-bucket/OpenR1-Math-220k \
+  data/OpenR1-Math-220k
 ```
-
-It copies `models/<model>` and `datasets/<dataset>` from the bucket to
-`models/<model>` and `data/<dataset>`. The bucket, model and dataset also come
-from `$GCS_BUCKET`, `$GCS_MODEL` and `$GCS_DATASET`; `--help` lists the
-defaults and the layout variables. It reports how many Parquet shards the
-training glob matches, and a re-run resumes an interrupted copy.
 
 Orbax checkpoints can go straight to a `gs://` directory. Merged export must
 go to local disk; copy the finished directory to GCS afterwards with
@@ -58,7 +54,7 @@ go to local disk; copy the finished directory to GCS afterwards with
 Run a few steps before a full job. With `RECIPE` set:
 
 ```bash
-./scripts/run_sft_tpu.sh \
+python -m open_r1_tpu.sft.run --config "$RECIPE" \
   dataset.max_examples=128 training.max_steps=4 \
   training.gradient_accumulation_steps=1 \
   training.checkpointing_options.save_interval_steps=2 \
@@ -82,8 +78,8 @@ tmux new -s sft
 source ~/.open-r1-tpu.env && source .venv/bin/activate
 export RECIPE=recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml
 mkdir -p artifacts
-./scripts/run_sft_tpu.sh training.project_name="${WANDB_PROJECT}" \
-  2>&1 | tee -a artifacts/train.log
+python -m open_r1_tpu.sft.run --config "$RECIPE" \
+  training.project_name="${WANDB_PROJECT}" 2>&1 | tee -a artifacts/train.log
 ```
 
 Detach with `Ctrl-b d`, reattach with `tmux attach -t sft`. To stop a run,
@@ -122,7 +118,7 @@ a large corpus takes longer than training. `eval/loss` is reported every
 sample a fixed set of prompts at intervals:
 
 ```bash
-./scripts/run_sft_tpu.sh \
+python -m open_r1_tpu.sft.run --config "$RECIPE" \
   training.transcripts.enabled=true \
   training.transcripts.every_n_steps=250 \
   training.transcripts.max_new_tokens=512 \
