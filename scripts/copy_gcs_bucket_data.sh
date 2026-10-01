@@ -27,8 +27,7 @@ repository's ignored models/ and data/ directories.
                          Qwen2.5-Math-1.5B-RoPE-300k.
   --dataset NAME         Dataset directory name. Defaults to $GCS_DATASET, or
                          OpenR1-Math-220k, the distillation corpus. Also
-                         accepts DAPO-Math-17k-Processed and SimpleRL-Zoo-Data,
-                         the GRPO prompt sets.
+                         accepts SimpleRL-Zoo-Data, the GRPO prompt set.
 
 Objects are read from the bucket's models/NAME and datasets/NAME and written
 to models/NAME and data/NAME. Override the bucket layout with
@@ -80,8 +79,6 @@ case "${DATASET}" in
   # and `all` views cover the same problems, so a wider glob would train on
   # duplicates.
   OpenR1-Math-220k) DATA_GLOB="${GCS_DATA_GLOB:-data/train-*.parquet}" ;;
-  # Only the English config. `all` is `en` plus the Chinese `cn` prompts.
-  DAPO-Math-17k-Processed) DATA_GLOB="${GCS_DATA_GLOB:-en/train-*.parquet}" ;;
   SimpleRL-Zoo-Data) DATA_GLOB="${GCS_DATA_GLOB:-simplelr_abel_level3to5/train.parquet}" ;;
   *) DATA_GLOB="${GCS_DATA_GLOB:-*.parquet}" ;;
 esac

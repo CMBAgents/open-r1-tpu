@@ -7,10 +7,9 @@ import pytest
 
 from open_r1_tpu.core.config import load_config
 from open_r1_tpu.grpo.config import validate_grpo_config
-from open_r1_tpu.sft.config import validate_sft_config
 
 REPO = Path(__file__).parents[1]
-RECIPE = REPO / "recipes/Qwen2.5-Math-1.5B/grpo/dapo-math-17k.yaml"
+RECIPE = REPO / "recipes/Qwen2.5-1.5B/grpo/simplerl-zoo.yaml"
 GRPO_RECIPES = sorted(REPO.glob("recipes/*/grpo/*.yaml"))
 
 
@@ -38,38 +37,13 @@ def test_unknown_keys_are_rejected_with_the_nearest_match(override, error):
         load_config(RECIPE, [override], validator=validate_grpo_config)
 
 
-def test_recipe_loads_and_targets_one_device():
-    config = load_config(RECIPE, [], validator=validate_grpo_config)
-    assert config["model"]["mesh"]["shape"] == [1, 1]
-    assert config["model"]["lora_config"]["rank"] == 64
-
-
-def test_recipe_names_the_merged_sft_export_not_the_pre_sft_base():
-    config = load_config(RECIPE, [], validator=validate_grpo_config)
-    assert (
-        config["model"]["model_path"]
-        == "artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/merged"
-    )
-
-
-def test_recipe_rope_theta_matches_the_sft_recipe():
-    sft_recipe = REPO / "recipes/Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml"
-    grpo_config = load_config(RECIPE, [], validator=validate_grpo_config)
-    sft_config = load_config(sft_recipe, [], validator=validate_sft_config)
-    assert grpo_config["model"]["rope_theta"] == sft_config["model"]["rope_theta"]
-
-
-def test_recipe_kv_cache_covers_prompt_plus_generation():
-    config = load_config(RECIPE, [], validator=validate_grpo_config)
+@pytest.mark.parametrize("recipe", GRPO_RECIPES, ids=lambda path: path.stem)
+def test_every_recipe_kv_cache_covers_prompt_plus_generation(recipe):
+    config = load_config(recipe, [], validator=validate_grpo_config)
     rollout = config["rollout"]
     assert rollout["kv_cache_size"] >= (
         rollout["max_prompt_length"] + rollout["max_tokens_to_generate"]
     )
-
-
-def test_recipe_export_is_off_by_default():
-    config = load_config(RECIPE, [], validator=validate_grpo_config)
-    assert config["export"]["enabled"] is False
 
 
 def test_missing_lora_config_is_rejected():
@@ -96,11 +70,11 @@ def test_zero_num_generations_is_rejected():
         load_config(RECIPE, ["grpo.num_generations=0"], validator=validate_grpo_config)
 
 
-def test_export_can_be_enabled():
+def test_export_can_be_disabled():
     config = load_config(
-        RECIPE, ["export.enabled=true"], validator=validate_grpo_config
+        RECIPE, ["export.enabled=false"], validator=validate_grpo_config
     )
-    assert config["export"]["enabled"] is True
+    assert config["export"]["enabled"] is False
 
 
 def test_missing_section_is_rejected():
@@ -175,15 +149,11 @@ def test_grpo_micro_batch_sizes_accept_a_divisor():
 def test_eval_rollouts_path_requires_an_eval_split():
     with pytest.raises(ValueError, match="eval_fraction"):
         load_config(
-            RECIPE,
-            ["training.eval_rollouts_path=/tmp/x.jsonl"],
-            validator=validate_grpo_config,
+            RECIPE, ["dataset.eval_fraction=0.0"], validator=validate_grpo_config
         )
     with pytest.raises(ValueError, match="eval_rollouts_path"):
         load_config(
-            RECIPE,
-            ["training.eval_rollouts_path=''", "dataset.eval_fraction=0.1"],
-            validator=validate_grpo_config,
+            RECIPE, ["training.eval_rollouts_path=''"], validator=validate_grpo_config
         )
 
 
@@ -194,7 +164,8 @@ def test_eval_rollouts_path_requires_an_eval_split():
 
 def test_loss_options_are_optional_and_checked():
     config = load_config(RECIPE, [], validator=validate_grpo_config)
-    assert "loss_agg_mode" not in config["grpo"]
+    del config["grpo"]["loss_agg_mode"], config["grpo"]["kl_loss_mode"]
+    validate_grpo_config(config)
     with pytest.raises(ValueError, match="loss_agg_mode"):
         load_config(
             RECIPE, ["grpo.loss_agg_mode=token-sum"], validator=validate_grpo_config

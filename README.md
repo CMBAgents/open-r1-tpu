@@ -205,7 +205,6 @@ under `artifacts/<output model name>/`.
 | --- | --- | --- | --- |
 | `Qwen2.5-Math-1.5B/sft/openr1-math-220k.yaml` | Reasoning distillation, full fine-tune | v6e-4 | Yes |
 | `Qwen2.5-Math-1.5B/eval/` | Tiers 0-3 for that export | 1 chip | Tiers 0-1 |
-| `Qwen2.5-Math-1.5B/grpo/dapo-math-17k.yaml` | GRPO on that export | v6e-1 | No |
 | `Qwen2.5-1.5B/grpo/simplerl-zoo.yaml` | GRPO positive control against SimpleRL-Zoo | v6e-4 | Yes |
 | `Qwen2.5-1.5B/eval/` | SimpleRL-Zoo's tier-1 protocol | 1 chip | Yes |
 | `DeepSeek-R1-Distill-Qwen-1.5B/eval/` | The reference model, replicating its card | 1 chip | Tiers 0-2 and 5 |
