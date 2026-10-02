@@ -1,28 +1,56 @@
 # open-r1-tpu
 
-Reasoning post-training for open language models on Google Cloud TPUs, with
-JAX and [Google Tunix](https://github.com/google/tunix): supervised
-distillation (SFT), GRPO, and benchmark evaluation served by vLLM and scored
-with LightEval's metrics. It follows the SFT-to-GRPO workflow of
-[Open-R1](https://github.com/huggingface/open-r1) without CUDA, PyTorch or TRL.
+open-r1-tpu takes an base model and
+trains it to be an assistant that reasons before it answers. It runs on
+Google Cloud TPUs, with JAX and [Google Tunix](https://github.com/google/tunix).
+
+- **Based on [Open-R1](https://github.com/huggingface/open-r1)** by Hugging
+  Face, whose workflow, datasets and evaluation it follows.
+- **Supported by** the Google TPU Builder Program.
+- **Built by** [Rowan d'Auria](https://rowan-dauria.vercel.app/about).
+
+## What is Open-R1?
+
+In January 2025 DeepSeek released
+[DeepSeek-R1](https://arxiv.org/abs/2501.12948), a reasoning model: it works
+through a problem step by step before it answers. DeepSeek published the
+weights and described the training, but not the data or the code that
+produced it.
+
+[Open-R1](https://github.com/huggingface/open-r1) is Hugging Face's
+open-source replication of that training. It rebuilds each stage in public:
+datasets of R1's reasoning, supervised fine-tuning (SFT) that distils it into
+smaller models, reinforcement learning with GRPO, and the benchmarks to check
+the result.
+
+Open-R1 is built for NVIDIA GPUs, with CUDA, PyTorch and Hugging Face's TRL.
+open-r1-tpu keeps the same workflow and replaces that stack, so it runs on
+TPUs:
+
+| | Open-R1 | open-r1-tpu |
+| --- | --- | --- |
+| Hardware | NVIDIA GPUs (CUDA) | Google Cloud TPUs |
+| Framework | PyTorch | JAX |
+| Training library | TRL | Tunix |
+| Benchmark serving | vLLM on GPU | vLLM on TPU |
+| Benchmark scoring | LightEval | LightEval's metrics, with optional Langfuse tracing |
+
+## Results so far
 
 Measured on TPU v6e:
 
-- **SFT.** Distilling Qwen2.5-Math-1.5B on OpenR1-Math-220k scores 83.3% on
-  MATH-500 (three seeds, 16k-token budget), against 79.8% for
-  DeepSeek-R1-Distill-Qwen-1.5B measured the same way.
-- **GRPO.** Reproducing SimpleRL-Zoo on Qwen2.5-1.5B, with LoRA and a
-  sixty-fourth of their batch, reaches GSM8K 68.2 (first 200 problems) and
-  MATH-500 54.7, against 74.5 and 57.2 for their published checkpoint scored
-  the same way.
-- **Evaluation.** Scored on this stack, SimpleRL-Zoo's checkpoint lands within
-  0.1 (GSM8K) and 1.8 (MATH-500) points of its published numbers.
+| Stage | What was run | Result | Compared with |
+| --- | --- | --- | --- |
+| SFT | Qwen2.5-Math-1.5B distilled on OpenR1-Math-220k | MATH-500 83.3% (three seeds, 16k-token budget) | DeepSeek-R1-Distill-Qwen-1.5B: 79.8%, measured the same way |
+| RL | SimpleRL-Zoo reproduced on Qwen2.5-1.5B, with LoRA and a sixty-fourth of their batch | GSM8K 68.2 (first 200 problems), MATH-500 54.7 | Their published checkpoint, scored the same way: 74.5 and 57.2 |
+| Benchmarking | SimpleRL-Zoo's checkpoint scored on this stack | Within 0.1 (GSM8K) and 1.8 (MATH-500) points of its published numbers | |
 
-The full documentation is at
-[cmbagents.github.io/open-r1-tpu](https://cmbagents.github.io/open-r1-tpu/).
-New to fine-tuning or reinforcement learning? [examples/](examples/) has two
-notebooks that train a small model with SFT and then GRPO on one TPU chip,
-explaining each step.
+The [documentation](https://cmbagents.github.io/open-r1-tpu/) explains each
+stage in plain terms, and its
+[Results](https://cmbagents.github.io/open-r1-tpu/results/) page charts each
+model against the one it reproduces. New to fine-tuning or reinforcement
+learning? [examples/](examples/) has two notebooks that train a small model
+with SFT and then GRPO on one TPU chip, explaining each step.
 
 ## What is here
 
