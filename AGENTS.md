@@ -28,6 +28,9 @@ guides. This file holds the rules for changing the code.
 - `docker/vllm-tpu/`: the pinned vLLM TPU image. `docker/langfuse/`: the
   optional self-hosted Langfuse stack.
 - `configs/`: the template for the optional Langfuse tracing config.
+- `examples/`: the tutorial notebooks, with their own recipes in
+  `examples/recipes/` and helper scripts. Notebooks are committed without
+  outputs; they run training as separate commands and never import JAX.
 - `tests/`: unit tests, plus `integration` (live vLLM server) and `network`
   (Hugging Face Hub) tests that are deselected by default.
 

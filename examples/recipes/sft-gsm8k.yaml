@@ -1,0 +1,109 @@
+# Tutorial recipe for examples/01_sft.ipynb: a full fine-tune of Qwen2.5-0.5B,
+# the base model rather than the instruct one, on GSM8K's worked solutions. The
+# notebook rewrites each solution so the working sits in a <think> block and
+# the answer in \boxed{}, the format examples/02_grpo.ipynb then rewards.
+# Sized for one TPU v6e chip.
+#
+# The notebook stages both inputs:
+#   models/Qwen2.5-0.5B               the base model from the Hugging Face Hub
+#   data/gsm8k-think/train.parquet    messages, question and answer columns
+# Launch from the repository root:
+#   python -m open_r1_tpu.sft.run --config examples/recipes/sft-gsm8k.yaml
+model:
+  model_name: qwen2.5-0.5b
+  model_id: Qwen/Qwen2.5-0.5B
+  model_source: local
+  model_path: models/Qwen2.5-0.5B
+  rng_seed: 42
+  dtype: bfloat16
+  load_dtype: bfloat16
+  # Recompute each layer's activations in the backward pass instead of keeping
+  # them: slower, but it keeps activation memory small.
+  remat_config: DECODER
+  # Plain attention. The windows are short, and the splash kernel has only
+  # been tested here on 128-wide heads; this model's are 64 wide.
+  use_flash_attention: false
+  # The loader takes RoPE theta from the recipe, not from config.json.
+  rope_theta: 1000000
+  # No lora_config: every weight trains. The embeddings are tied, so LoRA would
+  # freeze the rows of <|im_end|>, the token that ends a reply.
+  mesh:
+    # One chip. The product of the shape must equal the number of chips.
+    shape: [1, 1]
+    axis_names: [fsdp, tp]
+
+tokenizer:
+  tokenizer_path: models/Qwen2.5-0.5B
+  tokenizer_type: huggingface
+  add_bos: false
+  add_eos: false
+  # The tokeniser's own ChatML template.
+  chat_template: null
+
+dataset:
+  name: parquet
+  config: null
+  train_split: train
+  data_files: data/gsm8k-think/train.parquet
+  messages_column: messages
+  # Prepended to every conversation as a system message; the notebooks send
+  # the same file when they ask the model questions.
+  system_prompt_file: examples/recipes/system_prompt.txt
+  # Windows per optimizer step. Packing puts about five examples in each, so a
+  # step sees about 40 examples.
+  batch_size: 8
+  # The longest example is 500 tokens, so nothing is dropped.
+  max_length: 1024
+  packing: true
+  # max_steps ends the run after about two epochs; the third is headroom so
+  # the data cannot run out first.
+  num_train_epochs: 3
+  max_examples: null
+  # 2% of the rows are held out for an eval loss, capped at 128.
+  eval_fraction: 0.02
+  eval_max_examples: 128
+  seed: 42
+  # Learn from the assistant's reply only, not the system prompt or question.
+  assistant_only_loss: true
+  # Drop any reply without a closed <think>...</think> block.
+  require_reasoning_tags: true
+  reasoning_start: <think>
+  reasoning_end: </think>
+
+optimizer:
+  learning_rate: 2.0e-5
+  warmup_ratio: 0.05
+  min_lr_ratio: 0.1
+  b1: 0.9
+  b2: 0.999
+  eps: 1.0e-8
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+
+training:
+  # About 196 steps per epoch: 7,323 training rows in about 1,570 windows.
+  max_steps: 400
+  gradient_accumulation_steps: 1
+  eval_every_n_steps: 50
+  # Training resumes from the newest checkpoint here: delete the directory to
+  # start again from the base model.
+  checkpoint_dir: artifacts/Qwen2.5-0.5B-GSM8K-SFT/checkpoints
+  checkpointing_options:
+    save_interval_steps: 100
+    max_to_keep: 1
+    enable_async_checkpointing: false
+  # TensorBoard event files, which the notebook reads to plot the loss.
+  metrics_log_dir: artifacts/Qwen2.5-0.5B-GSM8K-SFT/logs
+  project_name: open-r1-tpu
+  run_name: qwen2.5-0.5b-gsm8k-sft-tutorial
+  flush_every_n_steps: 10
+  # Set enabled: true, after `wandb login`, to follow the run in W&B too.
+  wandb:
+    enabled: false
+  data_sharding_axis: [fsdp]
+
+export:
+  # A Hugging Face checkpoint the notebooks and examples/02_grpo.ipynb load.
+  enabled: true
+  overwrite: true
+  output_dir: artifacts/Qwen2.5-0.5B-GSM8K-SFT/merged

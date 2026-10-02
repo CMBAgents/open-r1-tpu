@@ -1,0 +1,1 @@
+Solve the maths problem. Think it through step by step between <think> and </think>, then give the final answer as a number in \boxed{}.

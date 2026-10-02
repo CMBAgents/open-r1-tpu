@@ -1,0 +1,139 @@
+# Tutorial recipe for examples/02_grpo.ipynb: GRPO on GSM8K's training
+# questions, starting from the model examples/01_sft.ipynb trained. Each step
+# samples eight answers to each of eight questions, scores them with the
+# format and correctness rewards in src/open_r1_tpu/grpo/rewards.py, and moves
+# a LoRA adapter towards the answers that beat their group's average. Sized
+# for one TPU v6e chip.
+#
+# Needs the outputs of examples/01_sft.ipynb:
+#   artifacts/Qwen2.5-0.5B-GSM8K-SFT/merged    the SFT model
+#   data/gsm8k-think/train.parquet             question and answer columns
+# Launch from the repository root:
+#   python -m open_r1_tpu.grpo.run --config examples/recipes/grpo-gsm8k.yaml
+model:
+  model_name: qwen2.5-0.5b
+  model_id: Qwen/Qwen2.5-0.5B
+  model_source: local
+  model_path: artifacts/Qwen2.5-0.5B-GSM8K-SFT/merged
+  rng_seed: 42
+  # Float32 and plain attention, or the rollouts are corrupt: on the pinned
+  # Tunix, Qwen2's attention biases overflow in bfloat16, and the sampler gives
+  # the splash kernel no way to ignore a prompt's padding.
+  dtype: float32
+  load_dtype: float32
+  remat_config: DECODER
+  use_flash_attention: false
+  # The loader takes RoPE theta from the recipe, not from config.json.
+  rope_theta: 1000000
+  # GRPO always trains a LoRA adapter. The same weights, loaded a second time
+  # without one, are the frozen reference the KL penalty measures against.
+  lora_config:
+    module_path: ".*q_proj|.*k_proj|.*v_proj|.*o_proj|.*gate_proj|.*up_proj|.*down_proj"
+    rank: 32
+    alpha: 32.0
+  mesh:
+    shape: [1, 1]
+    axis_names: [fsdp, tp]
+
+tokenizer:
+  tokenizer_path: artifacts/Qwen2.5-0.5B-GSM8K-SFT/merged
+  tokenizer_type: huggingface
+  add_bos: false
+  add_eos: false
+  chat_template: null
+
+dataset:
+  name: parquet
+  config: null
+  train_split: train
+  data_files: data/gsm8k-think/train.parquet
+  # GRPO needs no worked solutions: only the question and the gold answer the
+  # rewards check against.
+  question_column: question
+  answer_column: answer
+  # The prompt the SFT model was trained with.
+  system_prompt_file: examples/recipes/system_prompt.txt
+  # Questions per step; each gets grpo.num_generations answers.
+  batch_size: 8
+  # Longer prompts are dropped: 1 of the 7,473 renders to 257 tokens.
+  max_prompt_length: 256
+  # 200 steps of 8 questions use 1,600 of the 7,435 training rows.
+  num_train_epochs: 1
+  max_examples: null
+  # 38 rows held out, capped at 32. Every training.eval_every_n_steps, and
+  # before the first step, the model answers them and the rewards are logged.
+  eval_fraction: 0.005
+  eval_max_examples: 32
+  eval_batch_size: 1
+  seed: 42
+
+optimizer:
+  # LoRA needs a higher learning rate than a full fine-tune. Constant after a
+  # short warm-up.
+  learning_rate: 2.0e-5
+  warmup_ratio: 0.05
+  min_lr_ratio: 1.0
+  b1: 0.9
+  b2: 0.999
+  eps: 1.0e-8
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+
+training:
+  # How many questions go through the chip at once: one for the update and
+  # the log-probabilities (the logits of 8 answers x 768 tokens x 151,936
+  # tokens in the vocabulary are large), four while sampling. Raise them for
+  # speed only after a run has shown the memory to spare.
+  train_micro_batch_size: 1
+  compute_logps_micro_batch_size: 1
+  rollout_micro_batch_size: 4
+  max_steps: 200
+  eval_every_n_steps: 50
+  # Every eval answer, with its question, gold answer and rewards.
+  eval_rollouts_path: artifacts/Qwen2.5-0.5B-GSM8K-GRPO/eval_rollouts.jsonl
+  # Training resumes from the newest checkpoint here: delete the directory to
+  # start again from the SFT model.
+  checkpoint_dir: artifacts/Qwen2.5-0.5B-GSM8K-GRPO/checkpoints
+  checkpointing_options:
+    save_interval_steps: 50
+    max_to_keep: 2
+    enable_async_checkpointing: false
+  metrics_log_dir: artifacts/Qwen2.5-0.5B-GSM8K-GRPO/logs
+  project_name: open-r1-tpu
+  run_name: qwen2.5-0.5b-gsm8k-grpo-tutorial
+  flush_every_n_steps: 5
+  wandb:
+    enabled: false
+  offload_to_cpu: false
+
+grpo:
+  # Summed for each answer. format_reward: 3 for <think>...</think> followed
+  # by \boxed{}, else partial credit. correctness_reward: 3 when the boxed
+  # answer matches, 0.5 when within 10%, -0.5 when wrong, 0 when missing.
+  reward_functions: [format_reward, correctness_reward]
+  # The group: answers sampled per question, each judged against the others.
+  num_generations: 8
+  num_iterations: 1
+  # Weight of the KL penalty that keeps the model near the SFT model.
+  beta: 0.04
+  # How far one update may move an answer's probability ratio (PPO clipping).
+  epsilon: 0.2
+
+rollout:
+  max_prompt_length: 256
+  # GSM8K's own solutions run to 354 tokens in this format, 95 typically.
+  max_tokens_to_generate: 512
+  kv_cache_size: 768
+  # Sampling, not greedy: a group of identical answers would all score the
+  # same and teach nothing. The pinned sampler decodes greedily when top_p is
+  # null, so it is set.
+  temperature: 0.9
+  top_p: 1.0
+  top_k: null
+  # Null stops each answer at the chat template's turn end, <|im_end|>.
+  eos_token_ids: null
+
+export:
+  enabled: true
+  overwrite: true
+  output_dir: artifacts/Qwen2.5-0.5B-GSM8K-GRPO/merged
