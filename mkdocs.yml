@@ -84,15 +84,20 @@ validation:
 
 nav:
   - Home: index.md
-  - Get started:
-      - Install: getting-started.md
+  - Setting up on TPU:
+      - Buckets and VMs: tpu-setup.md
+      - Install: install.md
+  - Getting started:
+      - Base models: base-models.md
+      - What is post-training?: post-training.md
+      - Supervised fine-tuning: sft.md
+      - Reinforcement learning: grpo.md
+      - Benchmarking: benchmarking.md
+      - Langfuse: langfuse.md
       - Tutorials: tutorials.md
-  - Guides:
-      - Distillation (SFT): sft.md
-      - GRPO: grpo.md
-      - Training in depth: training.md
-      - Evaluation: evaluation.md
-      - Chat and completion: chat.md
   - Reference:
+      - Training in depth: training.md
+      - Running evaluations: evaluation.md
+      - Chat and completion: chat.md
       - Recipes: recipes.md
       - Development: development.md

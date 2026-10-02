@@ -25,7 +25,7 @@ support them:
 ## Open the notebooks
 
 The notebooks run on the TPU VM, in the environment
-`./scripts/setup_tpu_vm.sh` builds (see [Install](getting-started.md)).
+`./scripts/setup_tpu_vm.sh` builds (see [Install](install.md)).
 Jupyter is not part of that environment; `uv run --with` adds it for one
 session without changing it.
 

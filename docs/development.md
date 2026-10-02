@@ -4,6 +4,22 @@
 holds the rules for changing the code: the architectural invariants, the
 Tunix pin, and what each kind of change must be checked with.
 
+## Repository layout
+
+| Path | Contents |
+| --- | --- |
+| [`src/open_r1_tpu/sft/`](https://github.com/CMBAgents/open-r1-tpu/tree/main/src/open_r1_tpu/sft) | SFT data preparation, training and preflight |
+| [`src/open_r1_tpu/grpo/`](https://github.com/CMBAgents/open-r1-tpu/tree/main/src/open_r1_tpu/grpo) | GRPO prompt loading, rewards and training |
+| [`src/open_r1_tpu/evaluation/`](https://github.com/CMBAgents/open-r1-tpu/tree/main/src/open_r1_tpu/evaluation) | Evaluation: recipe config, vLLM server, generation, scoring, summary, optional Langfuse tracing |
+| [`src/open_r1_tpu/model/`](https://github.com/CMBAgents/open-r1-tpu/tree/main/src/open_r1_tpu/model) | Model and tokenizer loading, LoRA, optimizer, metrics, export, checkpoint restore |
+| [`src/open_r1_tpu/core/`](https://github.com/CMBAgents/open-r1-tpu/tree/main/src/open_r1_tpu/core) | Recipe loading, the shared command line, logging |
+| [`recipes/`](https://github.com/CMBAgents/open-r1-tpu/tree/main/recipes) | Training and evaluation recipes; see [Recipes](recipes.md) |
+| [`scripts/`](https://github.com/CMBAgents/open-r1-tpu/tree/main/scripts) | Launchers and tools: VM setup, evaluation, the vLLM container, chat, export |
+| [`docker/`](https://github.com/CMBAgents/open-r1-tpu/tree/main/docker) | The pinned vLLM TPU image, and the optional Langfuse stack |
+| [`configs/`](https://github.com/CMBAgents/open-r1-tpu/tree/main/configs) | The template for the optional Langfuse tracing config |
+| [`examples/`](https://github.com/CMBAgents/open-r1-tpu/tree/main/examples) | [Tutorial notebooks](tutorials.md) for SFT and GRPO on one chip, with their recipes |
+| [`docs/`](https://github.com/CMBAgents/open-r1-tpu/tree/main/docs) | This site's pages |
+
 ## Set up
 
 ```bash
