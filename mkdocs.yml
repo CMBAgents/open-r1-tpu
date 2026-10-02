@@ -16,7 +16,7 @@ site_url: https://cmbagents.github.io/open-r1-tpu/
 repo_url: https://github.com/CMBAgents/open-r1-tpu
 repo_name: CMBAgents/open-r1-tpu
 edit_uri: edit/main/docs/
-copyright: Released under the MIT licence.
+copyright: Released under the Apache 2.0 licence.
 
 # The pins live beside the pages but are not one of them.
 exclude_docs: |
