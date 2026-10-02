@@ -361,7 +361,7 @@ def test_a_model_with_its_own_turn_end_token_passes(tmp_path):
 
 def test_every_recipe_task_resolves_against_the_installed_lighteval():
     pytest.importorskip("lighteval")
-    from open_r1_tpu.evaluation.taskpack import resolve_task_configs
+    from open_r1_tpu.evaluation.tasks import resolve_task_configs
 
     # base.yaml is not a standalone recipe -- it has no eval:/sampling: of its
     # own and is only ever reached through another recipe's `extends`.

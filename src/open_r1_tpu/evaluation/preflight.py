@@ -1,9 +1,8 @@
 """Preflight the evaluation stack before committing TPU time to a benchmark.
 
 Checks the serving side: the pinned LightEval dependency stack, the vLLM
-container image and its service versions, the exported checkpoint, and the
-recipe's tasks against the frozen task pack (`configs/taskpack.yaml`), so a
-LightEval upgrade that moves a prompt, a generation parameter or a metric
+container image and its service versions, the exported checkpoint, and that
+every task the recipe names resolves in LightEval's registry, so a mistake
 fails here, before the server spends minutes loading weights. The TPU is not
 touched: vLLM holds it while serving, so initialising JAX here would fail
 exactly when the server is up.
@@ -44,7 +43,7 @@ from open_r1_tpu.evaluation.stack import (
     EVALUATION_PYTHON_VERSION,
     VLLM_TPU_SERVICE_VERSIONS,
 )
-from open_r1_tpu.evaluation.taskpack import DEFAULT_TASKPACK_PATH, verify_task_specs
+from open_r1_tpu.evaluation.tasks import resolve_task_configs
 
 # Files a merged export needs before vLLM can serve it as a chat model.
 REQUIRED_FILES = ("config.json", "tokenizer_config.json")
@@ -253,11 +252,10 @@ def main() -> None:
     errors.extend(check_dependency_versions())
     errors.extend(check_export_dir(settings["model_path"], settings["turn_end_token"]))
 
-    pack_errors, pack_warnings = verify_task_specs(
-        DEFAULT_TASKPACK_PATH, settings["tasks"]
-    )
-    errors.extend(pack_errors)
-    warnings.extend(pack_warnings)
+    try:
+        resolve_task_configs(settings["tasks"])
+    except (ImportError, ValueError) as error:
+        errors.append(f"could not resolve the recipe's tasks: {error}")
 
     runtime_errors, runtime_warnings = check_server_runtime(settings)
     errors.extend(runtime_errors)

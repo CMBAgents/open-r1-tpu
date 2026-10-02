@@ -30,7 +30,7 @@ Measured on TPU v6e:
 | `recipes/` | Training and evaluation recipes; see [Recipes](#recipes) |
 | `scripts/` | Launchers and tools: VM setup, SFT, evaluation, the vLLM container, chat, export |
 | `docker/` | The pinned vLLM TPU image, and the optional Langfuse stack |
-| `configs/` | The frozen LightEval task pack, and the tracing config template |
+| `configs/` | The template for the optional Langfuse tracing config |
 | `docs/` | [Training](docs/training.md), [evaluation](docs/evaluation.md), and [chat](docs/chat.md) guides |
 
 Run every command from the repository root on the TPU VM. Only one process can
@@ -242,12 +242,12 @@ The unit tests need no TPU; tests that need JAX, Tunix or the `eval` extra
 skip without them. Two groups are deselected by default:
 `python -m pytest -m integration` needs a live vLLM server, and
 `python -m pytest -m network` downloads from the Hugging Face Hub. Ruff and
-pyright run as pre-commit hooks, and CI (`.github/workflows/ci.yml`) runs the hooks and the
-tests on every push and pull request. `uv sync` also installs console scripts
-for the entry points: `open-r1-tpu-sft`, `open-r1-tpu-sft-preflight`,
-`open-r1-tpu-grpo`, `open-r1-tpu-eval`, `open-r1-tpu-eval-preflight` and
-`open-r1-tpu-taskpack`. [AGENTS.md](AGENTS.md) holds the rules for changing
-the code.
+pyright run as pre-commit hooks, and CI (`.github/workflows/ci.yml`) runs
+the hooks and the tests on every push and pull request. `uv sync` also
+installs console scripts for the entry points: `open-r1-tpu-sft`,
+`open-r1-tpu-sft-preflight`, `open-r1-tpu-grpo`, `open-r1-tpu-eval` and
+`open-r1-tpu-eval-preflight`. [AGENTS.md](AGENTS.md) holds the rules for
+changing the code.
 
 Every dependency is pinned in `uv.lock`, and the evaluation stack is pinned
 exactly (`src/open_r1_tpu/evaluation/stack.py`): change the pins, the lock and

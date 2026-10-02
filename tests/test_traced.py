@@ -17,7 +17,7 @@ import yaml
 # The evaluation client needs the `eval` extra; a training-only install skips.
 pytest.importorskip("openai")
 
-from open_r1_tpu.evaluation import scoring, taskpack, traced
+from open_r1_tpu.evaluation import scoring, tasks, traced
 from open_r1_tpu.evaluation.traced import LangfuseGuard
 
 # --- the tracing config -----------------------------------------------------
@@ -395,11 +395,10 @@ def test_ensure_dataset_returns_false_on_a_dead_langfuse():
 
 def _fake_resolve_and_name(monkeypatch, configs_by_task):
     monkeypatch.setattr(traced, "resolve_task_configs", lambda tasks: configs_by_task)
-    monkeypatch.setattr(traced, "derive_task_spec", lambda task, config: None)
     monkeypatch.setattr(
         traced,
-        "taskpack_dataset_name",
-        lambda task, spec, max_samples=None: (
+        "dataset_name",
+        lambda task, config, max_samples=None: (
             f"{task}@fixed" + (f"[:{max_samples}]" if max_samples else "")
         ),
     )
@@ -759,7 +758,7 @@ def _evaluator_inputs(task: str):
     pytest.importorskip("lighteval")
     from datasets import load_dataset
 
-    config = taskpack.resolve_task_configs([task])[task]
+    config = tasks.resolve_task_configs([task])[task]
     row = load_dataset(
         config.hf_repo, config.hf_subset, split=f"{config.evaluation_splits[0]}[:1]"
     )[0]

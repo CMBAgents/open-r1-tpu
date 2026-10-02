@@ -234,7 +234,7 @@ def build_summary_from_records(
     server_provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Reduce every seed's records into the summary. `resolved_configs` is
-    `taskpack.resolve_task_configs(settings["tasks"])`.
+    `tasks.resolve_task_configs(settings["tasks"])`.
     """
     output_path = Path(output_dir)
     per_seed_metrics: dict[int, dict[str, dict[str, float]]] = {}

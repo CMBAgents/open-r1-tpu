@@ -17,11 +17,16 @@ It has three layers:
   not as strings. `evaluation/summary.py` reduces the per-problem records to a
   summary.
 
-Prompts, dataset revisions and metric settings come from a task pack frozen
-from LightEval's registry (`configs/taskpack.yaml`, written by
-`evaluation/taskpack.py`). Preflight re-checks it against the installed
-LightEval, so an upgrade that changes a task fails there rather than moving a
-number. Nothing on the host imports JAX, Tunix or vLLM.
+Each task's dataset, prompt and metrics are LightEval's own, loaded from the
+installed version (`evaluation/tasks.py`). LightEval is pinned exactly, so
+they change only when the pin does; the datasets themselves are not pinned
+and load at their latest Hub revision. A task's own token limit and stop
+strings are ignored: the recipe's `sampling.max_new_tokens` sets the budget,
+and turns end on the export's EOS ids. Two definitions worth knowing: MATH-500
+is scored as pass@1 over one sample (`pass@k:k=1&n=1`), not plain extractive
+match, and `lcb:codegeneration` is LightEval's `v4_v5` subset (problems from
+August 2024 to January 2025, the window of DeepSeek's LiveCodeBench number).
+Nothing on the host imports JAX, Tunix or vLLM.
 
 ## Install
 
@@ -74,7 +79,7 @@ Preflight checks, before vLLM takes the TPU:
 
 - the host package versions, Docker access, the image and the vLLM versions
   inside it (it never builds the image itself);
-- the recipe's tasks against the task pack;
+- that every task the recipe names exists in LightEval;
 - the export: weights, tokenizer files, chat template, and that
   `generation_config.json` lists the turn-end token as an EOS.
 

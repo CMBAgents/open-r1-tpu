@@ -11,7 +11,7 @@ from dataclasses import replace
 
 import pytest
 
-from open_r1_tpu.evaluation import scoring, taskpack
+from open_r1_tpu.evaluation import scoring, tasks
 
 
 class FakeMetric:
@@ -164,7 +164,7 @@ def test_reasoning_tag_strip_prevents_an_abandoned_boxed_answer_from_winning():
     pytest.importorskip("lighteval")
     from lighteval.tasks.requests import Doc
 
-    resolved = taskpack.resolve_task_configs(["gsm8k|0"])
+    resolved = tasks.resolve_task_configs(["gsm8k|0"])
     metric = resolved["gsm8k|0"].metrics[0]
     # gold is 18; matches gsm8k_prompt's own choices convention (a leading
     # space before the answer text).
@@ -213,7 +213,7 @@ def _row_and_config(task: str):
     pytest.importorskip("lighteval")
     from datasets import load_dataset
 
-    config = taskpack.resolve_task_configs([task])[task]
+    config = tasks.resolve_task_configs([task])[task]
     row = load_dataset(
         config.hf_repo, config.hf_subset, split=f"{config.evaluation_splits[0]}[:1]"
     )[0]

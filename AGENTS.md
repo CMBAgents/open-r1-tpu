@@ -17,8 +17,8 @@ guides. This file holds the rules for changing the code.
 - `src/open_r1_tpu/evaluation/`: recipe schema and settings (`config.py`), the
   vLLM command and readiness wait (`server.py`), generation (`generate.py`),
   scoring (`scoring.py`), records and the summary (`summary.py`), cons@n,
-  optional Langfuse tracing (`traced.py`), the entry point (`run.py`), the
-  task pack, the stack pins and the preflight.
+  optional Langfuse tracing (`traced.py`), the entry point (`run.py`),
+  LightEval task lookup (`tasks.py`), the stack pins and the preflight.
 - `recipes/<base model>/{sft,grpo,eval}/`: one YAML per dataset (training) or
   tier (evaluation).
 - `scripts/`: shell launchers (`setup_tpu_vm.sh`, `run_eval_tpu.sh`,
@@ -27,7 +27,7 @@ guides. This file holds the rules for changing the code.
   staging a model for evaluation, Langfuse setup).
 - `docker/vllm-tpu/`: the pinned vLLM TPU image. `docker/langfuse/`: the
   optional self-hosted Langfuse stack.
-- `configs/`: the frozen LightEval task pack and the tracing config template.
+- `configs/`: the template for the optional Langfuse tracing config.
 - `tests/`: unit tests, plus `integration` (live vLLM server) and `network`
   (Hugging Face Hub) tests that are deselected by default.
 
@@ -76,7 +76,7 @@ Evaluation:
   reproducibility-unchecked.
 - LightEval is used only as a library: its task registry, `Doc` and
   `ModelResponse` types and metrics. Never its runner, models or litellm
-  client. `taskpack.py` and `scoring.py` name the internals they rely on.
+  client. `tasks.py` and `scoring.py` name the internals they rely on.
 - Keep Langfuse optional. Without `--tracing-config` an evaluation needs
   nothing but the vLLM server, and the local and Langfuse paths must write
   identical JSONL records.

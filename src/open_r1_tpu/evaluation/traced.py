@@ -3,7 +3,7 @@
 With `--tracing-config`, `evaluation.run` hands the run to `run_langfuse`. It
 first syncs the recipe's tasks into Langfuse datasets: one per task, named
 `{task}@{fingerprint}` (plus `[:N]` under `eval.max_samples`; see
-`taskpack.dataset_name`), with one item per document under a deterministic id
+`tasks.dataset_name`), with one item per document under a deterministic id
 so a re-sync upserts. `dataset.run_experiment()` then generates and scores each
 (task, seed) with `generate.make_task` and `lighteval_evaluator`, so each seed
 is its own run in Langfuse's comparison view. It is called from synchronous
@@ -36,13 +36,7 @@ from open_r1_tpu.core.config import check_sections, load_config, reject_unknown_
 from open_r1_tpu.evaluation import scoring
 from open_r1_tpu.evaluation.generate import iter_documents, make_task, render_messages
 from open_r1_tpu.evaluation.summary import jsonl_path, ok_record, write_jsonl
-from open_r1_tpu.evaluation.taskpack import (
-    dataset_name as taskpack_dataset_name,
-)
-from open_r1_tpu.evaluation.taskpack import (
-    derive_task_spec,
-    resolve_task_configs,
-)
+from open_r1_tpu.evaluation.tasks import dataset_name, resolve_task_configs
 
 LOGGER = logging.getLogger(__name__)
 
@@ -173,7 +167,7 @@ def sync_task(
 ) -> int:
     """Upsert every document of one task's evaluation split into dataset
     `name` and return the document count. The caller names the dataset
-    (`taskpack.dataset_name`), so `config` needs only what `iter_documents`
+    (`tasks.dataset_name`), so `config` needs only what `iter_documents`
     and the prompt function read.
     """
     documents = iter_documents(config, max_samples=max_samples)
@@ -206,10 +200,7 @@ def sync_recipe(
     results: dict[str, tuple[str, int]] = {}
     for task in task_names:
         config = resolved[task]
-        spec = derive_task_spec(task, config)
-        name = taskpack_dataset_name(
-            task, spec, max_samples=settings.get("max_samples")
-        )
+        name = dataset_name(task, config, max_samples=settings.get("max_samples"))
         if not ensure_dataset(guard, name):
             LOGGER.warning(
                 "could not ensure dataset %s exists; skipping %s's documents "

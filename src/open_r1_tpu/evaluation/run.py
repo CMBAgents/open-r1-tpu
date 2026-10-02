@@ -40,7 +40,7 @@ from open_r1_tpu.evaluation.summary import (
     write_jsonl,
     write_summary,
 )
-from open_r1_tpu.evaluation.taskpack import resolve_task_configs
+from open_r1_tpu.evaluation.tasks import resolve_task_configs
 
 LOGGER = logging.getLogger(__name__)
 
