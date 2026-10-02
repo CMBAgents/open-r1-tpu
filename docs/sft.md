@@ -69,16 +69,15 @@ python -m open_r1_tpu.sft.run --config "$RECIPE" training.project_name="${WANDB_
 ```
 
 The full run is 6,710 steps, about 19 hours, and ends with a merged export in
-`artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/merged`. Scored as it trained, it
-passed DeepSeek's own distillation of the same base:
+`artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/merged`. Measured on the evaluation
+suite beside DeepSeek's own distillation of the same base:
 
 <figure markdown="span">
-  ![MATH-500 accuracy of the SFT checkpoints rises from 70.9% at step 1,000 to 83.3% at step 6,710, passing DeepSeek-R1-Distill-Qwen-1.5B's 79.8%, while the share of replies cut off at the token limit falls to 7.4%.](assets/figures/sft-math500-by-step-light.svg#only-light)
-  ![MATH-500 accuracy of the SFT checkpoints rises from 70.9% at step 1,000 to 83.3% at step 6,710, passing DeepSeek-R1-Distill-Qwen-1.5B's 79.8%, while the share of replies cut off at the token limit falls to 7.4%.](assets/figures/sft-math500-by-step-dark.svg#only-dark)
+  ![Grouped bar chart. MATH-500: our distilled model 83.7%, DeepSeek-R1-Distill-Qwen-1.5B 78.6%. AIME 2024: 24.3% and 30.6%. AIME 2024, majority of 64 runs: 43.3% and 53.3%. GPQA-Diamond: 22.7% and 28.3%.](assets/figures/sft-vs-deepseek-light.svg#only-light)
+  ![Grouped bar chart. MATH-500: our distilled model 83.7%, DeepSeek-R1-Distill-Qwen-1.5B 78.6%. AIME 2024: 24.3% and 30.6%. AIME 2024, majority of 64 runs: 43.3% and 53.3%. GPQA-Diamond: 22.7% and 28.3%.](assets/figures/sft-vs-deepseek-dark.svg#only-dark)
 </figure>
 
-[Results](results.md#supervised-fine-tuning) has the numbers, and how the
-finished model compares with DeepSeek's published scores.
+[Results](results.md#distillation-sft) has the numbers.
 
 !!! danger "Stopping a run"
 

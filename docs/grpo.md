@@ -29,14 +29,6 @@ python -m open_r1_tpu.grpo.run --config recipes/Qwen2.5-1.5B/grpo/simplerl-zoo.y
 (first 200 problems) and MATH-500 54.7, against 74.5 and 57.2 for their
 published checkpoint scored the same way, with a sixty-fourth of their batch.
 
-The run scores a held-out set every 50 steps; most of its gain comes in the
-first 100:
-
-<figure markdown="span">
-  ![Over 350 GRPO steps, held-out answers that are correct rise from 5.9% to 51.8%, most of it by step 100, and answers with a boxed final answer rise from 29% to 99%.](assets/figures/grpo-heldout-by-step-light.svg#only-light)
-  ![Over 350 GRPO steps, held-out answers that are correct rise from 5.9% to 51.8%, most of it by step 100, and answers with a boxed final answer rise from 29% to 99%.](assets/figures/grpo-heldout-by-step-dark.svg#only-dark)
-</figure>
-
 ## Scoring it
 
 `recipes/Qwen2.5-1.5B/eval/tier1_core.yaml` scores GSM8K and MATH-500 at
@@ -47,13 +39,13 @@ commands and how the reported numbers were served. See
 [Evaluation](evaluation.md) for running a tier.
 
 <figure markdown="span">
-  ![GSM8K, first 200 problems: base 36.3%, our GRPO run 68.2%, SimpleRL-Zoo's checkpoint 74.5% (published 74.4%). MATH-500: base 14.4%, our GRPO run 54.7%, SimpleRL-Zoo's checkpoint 57.2% (published 59.0%).](assets/figures/grpo-simplerl-zoo-light.svg#only-light)
-  ![GSM8K, first 200 problems: base 36.3%, our GRPO run 68.2%, SimpleRL-Zoo's checkpoint 74.5% (published 74.4%). MATH-500: base 14.4%, our GRPO run 54.7%, SimpleRL-Zoo's checkpoint 57.2% (published 59.0%).](assets/figures/grpo-simplerl-zoo-dark.svg#only-dark)
+  ![Grouped bar chart. GSM8K, first 200 problems: our GRPO model 68.2%, SimpleRL-Zoo's checkpoint 74.5%. MATH-500: 54.7% and 57.2%.](assets/figures/grpo-vs-simplerl-zoo-light.svg#only-light)
+  ![Grouped bar chart. GSM8K, first 200 problems: our GRPO model 68.2%, SimpleRL-Zoo's checkpoint 74.5%. MATH-500: 54.7% and 57.2%.](assets/figures/grpo-vs-simplerl-zoo-dark.svg#only-dark)
 </figure>
 
 SimpleRL-Zoo's checkpoint lands within 0.1 and 1.8 points of its published
 numbers on this stack, and our run recovers 84% (GSM8K) and 94% (MATH-500)
-of their gain over the base. [Results](results.md#reinforcement-learning)
+of their gain over the base. [Results](results.md#reinforcement-learning-grpo)
 has the numbers.
 
 ## Constraints on the pinned Tunix

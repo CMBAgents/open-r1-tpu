@@ -8,23 +8,21 @@ Google Cloud TPUs, with JAX and [Google Tunix](https://github.com/google/tunix).
   Face, whose workflow, datasets and evaluation it follows. We train a model
   to be an assistant, and to reason.
 - **Supported by** the Google TPU Builder Program.
-- **Built by** [Rowan d'Auria](https://www.linkedin.com/in/rowan-d-auria).
+- **Built by** [Rowan d'Auria](https://rowan-dauria.vercel.app/about).
 
 ## What is Open-R1?
 
 In January 2025 DeepSeek released
 [DeepSeek-R1](https://arxiv.org/abs/2501.12948), a model that works through a
-problem step by step before it answers, and that performed comparably to
-OpenAI's o1 on maths and coding benchmarks. They published the weights and
+problem step by step before it answers, known as a reasoning model. They published the weights and
 described the training, but not the data or the code that produced it.
 
 [Open-R1](https://github.com/huggingface/open-r1) is Hugging Face's
-open-source replication of that training pipeline. It rebuilds each stage in
-the open: datasets of R1's reasoning, supervised fine-tuning that distils it
+open-source replication of that training pipeline. It rebuilds each stage publically: datasets of R1's reasoning, supervised fine-tuning that distils it
 into smaller models, reinforcement learning with GRPO, and the benchmarks to
 check the result.
 
-Open-R1 is written for NVIDIA GPUs: it uses CUDA, PyTorch and Hugging Face's
+Open-R1 is designed for training on NVIDIA GPUs: it uses CUDA, PyTorch and Hugging Face's
 TRL. open-r1-tpu keeps the same workflow and replaces that stack, so it runs
 on TPUs:
 
@@ -33,8 +31,8 @@ on TPUs:
 | Hardware | NVIDIA GPUs (CUDA) | Google Cloud TPUs |
 | Framework | PyTorch | JAX |
 | Training library | TRL | Tunix |
-| Benchmark serving | vLLM on GPU | vLLM on TPU, in a pinned container |
-| Benchmark scoring | LightEval | LightEval's metrics, used as a library |
+| Benchmark serving | vLLM on GPU | vLLM on TPU |
+| Benchmark scoring | LightEval | Langfuse with LightEval's metrics |
 
 ### Results so far
 
@@ -46,12 +44,8 @@ Measured on TPU v6e:
 | RL | SimpleRL-Zoo reproduced on Qwen2.5-1.5B, with LoRA and a sixty-fourth of their batch | GSM8K 68.2 (first 200 problems), MATH-500 54.7 | Their published checkpoint, scored the same way: 74.5 and 57.2 |
 | Benchmarking | SimpleRL-Zoo's checkpoint scored on this stack | Within 0.1 (GSM8K) and 1.8 (MATH-500) points of its published numbers | |
 
-<figure markdown="span">
-  ![MATH-500 accuracy of the SFT checkpoints rises from 70.9% at step 1,000 to 83.3% at step 6,710, passing DeepSeek-R1-Distill-Qwen-1.5B's 79.8%, while the share of replies cut off at the token limit falls to 7.4%.](assets/figures/sft-math500-by-step-light.svg#only-light)
-  ![MATH-500 accuracy of the SFT checkpoints rises from 70.9% at step 1,000 to 83.3% at step 6,710, passing DeepSeek-R1-Distill-Qwen-1.5B's 79.8%, while the share of replies cut off at the token limit falls to 7.4%.](assets/figures/sft-math500-by-step-dark.svg#only-dark)
-</figure>
-
-[Results](results.md) has every figure, with the numbers behind it.
+[Results](results.md) charts each model against the one it reproduces, both measured on this
+project's evaluation suite.
 
 ## Setting up on TPU
 

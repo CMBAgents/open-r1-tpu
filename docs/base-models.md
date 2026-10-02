@@ -16,10 +16,16 @@ has not been taught to answer questions, to take turns in a conversation, or
 to stop when it has finished. Given the start of a sentence, it carries on:
 
 ```bash
-python scripts/complete_tpu.py \
-  --model-path models/Qwen2.5-Math-1.5B --model-name qwen2.5-math-1.5b \
-  "The capital of France is"
+python scripts/complete_tpu.py --model-path models/Qwen2.5-1.5B/ \
+--model-name qwen2.5-1.5b "The capital of France is"
 ```
+
+**Input:**
+> The capital of France is
+
+**Completion:**
+> The capital of France is Paris. The capital of France is also the capital of the European Union. The capital of France is also the capital of the European Union. The capital of France is also the capital of the European Union. The capital of France is also the capital of the European Union. The capital of France is also the capital of the European Union. The capital of France is also the capital of the European Union. The capital of France is also the capital of the European Union. The capital of France is also the
+
 
 Given a question, it may answer it, but it may as easily write a second
 question, or keep going until it runs out of room. *Post-training* turns it
@@ -81,7 +87,7 @@ a Hub model can read it.
 | [Qwen2.5-Math-1.5B](https://huggingface.co/Qwen/Qwen2.5-Math-1.5B) | [SFT](sft.md). A 1.5B base pretrained further on maths. DeepSeek distilled R1 into this same base to make DeepSeek-R1-Distill-Qwen-1.5B, so the two compare directly. |
 | [Qwen2.5-1.5B](https://huggingface.co/Qwen/Qwen2.5-1.5B) | [RL](grpo.md), reproducing SimpleRL-Zoo, which starts from this base |
 | [Qwen2.5-0.5B](https://huggingface.co/Qwen/Qwen2.5-0.5B) | The [tutorials](tutorials.md): small enough to train in full on one chip |
-| [DeepSeek-R1-Distill-Qwen-1.5B](https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B) | Not a base: the reference model that [benchmarking](benchmarking.md) checks itself against |
+| [DeepSeek-R1-Distill-Qwen-1.5B](https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B) | Not a base model: it is used as a comparison to [benchmark](benchmarking.md) against |
 
 Training and export support the Qwen2 and Qwen3 families.
 

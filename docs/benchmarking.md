@@ -39,11 +39,6 @@ benchmark here runs several times and reports the mean and standard
 deviation. How many runs depends on the benchmark's size: one run is ±8.3
 points on AIME's 30 problems but ±1.6 on MATH-500's 500.
 
-<figure markdown="span">
-  ![64 runs each on AIME 2024: DeepSeek-R1-Distill-Qwen-1.5B ranges from 16.7% to 40.0% around a mean of 30.6%; our SFT model from 13.3% to 33.3% around a mean of 24.3%.](assets/figures/aime-runs-light.svg#only-light)
-  ![64 runs each on AIME 2024: DeepSeek-R1-Distill-Qwen-1.5B ranges from 16.7% to 40.0% around a mean of 30.6%; our SFT model from 13.3% to 33.3% around a mean of 24.3%.](assets/figures/aime-runs-dark.svg#only-dark)
-</figure>
-
 ## How an evaluation runs
 
 1. **Preflight** checks, before anything takes the TPU, that the packages
@@ -91,11 +86,6 @@ the same way. Two checks show this stack does:
   card on AIME, and scores about five points under it on MATH-500 and
   GPQA-Diamond.
 
-<figure markdown="span">
-  ![Accuracy on DeepSeek's protocol. MATH-500: our SFT model 83.7%, DeepSeek's card 83.9%, DeepSeek's model measured here 78.6%. AIME 2024: 24.3%, 28.9%, 30.6%. AIME 2024 majority of 64: 43.3%, 52.7%, 53.3%. GPQA-Diamond: 22.7%, 33.8%, 28.3%.](assets/figures/deepseek-card-light.svg#only-light)
-  ![Accuracy on DeepSeek's protocol. MATH-500: our SFT model 83.7%, DeepSeek's card 83.9%, DeepSeek's model measured here 78.6%. AIME 2024: 24.3%, 28.9%, 30.6%. AIME 2024 majority of 64: 43.3%, 52.7%, 53.3%. GPQA-Diamond: 22.7%, 33.8%, 28.3%.](assets/figures/deepseek-card-dark.svg#only-dark)
-</figure>
-
-[Results](results.md) has every evaluation's numbers.
+[Results](results.md) charts both models against the ones they reproduce.
 
 [Run an evaluation →](evaluation.md)
