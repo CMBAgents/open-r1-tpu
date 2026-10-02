@@ -46,6 +46,13 @@ Measured on TPU v6e:
 | RL | SimpleRL-Zoo reproduced on Qwen2.5-1.5B, with LoRA and a sixty-fourth of their batch | GSM8K 68.2 (first 200 problems), MATH-500 54.7 | Their published checkpoint, scored the same way: 74.5 and 57.2 |
 | Benchmarking | SimpleRL-Zoo's checkpoint scored on this stack | Within 0.1 (GSM8K) and 1.8 (MATH-500) points of its published numbers | |
 
+<figure markdown="span">
+  ![MATH-500 accuracy of the SFT checkpoints rises from 70.9% at step 1,000 to 83.3% at step 6,710, passing DeepSeek-R1-Distill-Qwen-1.5B's 79.8%, while the share of replies cut off at the token limit falls to 7.4%.](assets/figures/sft-math500-by-step-light.svg#only-light)
+  ![MATH-500 accuracy of the SFT checkpoints rises from 70.9% at step 1,000 to 83.3% at step 6,710, passing DeepSeek-R1-Distill-Qwen-1.5B's 79.8%, while the share of replies cut off at the token limit falls to 7.4%.](assets/figures/sft-math500-by-step-dark.svg#only-dark)
+</figure>
+
+[Results](results.md) has every figure, with the numbers behind it.
+
 ## Setting up on TPU
 
 The pipeline runs on Google Cloud. Three pieces are needed:

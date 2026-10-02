@@ -95,6 +95,7 @@ nav:
       - Benchmarking: benchmarking.md
       - Langfuse: langfuse.md
       - Tutorials: tutorials.md
+  - Results: results.md
   - Reference:
       - Training in depth: training.md
       - Running evaluations: evaluation.md

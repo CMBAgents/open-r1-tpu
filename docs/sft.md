@@ -69,7 +69,16 @@ python -m open_r1_tpu.sft.run --config "$RECIPE" training.project_name="${WANDB_
 ```
 
 The full run is 6,710 steps, about 19 hours, and ends with a merged export in
-`artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/merged`.
+`artifacts/OpenR1-Distill-Qwen2.5-Math-1.5B/merged`. Scored as it trained, it
+passed DeepSeek's own distillation of the same base:
+
+<figure markdown="span">
+  ![MATH-500 accuracy of the SFT checkpoints rises from 70.9% at step 1,000 to 83.3% at step 6,710, passing DeepSeek-R1-Distill-Qwen-1.5B's 79.8%, while the share of replies cut off at the token limit falls to 7.4%.](assets/figures/sft-math500-by-step-light.svg#only-light)
+  ![MATH-500 accuracy of the SFT checkpoints rises from 70.9% at step 1,000 to 83.3% at step 6,710, passing DeepSeek-R1-Distill-Qwen-1.5B's 79.8%, while the share of replies cut off at the token limit falls to 7.4%.](assets/figures/sft-math500-by-step-dark.svg#only-dark)
+</figure>
+
+[Results](results.md#supervised-fine-tuning) has the numbers, and how the
+finished model compares with DeepSeek's published scores.
 
 !!! danger "Stopping a run"
 
