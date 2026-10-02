@@ -1,0 +1,98 @@
+# The documentation site, built with Material for MkDocs from docs/.
+#
+# Preview locally from the repository root:
+#   uvx --with-requirements docs/requirements.txt mkdocs serve
+# Build as CI does (warnings, including broken links and anchors, fail):
+#   uvx --with-requirements docs/requirements.txt mkdocs build --strict
+#
+# .github/workflows/docs.yml builds every push and pull request and publishes
+# main to GitHub Pages. No Python tags here: check-yaml loads this file.
+
+site_name: open-r1-tpu
+site_description: >-
+  Reasoning post-training for open language models on Google Cloud TPUs:
+  SFT, GRPO and benchmark evaluation with JAX and Tunix.
+site_url: https://cmbagents.github.io/open-r1-tpu/
+repo_url: https://github.com/CMBAgents/open-r1-tpu
+repo_name: CMBAgents/open-r1-tpu
+edit_uri: edit/main/docs/
+copyright: Released under the MIT licence.
+
+# The pins live beside the pages but are not one of them.
+exclude_docs: |
+  requirements.txt
+
+theme:
+  name: material
+  features:
+    - content.action.edit
+    - content.code.copy
+    - navigation.footer
+    - navigation.indexes
+    - navigation.instant
+    - navigation.sections
+    - navigation.tabs
+    - navigation.top
+    - search.highlight
+    - search.suggest
+    - toc.follow
+  icon:
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: deep orange
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: deep orange
+      toggle:
+        icon: material/brightness-4
+        name: Follow the system setting
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+plugins:
+  - search
+
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+nav:
+  - Home: index.md
+  - Get started:
+      - Install: getting-started.md
+      - Tutorials: tutorials.md
+  - Guides:
+      - Distillation (SFT): sft.md
+      - GRPO: grpo.md
+      - Training in depth: training.md
+      - Evaluation: evaluation.md
+      - Chat and completion: chat.md
+  - Reference:
+      - Recipes: recipes.md
+      - Development: development.md

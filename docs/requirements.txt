@@ -1,0 +1,5 @@
+# Documentation site tooling. Kept out of pyproject.toml and uv.lock, which
+# pin the training and evaluation environments. See mkdocs.yml for the
+# commands that use it.
+mkdocs==1.6.1
+mkdocs-material==9.7.7

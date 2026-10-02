@@ -120,7 +120,7 @@ task and seed runs as a Langfuse experiment, so every prompt, completion and
 score can be inspected and runs compared. The results files and summary are
 the same as a local run's. A dataset is named after its task and a
 fingerprint of its prompt and metrics, plus `[:N]` when `eval.max_samples`
-caps it. [docker/langfuse/README.md](../docker/langfuse/README.md) sets up the
+caps it. [docker/langfuse/README.md](https://github.com/CMBAgents/open-r1-tpu/blob/main/docker/langfuse/README.md) sets up the
 stack and writes `configs/tracing.yaml` (template:
 `configs/tracing.example.yaml`).
 

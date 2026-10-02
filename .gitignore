@@ -4,6 +4,8 @@ __pycache__/
 build/
 dist/
 *.egg-info/
+# The built documentation site (mkdocs build)
+site/
 
 # Virtual environments and tool caches
 .venv

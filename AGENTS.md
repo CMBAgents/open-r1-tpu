@@ -28,6 +28,9 @@ guides. This file holds the rules for changing the code.
 - `docker/vllm-tpu/`: the pinned vLLM TPU image. `docker/langfuse/`: the
   optional self-hosted Langfuse stack.
 - `configs/`: the template for the optional Langfuse tracing config.
+- `docs/` and `mkdocs.yml`: the documentation site, built with Material for
+  MkDocs; its tooling is pinned in `docs/requirements.txt`, apart from
+  `uv.lock`. Pages link to files outside `docs/` by full GitHub URL.
 - `examples/`: the tutorial notebooks, with their own recipes in
   `examples/recipes/` and helper scripts. Notebooks are committed without
   outputs; they run training as separate commands and never import JAX.
@@ -149,6 +152,7 @@ preflight and a compiled smoke run.
 python -m pytest                       # unit suite, no TPU needed
 pre-commit run --all-files             # ruff, ruff format, pyright
 for script in scripts/*.sh scripts/lib/*.sh; do bash -n "$script"; done
+uvx --with-requirements docs/requirements.txt mkdocs build --strict   # docs site
 ```
 
 Pyright resolves imports from `.venv`, so install the `dev`, `test` and `eval`

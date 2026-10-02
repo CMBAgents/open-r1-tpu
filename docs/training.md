@@ -2,7 +2,7 @@
 
 SFT (`python -m open_r1_tpu.sft.run`) and GRPO
 (`python -m open_r1_tpu.grpo.run`) share the recipe loader, checkpointing,
-export and logging described here. The README's quick start is the short
+export and logging described here. [Distillation](sft.md) is the short
 path; this page covers the rest.
 
 ## Environment
@@ -102,7 +102,7 @@ directory aside, and relaunch.
 
 **Logs.** Tunix asks Orbax to save on every step, and Orbax logs several lines
 each time whether or not it writes. These are demoted to `DEBUG`
-([core/logging.py](../src/open_r1_tpu/core/logging.py), `NOISY_PACKAGES`), so
+([core/logging.py](https://github.com/CMBAgents/open-r1-tpu/blob/main/src/open_r1_tpu/core/logging.py), `NOISY_PACKAGES`), so
 the log shows one line per step. Pass `--log-level debug` to see them, or
 `--log-level warning` for problems only.
 

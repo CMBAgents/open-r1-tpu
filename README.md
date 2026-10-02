@@ -18,6 +18,8 @@ Measured on TPU v6e:
 - **Evaluation.** Scored on this stack, SimpleRL-Zoo's checkpoint lands within
   0.1 (GSM8K) and 1.8 (MATH-500) points of its published numbers.
 
+The full documentation is at
+[cmbagents.github.io/open-r1-tpu](https://cmbagents.github.io/open-r1-tpu/).
 New to fine-tuning or reinforcement learning? [examples/](examples/) has two
 notebooks that train a small model with SFT and then GRPO on one TPU chip,
 explaining each step.
@@ -35,7 +37,7 @@ explaining each step.
 | `scripts/` | Launchers and tools: VM setup, SFT, evaluation, the vLLM container, chat, export |
 | `docker/` | The pinned vLLM TPU image, and the optional Langfuse stack |
 | `configs/` | The template for the optional Langfuse tracing config |
-| `docs/` | [Training](docs/training.md), [evaluation](docs/evaluation.md), and [chat](docs/chat.md) guides |
+| `docs/` | The [documentation site](https://cmbagents.github.io/open-r1-tpu/)'s pages, including the [training](docs/training.md), [evaluation](docs/evaluation.md) and [chat](docs/chat.md) guides |
 | `examples/` | Tutorial notebooks for SFT and GRPO on one chip, with their recipes |
 
 Run every command from the repository root on the TPU VM. Only one process can
